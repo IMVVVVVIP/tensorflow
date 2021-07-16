@@ -21,12 +21,6 @@ limitations under the License.
 include "mlir/Dialect/LLVMIR/LLVMOpBase.td"
 include "mlir/IR/OpBase.td"
 
-class LLVMPointerTo<Type ty>
-    : ContainerType<ty,
-                    CPred<"$_self.cast<::mlir::LLVM::LLVMType>().isPointerTy()">,
-                    "$_self.cast<::mlir::LLVM::LLVMType>().getPointerElementTy()",
-                    "LLVM pointer">;
-
 def XLAThunks_Dialect : Dialect {
   let name = "xla_thunks";
   let cppNamespace = "xla_thunks";
@@ -40,17 +34,17 @@ def AllocationSlice : StructAttr<"AllocationSlice", XLAThunks_Dialect, [
     StructFieldAttr<"offset", I64Attr>,
     StructFieldAttr<"size", I64Attr>,
   ]> {
-  let description = "Defines a slice of an allocation for XLA thunk ops";
+  let summary = "Defines a slice of an allocation for XLA thunk ops";
 }
 
 def MemzeroThunkOp : ThunkOp<"execute_memzero_thunk"> {
   let arguments = (ins
-    LLVMPointerTo<LLVMI<8>>:$execute_params,
+    LLVM_PointerTo<I8>:$execute_params,
     AllocationSlice:$allocation_slice
   );
   let results = (outs
     I<1>:$ok,
-    LLVMPointerTo<LLVMI<8>>:$error_message
+    LLVM_PointerTo<I8>:$error_message
   );
 }
 

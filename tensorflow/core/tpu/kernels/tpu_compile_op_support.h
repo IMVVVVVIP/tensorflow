@@ -47,7 +47,9 @@ namespace se = ::stream_executor;
 
 // List of parameters for lowering Mlir to HLO IR.
 struct MlirToHloArgs {
-  const std::string& mlir_module;
+  absl::string_view mlir_module;
+  ConfigProto::Experimental::MlirBridgeRollout rollout_state =
+      ConfigProto::Experimental::MLIR_BRIDGE_ROLLOUT_ENABLED;
 };
 
 // Variant of guaranteed constant tensors types.
@@ -88,8 +90,7 @@ struct ShardingAndIndex {
 // TODO(b/158279168): Dedup with internal version.
 // Return the per-device shape for a `shape` with a given `sharding`.
 xla::Shape GetPerDeviceShape(const xla::Shape& shape,
-                             const xla::HloSharding& sharding,
-                             int64 device);
+                             const xla::HloSharding& sharding, int64_t device);
 
 stream_executor::port::StatusOr<std::unique_ptr<xla::HloModuleConfig>>
 CreateModuleConfig(
@@ -117,8 +118,7 @@ xla::ShapeTree<xla::HloSharding> GetSubtree(
     int element_index);
 
 xla::Shape GetPerDeviceShape(const xla::Shape& shape,
-                             const xla::HloSharding& sharding,
-                             int64 device);
+                             const xla::HloSharding& sharding, int64_t device);
 
 Status AddVariableUpdatesToCores(
     const TPUCompileMetadataProto& metadata,
@@ -138,17 +138,6 @@ se::port::Status CreateHloModules(
     const XlaCompiler::CompilationResult& compilation_result,
     const absl::optional<xla::DeviceAssignment>& device_assignment,
     std::vector<std::unique_ptr<xla::HloModule>>* hlo_modules);
-
-se::port::StatusOr<TpuAotCompilationRequestProto>
-CreateTpuAotCompilationRequest(
-    const xla::HloModuleGroup& module_group,
-    const XlaCompiler::CompilationResult& compilation_result,
-    const TPUCompileMetadataProto& metadata,
-    const std::vector<std::vector<xla::Shape>>& per_core_arg_shapes,
-    const std::vector<std::vector<xla::Shape>>& per_core_output_shapes,
-    const std::vector<std::vector<std::pair<int, bool>>>&
-        per_core_variable_indices,
-    const absl::optional<xla::DeviceAssignment>& device_assignment);
 
 se::port::StatusOr<TpuCompilationRequestProto> CreateTpuCompilationRequest(
     const absl::variant<MlirToHloArgs, FunctionToHloArgs>& computation,

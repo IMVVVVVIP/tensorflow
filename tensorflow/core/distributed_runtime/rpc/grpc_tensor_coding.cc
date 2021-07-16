@@ -17,7 +17,6 @@ limitations under the License.
 
 #include "grpcpp/support/byte_buffer.h"
 #include "grpcpp/support/slice.h"
-#include "absl/flags/flag.h"
 #include "tensorflow/core/common_runtime/dma_helper.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor.pb.h"
@@ -27,8 +26,6 @@ limitations under the License.
 #include "tensorflow/core/lib/io/proto_encode_helper.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/protobuf/worker.pb.h"
-
-// (Omitted internal-only flag)
 
 namespace tensorflow {
 namespace grpc {
@@ -140,6 +137,15 @@ static void EncodeSkeleton(const Tensor& val, io::ProtoEncodeHelper* e) {
 void EncodeTensorToByteBuffer(bool is_dead, const Tensor& val, bool require_ack,
                               ::grpc::ByteBuffer* result) {
   const int kLargeTensorBytes = 1024;
+  const int64 kProtoBufLimitBytes = 1LL << 31;
+
+  if (val.TotalBytes() > kProtoBufLimitBytes) {
+    size_t exceeded_bytes = val.TotalBytes() - kProtoBufLimitBytes;
+    LOG(FATAL) << "Cannot encode a Tensor that exceeds the 2GB protobuf limit. "
+                  "Exceeded bytes: "
+               << exceeded_bytes;
+  }
+
   RecvTensorResponse response;
   if (is_dead) {
     response.set_is_dead(is_dead);
@@ -184,8 +190,6 @@ void EncodeTensorToByteBuffer(bool is_dead, const Tensor& val, bool require_ack,
     //
     // We enable this behavior if the tensor is large.
     bool share_tensor_slice_memory = (tdata.size() > kLargeTensorBytes);
-
-    // (Omitted internal-only conditional)
 
     size_t encoder_size = expected_size - tdata.size();
 

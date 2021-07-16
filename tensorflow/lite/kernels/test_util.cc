@@ -43,6 +43,7 @@ limitations under the License.
 #include "tensorflow/lite/kernels/test_delegate_providers.h"
 #include "tensorflow/lite/model.h"
 #include "tensorflow/lite/nnapi/nnapi_implementation.h"
+#include "tensorflow/lite/schema/schema_conversion_utils.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/string_util.h"
@@ -79,12 +80,23 @@ std::vector<Matcher<std::complex<float>>> ArrayComplex64Near(
   return matchers;
 }
 
-int SingleOpModel::AddInput(const TensorData& t, bool is_variable) {
+int SingleOpModel::AddInput(const TensorData& t) {
   int id = 0;
   if (t.per_channel_quantization) {
     id = AddTensorPerChannelQuant(t);
   } else {
-    id = AddTensor<float>(t, {}, is_variable);
+    id = AddTensor<float>(t, {});
+  }
+  inputs_.push_back(id);
+  return id;
+}
+
+int SingleOpModel::AddVariableInput(const TensorData& t) {
+  int id = 0;
+  if (t.per_channel_quantization) {
+    id = AddTensorPerChannelQuant(t);
+  } else {
+    id = AddTensor<float>(t, {}, true);
   }
   inputs_.push_back(id);
   return id;
@@ -94,7 +106,6 @@ int SingleOpModel::AddIntermediate(TensorType type,
                                    const std::vector<float>& scale,
                                    const std::vector<int64_t>& zero_point) {
   // Currently supports only int16 intermediate types.
-  // TODO(jianlijianli): make use of the type.
   int id = tensors_.size();
   flatbuffers::Offset<QuantizationParameters> q_params =
       CreateQuantizationParameters(builder_, /*min=*/0, /*max=*/0,
@@ -145,10 +156,22 @@ void SingleOpModel::SetCustomOp(
       CustomOptionsFormat_FLEXBUFFERS));
 }
 
+void SingleOpModel::AllocateAndDelegate(bool apply_delegate) {
+  CHECK(interpreter_->AllocateTensors() == kTfLiteOk)
+      << "Cannot allocate tensors";
+  interpreter_->ResetVariableTensors();
+
+  // In some rare cases a test may need to postpone modifying the graph with
+  // a delegate, e.g. if tensors are not fully specified. In such cases the
+  // test has to explicitly call ApplyDelegate() when necessary.
+  if (apply_delegate) ApplyDelegate();
+}
+
 void SingleOpModel::BuildInterpreter(std::vector<std::vector<int>> input_shapes,
                                      int num_threads,
                                      bool allow_fp32_relax_to_fp16,
-                                     bool apply_delegate) {
+                                     bool apply_delegate,
+                                     bool allocate_and_delegate) {
   auto opcodes = builder_.CreateVector(opcodes_);
   auto operators = builder_.CreateVector(operators_);
   auto tensors = builder_.CreateVector(tensors_);
@@ -169,7 +192,22 @@ void SingleOpModel::BuildInterpreter(std::vector<std::vector<int>> input_shapes,
   UpdateOpVersion(buffer_pointer);
 
   if (!resolver_) {
-    auto resolver = new ops::builtin::BuiltinOpResolver();
+    // If we have a manually-set TfLite delegate, we assume the intention of
+    // the test is to test against the particular delegate, hence bypassing
+    // applying TfLite default delegates (i.e. the XNNPACK delegate).
+    bool bypass_default_delegates = (delegate_ != nullptr);
+    if (!bypass_default_delegates) {
+      // Check if any delegates are specified via the commandline flags.
+      const auto specified_delegates =
+          tflite::KernelTestDelegateProviders::Get()->CreateAllDelegates();
+      if (!specified_delegates.empty()) {
+        bypass_default_delegates = true;
+      }
+    }
+    MutableOpResolver* resolver =
+        bypass_default_delegates
+            ? new ops::builtin::BuiltinOpResolverWithoutDefaultDelegates()
+            : new ops::builtin::BuiltinOpResolver();
     for (const auto& reg : custom_registrations_) {
       resolver->AddCustom(reg.first.data(), reg.second());
     }
@@ -190,14 +228,9 @@ void SingleOpModel::BuildInterpreter(std::vector<std::vector<int>> input_shapes,
 
   interpreter_->SetAllowFp16PrecisionForFp32(allow_fp32_relax_to_fp16);
 
-  CHECK(interpreter_->AllocateTensors() == kTfLiteOk)
-      << "Cannot allocate tensors";
-  interpreter_->ResetVariableTensors();
-
-  // In some rare cases a test may need to postpone modifying the graph with
-  // a delegate, e.g. if tensors are not fully specified. In such cases the
-  // test has to explicitly call ApplyDelegate() when necessary.
-  if (apply_delegate) ApplyDelegate();
+  if (allocate_and_delegate) {
+    AllocateAndDelegate(apply_delegate);
+  }
 }
 
 TfLiteStatus SingleOpModel::ApplyDelegate() {
@@ -208,11 +241,18 @@ TfLiteStatus SingleOpModel::ApplyDelegate() {
     ++num_applied_delegates_;
   } else {
     auto* delegate_providers = tflite::KernelTestDelegateProviders::Get();
+    // Most TFLite NNAPI delegation tests have been written to run against the
+    // NNAPI CPU path. We'll enable that for tests. However, need to first check
+    // if the parameter is present - it will not be if the NNAPI delegate
+    // provider is not linked into the test.
+    if (delegate_providers->ConstParams().HasParam("disable_nnapi_cpu")) {
+      delegate_providers->MutableParams()->Set("disable_nnapi_cpu", false);
+    }
     for (auto& one : delegate_providers->CreateAllDelegates()) {
       // The raw ptr always points to the actual TfLiteDegate object.
-      auto* delegate_raw_ptr = one.get();
+      auto* delegate_raw_ptr = one.delegate.get();
       TF_LITE_ENSURE_STATUS(
-          interpreter_->ModifyGraphWithDelegate(std::move(one)));
+          interpreter_->ModifyGraphWithDelegate(std::move(one.delegate)));
       // Note: 'delegate_' is always set to the last successfully applied one.
       delegate_ = delegate_raw_ptr;
       ++num_applied_delegates_;
@@ -229,7 +269,7 @@ void SingleOpModel::BuildInterpreter(
     std::vector<std::vector<int>> input_shapes) {
   BuildInterpreter(input_shapes, /*num_threads=*/-1,
                    /*allow_fp32_relax_to_fp16=*/false,
-                   /*apply_delegate=*/true);
+                   /*apply_delegate=*/true, /*allocate_and_delegate=*/true);
 }
 
 // static
@@ -336,6 +376,7 @@ void SingleOpModel::ExpectOpAcceleratedWithNnapi(const std::string& test_id) {
     EXPECT_EQ(CountPartitionsDelegatedTo(interpreter_.get(), delegate_), 1)
         << "Expecting operation to be accelerated but cannot find a partition "
            "associated to the NNAPI delegate";
+    EXPECT_GT(num_applied_delegates_, 0) << "No delegates were applied.";
   }
 }
 

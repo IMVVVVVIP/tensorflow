@@ -1,6 +1,6 @@
 # Tests of TensorFlow kernels written using the Python API.
 
-load("//tensorflow:tensorflow.bzl", "sycl_py_test", "tf_custom_op_library")
+load("//tensorflow:tensorflow.bzl", "tf_custom_op_library")
 load("//tensorflow:tensorflow.bzl", "cuda_py_test")
 
 # buildifier: disable=same-origin-load
@@ -8,7 +8,7 @@ load("//tensorflow:tensorflow.bzl", "tf_py_test")
 
 package(
     default_visibility = ["//tensorflow:internal"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 # CPU-only tests should use tf_py_test, GPU tests use cuda_py_test
@@ -20,7 +20,6 @@ tf_py_test(
     size = "small",
     srcs = ["as_string_op_test.py"],
     tags = ["no_windows"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -34,7 +33,6 @@ tf_py_test(
     name = "attention_ops_test",
     size = "small",
     srcs = ["attention_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -54,7 +52,6 @@ tf_py_test(
         "nomsan",  # TODO(b/161902335): Re-enable.
         "notsan",  # TODO(b/161829717): Re-enable.
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:data_flow_ops",
@@ -69,7 +66,6 @@ tf_py_test(
     size = "small",
     srcs = ["base64_ops_test.py"],
     tags = ["nomac"],  # b/35468214
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -84,7 +80,6 @@ tf_py_test(
 tf_py_test(
     name = "batch_scatter_ops_test",
     srcs = ["batch_scatter_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -105,7 +100,6 @@ tf_py_test(
     name = "bcast_ops_test",
     size = "small",
     srcs = ["bcast_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops_gen",
         "//tensorflow/python:client_testlib",
@@ -121,6 +115,7 @@ cuda_py_test(
         "noasan",  # TODO(b/155406705): flaky
     ],
     deps = [
+        "//tensorflow/core:protos_all_py",
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -142,6 +137,11 @@ tf_py_test(
     size = "small",
     srcs = ["map_ops_test.py"],
     grpc_enabled = True,
+    tags = [
+        "no_windows",  # TODO(b/192259628)
+        "noasan",  # TODO(b/164696004)
+        "notsan",  # TODO(b/164696004)
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -163,7 +163,6 @@ cuda_py_test(
     size = "small",
     srcs = ["benchmark_test.py"],
     tags = ["no_windows"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client",
         "//tensorflow/python:client_testlib",
@@ -176,7 +175,6 @@ cuda_py_test(
 cuda_py_test(
     name = "reduce_benchmark_test",
     srcs = ["reduce_benchmark_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -195,7 +193,6 @@ cuda_py_test(
     size = "small",
     srcs = ["bincount_op_test.py"],
     tags = ["no_windows_gpu"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:bincount_ops",
         "//tensorflow/python:client_testlib",
@@ -207,7 +204,6 @@ tf_py_test(
     name = "candidate_sampler_ops_test",
     size = "small",
     srcs = ["candidate_sampler_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:candidate_sampling_ops",
@@ -222,7 +218,6 @@ tf_py_test(
     name = "checkpoint_ops_test",
     size = "medium",
     srcs = ["checkpoint_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:checkpoint_ops_gen",
@@ -247,7 +242,6 @@ cuda_py_test(
     srcs = ["cholesky_op_test.py"],
     shard_count = 5,
     tags = [
-        "no_rocm",  # TODO(rocm): feature not supported on ROCm platform
         "nomsan",  # TODO(b/131773093): Re-enable.
     ],
     deps = [
@@ -270,7 +264,6 @@ tf_py_test(
         "no_gpu",  # b/127001953
         "no_windows",
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:clip_ops",
@@ -278,15 +271,52 @@ tf_py_test(
     ],
 )
 
-tf_py_test(
+cuda_py_test(
     name = "collective_ops_test",
-    size = "small",
+    size = "medium",
     srcs = ["collective_ops_test.py"],
-    tfrt_enabled = True,
+    tags = [
+        "multi_and_single_gpu",
+        "no_tfrt",  # TODO(b/185944042)
+    ],
     deps = [
+        "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
-        "//tensorflow/python:collective_ops_gen",
+        "//tensorflow/python:collective_ops",
+        "//tensorflow/python:errors",
         "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python/compat:v2_compat",
+        "//tensorflow/python/data/experimental/ops:testing",
+        "//tensorflow/python/data/ops:dataset_ops",
+        "//tensorflow/python/distribute:combinations",
+        "//tensorflow/python/distribute:test_util",
+        "//tensorflow/python/eager:cancellation",
+        "//tensorflow/python/eager:context",
+        "//tensorflow/python/eager:def_function",
+        "@absl_py//absl/testing:parameterized",
+    ],
+)
+
+tf_py_test(
+    name = "collective_ops_multi_worker_test",
+    size = "medium",
+    srcs = ["collective_ops_multi_worker_test.py"],
+    python_version = "PY3",
+    tags = [
+        "no_rocm",
+        "notsan",  # TODO(b/171435192)
+    ],
+    deps = [
+        "//tensorflow/python:collective_ops",
+        "//tensorflow/python:constant_op",
+        "//tensorflow/python:errors",
+        "//tensorflow/python/distribute:combinations",
+        "//tensorflow/python/distribute:multi_process_runner",
+        "//tensorflow/python/distribute:multi_worker_test_base",
+        "//tensorflow/python/distribute/cluster_resolver:cluster_resolver_lib",
+        "//tensorflow/python/eager:context",
+        "//tensorflow/python/eager:test",
+        "@absl_py//absl/testing:parameterized",
     ],
 )
 
@@ -294,7 +324,6 @@ tf_py_test(
     name = "conditional_accumulator_test",
     size = "small",
     srcs = ["conditional_accumulator_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -312,7 +341,6 @@ tf_py_test(
     name = "ctc_decoder_ops_test",
     size = "small",
     srcs = ["ctc_decoder_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -340,6 +368,7 @@ cuda_py_test(
 py_library(
     name = "cudnn_deterministic_base",
     srcs = ["cudnn_deterministic_base.py"],
+    srcs_version = "PY3",
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:constant_op",
@@ -353,7 +382,9 @@ cuda_py_test(
     name = "cudnn_deterministic_ops_test",
     size = "small",
     srcs = ["cudnn_deterministic_ops_test.py"],
-    tfrt_enabled = True,
+    tags = [
+        "no_cuda_asan",  # TODO(b/171509035): re-enable.
+    ],
     xla_enable_strict_auto_jit = True,
     deps = [
         ":cudnn_deterministic_base",
@@ -364,7 +395,9 @@ cuda_py_test(
     name = "cudnn_deterministic_test",
     size = "small",
     srcs = ["cudnn_deterministic_test.py"],
-    tfrt_enabled = True,
+    tags = [
+        "no_cuda_asan",  # TODO(b/171509035): re-enable.
+    ],
     deps = [
         ":cudnn_deterministic_base",
     ],
@@ -374,7 +407,6 @@ cuda_py_test(
     name = "cumulative_logsumexp_test",
     size = "medium",
     srcs = ["cumulative_logsumexp_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -390,7 +422,6 @@ tf_py_test(
     name = "decode_csv_op_test",
     size = "small",
     srcs = ["decode_csv_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:errors",
@@ -405,7 +436,6 @@ tf_py_test(
     name = "decode_png_op_test",
     size = "small",
     srcs = ["decode_png_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -419,7 +449,6 @@ tf_py_test(
     name = "decode_bmp_op_test",
     size = "small",
     srcs = ["decode_bmp_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -433,7 +462,6 @@ tf_py_test(
     name = "decode_jpeg_op_test",
     srcs = ["decode_jpeg_op_test.py"],
     data = ["//tensorflow/core:image_testdata"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -447,7 +475,6 @@ tf_py_test(
     size = "small",
     srcs = ["decode_image_op_test.py"],
     data = ["//tensorflow/core:image_testdata"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:errors",
@@ -462,7 +489,6 @@ tf_py_test(
     name = "decode_raw_op_test",
     size = "small",
     srcs = ["decode_raw_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -476,7 +502,6 @@ tf_py_test(
     name = "decode_compressed_op_test",
     size = "small",
     srcs = ["decode_compressed_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -490,7 +515,6 @@ cuda_py_test(
     name = "determinant_op_test",
     size = "medium",
     srcs = ["determinant_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -503,7 +527,6 @@ tf_py_test(
     name = "draw_bounding_box_op_test",
     size = "small",
     srcs = ["draw_bounding_box_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -518,13 +541,24 @@ tf_py_test(
     name = "edit_distance_op_test",
     size = "small",
     srcs = ["edit_distance_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//third_party/py/numpy",
+    ],
+)
+
+tf_py_test(
+    name = "composite_tensor_ops_test",
+    size = "small",
+    srcs = ["composite_tensor_ops_test.py"],
+    deps = [
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:composite_tensor_ops",
+        "//tensorflow/python:framework",
+        "//tensorflow/python:framework_for_generated_wrappers",
     ],
 )
 
@@ -550,7 +584,6 @@ tf_py_test(
     name = "fingerprint_op_test",
     size = "small",
     srcs = ["fingerprint_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//third_party/py/numpy",
     ],
@@ -561,7 +594,6 @@ tf_py_test(
     size = "small",
     srcs = ["fractional_avg_pool_op_test.py"],
     shard_count = 5,
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -578,7 +610,6 @@ tf_py_test(
     size = "small",
     srcs = ["fractional_max_pool_op_test.py"],
     shard_count = 5,
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -594,7 +625,6 @@ tf_py_test(
     name = "identity_op_py_test",
     size = "small",
     srcs = ["identity_op_py_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:array_ops_gen",
@@ -609,7 +639,6 @@ tf_py_test(
     name = "identity_n_op_py_test",
     size = "small",
     srcs = ["identity_n_op_py_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:array_ops_gen",
@@ -624,7 +653,6 @@ cuda_py_test(
     name = "in_topk_op_test",
     size = "small",
     srcs = ["in_topk_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:errors",
@@ -637,7 +665,6 @@ tf_py_test(
     name = "record_input_test",
     size = "medium",
     srcs = ["record_input_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:data_flow_ops",
@@ -650,7 +677,6 @@ tf_py_test(
     name = "io_ops_test",
     size = "small",
     srcs = ["io_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:io_ops",
@@ -662,7 +688,6 @@ tf_py_test(
     name = "listdiff_op_test",
     size = "small",
     srcs = ["listdiff_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -679,7 +704,6 @@ tf_py_test(
     tags = [
         "no_windows",
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -716,9 +740,12 @@ tf_py_test(
         "//tensorflow/python:framework_test_lib",
         "//tensorflow/python:lookup_ops",
         "//tensorflow/python:sparse_tensor",
+        "//tensorflow/python:tensor_spec",
         "//tensorflow/python:training",
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/data/ops:readers",
+        "//tensorflow/python/saved_model:load",
+        "//tensorflow/python/saved_model:save",
     ],
 )
 
@@ -726,7 +753,6 @@ tf_py_test(
     name = "losses_test",
     size = "medium",
     srcs = ["losses_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -749,7 +775,6 @@ tf_py_test(
     srcs = ["matrix_exponential_op_test.py"],
     shard_count = 16,
     tags = ["no_windows_gpu"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -788,6 +813,9 @@ cuda_py_test(
     name = "matrix_solve_ls_op_test",
     size = "medium",
     srcs = ["matrix_solve_ls_op_test.py"],
+    tags = [
+        "noasan",  # TODO(b/337374867) fails with -fsanitize=null
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -827,7 +855,6 @@ cuda_py_test(
     name = "banded_triangular_solve_op_test",
     size = "small",
     srcs = ["banded_triangular_solve_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:linalg_ops",
@@ -840,7 +867,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["matrix_triangular_solve_op_test.py"],
     shard_count = 3,
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:linalg_ops",
@@ -869,7 +895,6 @@ tf_py_test(
     name = "parse_single_example_op_test",
     size = "small",
     srcs = ["parse_single_example_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:array_ops",
@@ -887,7 +912,6 @@ tf_py_test(
     name = "partitioned_variables_test",
     size = "small",
     srcs = ["partitioned_variables_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -905,7 +929,6 @@ tf_py_test(
     name = "priority_queue_test",
     size = "medium",
     srcs = ["priority_queue_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -921,9 +944,10 @@ cuda_py_test(
     name = "resource_variable_ops_test",
     size = "medium",
     srcs = ["resource_variable_ops_test.py"],
+    # TODO(kkb): CppMemoryChecker is flaky without these two flags, investigate.
+    #
     # TODO(b/128347673): Re-enable.
     tags = ["no_windows"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -931,6 +955,8 @@ cuda_py_test(
         "//tensorflow/python:errors",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:handle_data_util",
+        "//tensorflow/python:memory_checker",
         "//tensorflow/python:resource_variable_ops",
         "//tensorflow/python:variables",
         "@absl_py//absl/testing:parameterized",
@@ -941,7 +967,6 @@ tf_py_test(
     name = "regex_replace_op_test",
     size = "small",
     srcs = ["regex_replace_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:constant_op",
@@ -955,7 +980,6 @@ tf_py_test(
     name = "regex_full_match_op_test",
     size = "small",
     srcs = ["regex_full_match_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:constant_op",
@@ -979,11 +1003,27 @@ tf_py_test(
     ],
 )
 
-tf_py_test(
+cuda_py_test(
+    name = "segment_reduction_ops_deterministic_test",
+    size = "small",
+    srcs = ["segment_reduction_ops_deterministic_test.py"],
+    xla_enable_strict_auto_jit = False,
+    deps = [
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:framework",
+        "//tensorflow/python:math_ops",
+        "//tensorflow/python:variables",
+        "//tensorflow/python/eager:backprop",
+    ],
+)
+
+cuda_py_test(
     name = "segment_reduction_ops_test",
     size = "medium",
     srcs = ["segment_reduction_ops_test.py"],
     shard_count = 10,
+    # TODO (b/173835746): the test fails with XLA.
+    xla_enable_strict_auto_jit = False,
     deps = [
         "//tensorflow/python:client",
         "//tensorflow/python:client_testlib",
@@ -999,7 +1039,6 @@ tf_py_test(
     name = "sparse_add_op_test",
     size = "small",
     srcs = ["sparse_add_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client",
         "//tensorflow/python:client_testlib",
@@ -1016,7 +1055,6 @@ tf_py_test(
     name = "sparse_concat_op_test",
     size = "small",
     srcs = ["sparse_concat_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1031,7 +1069,6 @@ tf_py_test(
     name = "sparse_conditional_accumulator_test",
     size = "small",
     srcs = ["sparse_conditional_accumulator_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1046,7 +1083,6 @@ tf_py_test(
     name = "sparse_reorder_op_test",
     size = "small",
     srcs = ["sparse_reorder_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1062,7 +1098,6 @@ tf_py_test(
     name = "sparse_reshape_op_test",
     size = "small",
     srcs = ["sparse_reshape_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1078,7 +1113,6 @@ tf_py_test(
     name = "sparse_split_op_test",
     size = "small",
     srcs = ["sparse_split_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework",
@@ -1091,7 +1125,6 @@ tf_py_test(
     name = "sparse_slice_op_test",
     size = "small",
     srcs = ["sparse_slice_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework",
@@ -1101,11 +1134,10 @@ tf_py_test(
     ],
 )
 
-tf_py_test(
+cuda_py_test(
     name = "sparse_to_dense_op_py_test",
     size = "small",
     srcs = ["sparse_to_dense_op_py_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1119,7 +1151,6 @@ tf_py_test(
     name = "sparsemask_op_test",
     size = "small",
     srcs = ["sparsemask_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1145,7 +1176,6 @@ tf_py_test(
     name = "string_join_op_test",
     size = "small",
     srcs = ["string_join_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:string_ops",
@@ -1156,7 +1186,6 @@ tf_py_test(
     name = "string_split_op_test",
     size = "small",
     srcs = ["string_split_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1176,7 +1205,6 @@ tf_py_test(
     name = "string_bytes_split_op_test",
     size = "small",
     srcs = ["string_bytes_split_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1196,7 +1224,6 @@ tf_py_test(
     name = "string_length_op_test",
     size = "small",
     srcs = ["string_length_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -1208,7 +1235,6 @@ tf_py_test(
     name = "string_strip_op_test",
     size = "small",
     srcs = ["string_strip_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1223,7 +1249,6 @@ tf_py_test(
     name = "string_lower_op_test",
     size = "small",
     srcs = ["string_lower_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1238,7 +1263,6 @@ tf_py_test(
     name = "string_upper_op_test",
     size = "small",
     srcs = ["string_upper_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1253,7 +1277,6 @@ tf_py_test(
     name = "substr_op_test",
     size = "small",
     srcs = ["substr_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:errors",
@@ -1284,6 +1307,9 @@ cuda_py_test(
         "//tensorflow/python:variables",
         "//tensorflow/python/eager:context",
         "//tensorflow/python/eager:function",
+        "//tensorflow/python/saved_model:load",
+        "//tensorflow/python/saved_model:loader",
+        "//tensorflow/python/saved_model:tag_constants",
         "@six_archive//:six",
     ],
 )
@@ -1292,13 +1318,12 @@ tf_py_test(
     name = "summary_v1_ops_test",
     size = "small",
     srcs = ["summary_v1_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:logging_ops",
-        "//tensorflow/python:summary",
+        "//tensorflow/python/summary",
     ],
 )
 
@@ -1306,14 +1331,13 @@ tf_py_test(
     name = "summary_v1_tensor_op_test",
     size = "small",
     srcs = ["summary_v1_tensor_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework",
         "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:summary",
+        "//tensorflow/python/summary",
         "//third_party/py/numpy",
         "@six_archive//:six",
     ],
@@ -1341,7 +1365,6 @@ cuda_py_test(
     name = "template_mirrored_strategy_test",
     size = "small",
     srcs = ["template_mirrored_strategy_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:init_ops",
@@ -1357,11 +1380,10 @@ cuda_py_test(
     name = "tridiagonal_solve_op_test",
     size = "medium",
     srcs = ["tridiagonal_solve_op_test.py"],
-    shard_count = 10,
+    shard_count = 12,
     tags = [
         "no_oss",  # TODO(b/142818120): Re-enable.
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -1374,7 +1396,6 @@ tf_py_test(
     name = "unicode_script_op_test",
     size = "small",
     srcs = ["unicode_script_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:constant_op",
@@ -1387,7 +1408,9 @@ cuda_py_test(
     name = "topk_op_test",
     size = "medium",
     srcs = ["topk_op_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1403,7 +1426,6 @@ cuda_py_test(
     name = "nth_element_op_test",
     size = "small",
     srcs = ["nth_element_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1419,7 +1441,6 @@ tf_py_test(
     name = "unicode_encode_op_test",
     size = "small",
     srcs = ["unicode_encode_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:constant_op",
@@ -1438,7 +1459,6 @@ tf_py_test(
     name = "unicode_transcode_op_test",
     size = "small",
     srcs = ["unicode_transcode_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -1467,11 +1487,13 @@ tf_py_test(
     ],
 )
 
-tf_py_test(
+cuda_py_test(
     name = "unique_op_test",
     size = "small",
     srcs = ["unique_op_test.py"],
-    tfrt_enabled = True,
+    tags = [
+        "no_windows",  # TODO(b/192259045)
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1510,7 +1532,6 @@ tf_py_test(
     size = "small",
     srcs = ["variables_test.py"],
     tags = ["no_windows"],  # b/133869052
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1533,7 +1554,6 @@ cuda_py_test(
     name = "where_op_test",
     size = "medium",
     srcs = ["where_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1546,7 +1566,9 @@ cuda_py_test(
     name = "cast_op_test",
     size = "small",
     srcs = ["cast_op_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1563,7 +1585,6 @@ cuda_py_test(
     size = "small",
     srcs = ["dense_update_ops_no_tsan_test.py"],
     tags = ["notsan"],
-    tfrt_enabled = True,
     # TODO (b/140294007): the test fails with XLA.
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -1582,7 +1603,6 @@ cuda_py_test(
     srcs = ["diag_op_test.py"],
     shard_count = 6,
     tags = ["no_windows_gpu"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1597,8 +1617,7 @@ tf_py_test(
     name = "reader_ops_test",
     size = "small",
     srcs = ["reader_ops_test.py"],
-    data = ["//tensorflow/core:lmdb_testdata"],
-    tfrt_enabled = True,
+    data = ["//tensorflow/core/lib/lmdb:lmdb_testdata"],
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:client_testlib",
@@ -1617,12 +1636,15 @@ cuda_py_test(
     name = "aggregate_ops_test",
     size = "small",
     srcs = ["aggregate_ops_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:math_ops",
+        "//tensorflow/python:string_ops",
         "//third_party/py/numpy",
     ],
 )
@@ -1631,7 +1653,12 @@ cuda_py_test(
     name = "argmax_op_test",
     size = "small",
     srcs = ["argmax_op_test.py"],
-    tfrt_enabled = True,
+    tags = [
+        "no_cuda_asan",  # times out
+    ],
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:math_ops",
@@ -1685,7 +1712,6 @@ cuda_py_test(
     size = "small",
     srcs = ["inplace_ops_test.py"],
     shard_count = 10,
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1702,7 +1728,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["batch_matmul_op_test.py"],
     shard_count = 20,
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1716,7 +1741,6 @@ cuda_py_test(
     name = "batchtospace_op_test",
     size = "small",
     srcs = ["batchtospace_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:array_ops_gen",
@@ -1730,7 +1754,9 @@ cuda_py_test(
     name = "betainc_op_test",
     size = "small",
     srcs = ["betainc_op_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1744,6 +1770,7 @@ cuda_py_test(
 py_library(
     name = "bias_op_base",
     srcs = ["bias_op_base.py"],
+    srcs_version = "PY3",
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1759,7 +1786,6 @@ cuda_py_test(
     name = "bias_op_deterministic_test",
     size = "medium",
     srcs = ["bias_op_deterministic_test.py"],
-    tfrt_enabled = True,
     deps = [
         ":bias_op_base",
     ],
@@ -1778,7 +1804,6 @@ cuda_py_test(
     name = "bitcast_op_test",
     size = "small",
     srcs = ["bitcast_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1791,6 +1816,9 @@ cuda_py_test(
     name = "check_ops_test",
     size = "small",
     srcs = ["check_ops_test.py"],
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:check_ops",
@@ -1809,7 +1837,6 @@ cuda_py_test(
     name = "constant_op_test",
     size = "small",
     srcs = ["constant_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1845,6 +1872,7 @@ cuda_py_test(
     srcs = ["control_flow_ops_py_test.py"],
     shard_count = 16,
     tags = [
+        "no_windows",  # TODO(b/184424727): Re-enable this.
         "notsan",  # TODO(b/132205147): Re-enable this.
     ],
     deps = [
@@ -1886,7 +1914,6 @@ tf_py_test(
     name = "control_flow_util_test",
     size = "small",
     srcs = ["control_flow_util_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:control_flow_ops",
@@ -1914,7 +1941,6 @@ cuda_py_test(
     name = "conv1d_test",
     size = "small",
     srcs = ["conv1d_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1927,7 +1953,6 @@ cuda_py_test(
     name = "conv1d_transpose_test",
     size = "small",
     srcs = ["conv1d_transpose_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client",
         "//tensorflow/python:client_testlib",
@@ -1941,7 +1966,6 @@ cuda_py_test(
     name = "conv2d_transpose_test",
     size = "small",
     srcs = ["conv2d_transpose_test.py"],
-    tfrt_enabled = True,
 
     # TODO(b/144432983): S32 convolutions should not be auto-clustered, only
     # crashes tests.
@@ -1960,7 +1984,6 @@ cuda_py_test(
     name = "conv3d_backprop_filter_v2_grad_test",
     size = "small",
     srcs = ["conv3d_backprop_filter_v2_grad_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -1975,7 +1998,6 @@ cuda_py_test(
     name = "cross_grad_test",
     size = "small",
     srcs = ["cross_grad_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2000,7 +2022,6 @@ cuda_py_test(
     name = "dense_update_ops_test",
     size = "small",
     srcs = ["dense_update_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2016,8 +2037,13 @@ cuda_py_test(
     name = "depthtospace_op_test",
     size = "medium",
     srcs = ["depthtospace_op_test.py"],
-    tags = ["no_windows_gpu"],
-    tfrt_enabled = True,
+    tags = [
+        "no_windows",  # TODO(b/184424727): Re-enable this.
+        "no_windows_gpu",
+    ],
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2032,7 +2058,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["division_past_test.py"],
     tags = ["manual"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -2044,7 +2069,9 @@ cuda_py_test(
     name = "dynamic_partition_op_test",
     size = "medium",
     srcs = ["dynamic_partition_op_test.py"],
-    tfrt_enabled = True,
+    tags = [
+        "multi_and_single_gpu",
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2060,7 +2087,6 @@ cuda_py_test(
     name = "dynamic_stitch_op_test",
     size = "small",
     srcs = ["dynamic_stitch_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:data_flow_grad",
@@ -2075,7 +2101,6 @@ cuda_py_test(
     name = "extract_image_patches_op_test",
     size = "small",
     srcs = ["extract_image_patches_op_test.py"],
-    tfrt_enabled = True,
     # TODO(b/144432983): S32 convolutions should not be auto-clustered.
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -2090,7 +2115,6 @@ cuda_py_test(
     name = "extract_volume_patches_op_test",
     size = "small",
     srcs = ["extract_volume_patches_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2129,7 +2153,6 @@ cuda_py_test(
     name = "gather_nd_op_test",
     size = "small",
     srcs = ["gather_nd_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client",
@@ -2145,7 +2168,6 @@ cuda_py_test(
     name = "gradient_correctness_test",
     size = "small",
     srcs = ["gradient_correctness_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -2186,6 +2208,7 @@ cuda_py_test(
     name = "linalg_ops_test",
     size = "medium",
     srcs = ["linalg_ops_test.py"],
+    shard_count = 8,
     tags = ["no_windows_gpu"],
     deps = [
         "//tensorflow/python:array_ops",
@@ -2203,7 +2226,6 @@ cuda_py_test(
     name = "lrn_op_test",
     size = "medium",
     srcs = ["lrn_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2219,7 +2241,9 @@ cuda_py_test(
     name = "lu_op_test",
     size = "small",
     srcs = ["lu_op_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2237,6 +2261,9 @@ cuda_py_test(
     size = "medium",
     srcs = ["einsum_op_test.py"],
     shard_count = 4,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2254,7 +2281,6 @@ cuda_py_test(
     size = "small",
     srcs = ["manip_ops_test.py"],
     tags = ["no_windows_gpu"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -2268,7 +2294,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["matmul_op_test.py"],
     shard_count = 20,
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2285,7 +2310,9 @@ cuda_py_test(
     name = "morphological_ops_test",
     size = "small",
     srcs = ["morphological_ops_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -2299,7 +2326,6 @@ cuda_py_test(
     name = "numerics_test",
     size = "small",
     srcs = ["numerics_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2316,26 +2342,13 @@ cuda_py_test(
     size = "small",
     srcs = ["one_hot_op_test.py"],
     tags = ["no_windows_gpu"],
-    tfrt_enabled = True,
-    deps = [
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_for_generated_wrappers",
-        "//third_party/py/numpy",
+    xla_tags = [
+        "no_cuda_asan",  # times out
     ],
-)
-
-cuda_py_test(
-    name = "stack_op_test",
-    size = "small",
-    srcs = ["stack_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
-        "//tensorflow/python:errors",
         "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:variables",
         "//third_party/py/numpy",
     ],
 )
@@ -2347,6 +2360,9 @@ cuda_py_test(
     grpc_enabled = True,
     shard_count = 2,
     tags = ["no_windows"],
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2366,7 +2382,10 @@ cuda_py_test(
     name = "pad_op_test",
     size = "small",
     srcs = ["pad_op_test.py"],
-    tfrt_enabled = True,
+    tags = ["no_mac"],  # test is times out on mac b/186262388
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2379,7 +2398,6 @@ cuda_py_test(
     name = "padding_fifo_queue_test",
     size = "small",
     srcs = ["padding_fifo_queue_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2413,7 +2431,6 @@ cuda_py_test(
     name = "reduce_join_op_test",
     size = "small",
     srcs = ["reduce_join_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2442,9 +2459,9 @@ cuda_py_test(
     srcs = ["reduction_ops_test.py"],
     shard_count = 6,
     tags = [
+        "no_cuda_asan",  # times out
         "no_windows_gpu",
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2464,7 +2481,6 @@ cuda_py_test(
         "no_gpu",
         "noguitar",
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2478,7 +2494,9 @@ cuda_py_test(
     name = "relu_op_test",
     size = "small",
     srcs = ["relu_op_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -2497,7 +2515,6 @@ cuda_py_test(
     name = "reshape_op_test",
     size = "small",
     srcs = ["reshape_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2510,7 +2527,6 @@ cuda_py_test(
     name = "reverse_sequence_op_test",
     size = "small",
     srcs = ["reverse_sequence_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2520,23 +2536,9 @@ cuda_py_test(
 )
 
 cuda_py_test(
-    name = "compare_and_bitpack_op_test",
-    size = "small",
-    srcs = ["compare_and_bitpack_op_test.py"],
-    tfrt_enabled = True,
-    deps = [
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:math_ops",
-        "//third_party/py/numpy",
-    ],
-)
-
-cuda_py_test(
     name = "scalar_test",
     size = "small",
     srcs = ["scalar_test.py"],
-    tfrt_enabled = True,
     # b/140221961: Invalid dims for operations
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -2557,7 +2559,6 @@ cuda_py_test(
     name = "scan_ops_test",
     size = "medium",
     srcs = ["scan_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:errors",
@@ -2571,7 +2572,6 @@ cuda_py_test(
     name = "shape_ops_test",
     size = "medium",
     srcs = ["shape_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:array_ops",
@@ -2589,7 +2589,6 @@ cuda_py_test(
     name = "softmax_op_test",
     size = "medium",
     srcs = ["softmax_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2604,7 +2603,6 @@ cuda_py_test(
     name = "softplus_op_test",
     size = "small",
     srcs = ["softplus_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -2618,7 +2616,6 @@ cuda_py_test(
     name = "softsign_op_test",
     size = "small",
     srcs = ["softsign_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -2632,7 +2629,9 @@ cuda_py_test(
     name = "spacetobatch_op_test",
     size = "small",
     srcs = ["spacetobatch_op_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:array_ops_gen",
@@ -2652,7 +2651,6 @@ cuda_py_test(
         "no_windows",
         "no_windows_gpu",
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2666,7 +2664,6 @@ tf_py_test(
     name = "sparse_serialization_ops_test",
     size = "small",
     srcs = ["sparse_serialization_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2681,7 +2678,6 @@ tf_py_test(
     name = "sparse_tensors_map_ops_test",
     size = "small",
     srcs = ["sparse_tensors_map_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client",
@@ -2698,7 +2694,9 @@ cuda_py_test(
     name = "sparse_tensor_dense_matmul_grad_test",
     size = "small",
     srcs = ["sparse_tensor_dense_matmul_grad_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # b/182392418 times out
+    ],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework",
@@ -2710,10 +2708,27 @@ cuda_py_test(
 )
 
 cuda_py_test(
+    name = "sparse_xent_op_deterministic_test",
+    size = "small",
+    srcs = ["sparse_xent_op_deterministic_test.py"],
+    xla_enable_strict_auto_jit = False,
+    deps = [
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:constant_op",
+        "//tensorflow/python:dtypes",
+        "//tensorflow/python:errors",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:nn_grad",
+        "//tensorflow/python:nn_ops",
+        "//tensorflow/python/eager:backprop",
+        "//third_party/py/numpy",
+    ],
+)
+
+cuda_py_test(
     name = "sparse_xent_op_test",
     size = "small",
     srcs = ["sparse_xent_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:array_ops",
@@ -2752,7 +2767,6 @@ cuda_py_test(
     name = "stack_ops_test",
     size = "small",
     srcs = ["stack_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:control_flow_ops",
@@ -2768,7 +2782,6 @@ cuda_py_test(
     name = "string_to_hash_bucket_op_test",
     size = "small",
     srcs = ["string_to_hash_bucket_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2781,7 +2794,6 @@ cuda_py_test(
     name = "string_to_number_op_test",
     size = "small",
     srcs = ["string_to_number_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2794,12 +2806,11 @@ cuda_py_test(
     name = "summary_v1_audio_op_test",
     size = "small",
     srcs = ["summary_v1_audio_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:summary",
+        "//tensorflow/python/summary",
         "//third_party/py/numpy",
     ],
 )
@@ -2808,14 +2819,13 @@ cuda_py_test(
     name = "summary_v1_image_op_test",
     size = "small",
     srcs = ["summary_v1_image_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:image_ops",
         "//tensorflow/python:nn_grad",
-        "//tensorflow/python:summary",
+        "//tensorflow/python/summary",
         "//third_party/py/numpy",
     ],
 )
@@ -2859,7 +2869,6 @@ cuda_py_test(
     size = "small",
     srcs = ["trace_op_test.py"],
     tags = ["no_windows_gpu"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:math_ops",
@@ -2890,7 +2899,6 @@ cuda_py_test(
     name = "variable_ops_test",
     size = "small",
     srcs = ["variable_ops_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2905,18 +2913,55 @@ cuda_py_test(
 )
 
 cuda_py_test(
+    name = "xent_op_deterministic_test",
+    size = "medium",
+    srcs = ["xent_op_deterministic_test.py"],
+    xla_enable_strict_auto_jit = False,
+    deps = [
+        ":xent_op_test_base",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:constant_op",
+        "//tensorflow/python:dtypes",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:nn_grad",
+        "//tensorflow/python:nn_ops",
+        "//tensorflow/python:nn_ops_gen",
+        "//tensorflow/python/eager:backprop",
+        "//third_party/py/numpy",
+    ],
+)
+
+cuda_py_test(
     name = "xent_op_test",
     size = "small",
     srcs = ["xent_op_test.py"],
-    tfrt_enabled = True,
     deps = [
+        ":xent_op_test_base",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:framework_ops",
+        "//tensorflow/python:nn_ops",
+        "//tensorflow/python:nn_ops_gen",
+        "//third_party/py/numpy",
+    ],
+)
+
+py_library(
+    name = "xent_op_test_base",
+    srcs = ["xent_op_test_base.py"],
+    srcs_version = "PY3",
+    deps = [
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:constant_op",
+        "//tensorflow/python:dtypes",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:framework_ops",
         "//tensorflow/python:gradients",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:nn_grad",
         "//tensorflow/python:nn_ops",
-        "//tensorflow/python:nn_ops_gen",
+        "//tensorflow/python/eager:backprop",
         "//third_party/py/numpy",
     ],
 )
@@ -2925,7 +2970,6 @@ cuda_py_test(
     name = "zero_division_test",
     size = "medium",
     srcs = ["zero_division_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:errors",
@@ -2941,7 +2985,6 @@ cuda_py_test(
     tags = [
         "no_gpu",  #  Flaky: b/80127739, b/127001953
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2957,8 +3000,10 @@ cuda_py_test(
     name = "atrous_convolution_test",
     size = "medium",
     srcs = ["atrous_convolution_test.py"],
-    tags = ["manual"],
-    tfrt_enabled = True,
+    tags = [
+        "manual",
+        "no_cuda_asan",
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -2973,7 +3018,9 @@ cuda_py_test(
     name = "pool_test",
     size = "medium",
     srcs = ["pool_test.py"],
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -3005,7 +3052,6 @@ cuda_py_test(
     name = "conv3d_transpose_test",
     size = "medium",
     srcs = ["conv3d_transpose_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -3021,7 +3067,6 @@ cuda_py_test(
     srcs = ["conv_ops_test.py"],
     shard_count = 4,
     tags = [
-        "nogpu",  # TODO(b/153763253); flaky
         "optonly",  # times out
     ],
     deps = [
@@ -3049,24 +3094,6 @@ cuda_py_test(
     shard_count = 3,
     # TODO(b/118842098): Re-enable this test in Kokoro.
     tags = ["no_oss"],
-    tfrt_enabled = True,
-    deps = [
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:nn",
-        "//tensorflow/python:nn_grad",
-        "//tensorflow/python:nn_ops",
-        "//third_party/py/numpy",
-    ],
-)
-
-tf_py_test(
-    name = "neon_depthwise_conv_op_test",
-    size = "medium",
-    srcs = ["neon_depthwise_conv_op_test.py"],
-    tags = ["no_windows"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3083,7 +3110,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["division_future_test.py"],
     tags = ["manual"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -3095,7 +3121,6 @@ cuda_py_test(
     name = "pooling_ops_3d_test",
     size = "medium",
     srcs = ["pooling_ops_3d_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -3110,7 +3135,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["pooling_ops_test.py"],
     shard_count = 4,
-    tfrt_enabled = True,
     xla_enable_strict_auto_jit = False,  # Flaky in XLA b/149568654
     deps = [
         "//tensorflow/python:array_ops",
@@ -3131,7 +3155,6 @@ cuda_py_test(
     timeout = "long",
     srcs = ["rnn_test.py"],
     shard_count = 10,
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:array_ops",
@@ -3179,6 +3202,10 @@ cuda_py_test(
         "//tensorflow/python:variable_scope",
         "//tensorflow/python:variables",
         "//tensorflow/python/eager:context",
+        "//tensorflow/python/eager:def_function",
+        "//tensorflow/python/saved_model:load",
+        "//tensorflow/python/saved_model:save",
+        "//tensorflow/python/training/tracking",
         "//third_party/py/numpy",
         "@absl_py//absl/testing:parameterized",
     ],
@@ -3206,7 +3233,6 @@ cuda_py_test(
     tags = [
         "no_oss",  # Requires 4GB+ RAM
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3221,7 +3247,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["sparse_matmul_op_test.py"],
     tags = ["no_windows"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -3254,10 +3279,31 @@ cuda_py_test(
 )
 
 cuda_py_test(
+    name = "sparse_tensor_dense_matmul_op_deterministic_test",
+    size = "small",
+    srcs = ["sparse_tensor_dense_matmul_op_deterministic_test.py"],
+    tags = [
+        "no_cuda_asan",
+        "noasan",
+        "notsan",
+    ],  # b/192492331
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],  # b/192492331
+    deps = [
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:constant_op",
+        "//tensorflow/python:errors",
+        "//tensorflow/python:sparse_ops",
+        "//tensorflow/python:sparse_tensor",
+        "//third_party/py/numpy",
+    ],
+)
+
+cuda_py_test(
     name = "sparse_tensor_dense_matmul_op_test",
     size = "medium",
     srcs = ["sparse_tensor_dense_matmul_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:array_ops",
@@ -3279,8 +3325,12 @@ cuda_py_test(
     name = "extract_image_patches_grad_test",
     size = "medium",
     srcs = ["extract_image_patches_grad_test.py"],
-    shard_count = 3,
-    tags = ["notap"],  # http://b/31080670
+    shard_count = 15,
+    tags = [
+        "no_rocm",
+        "nomac",  # b/181799478
+        "notap",  # b/31080670
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3294,10 +3344,14 @@ cuda_py_test(
     name = "extract_volume_patches_grad_test",
     size = "medium",
     srcs = ["extract_volume_patches_grad_test.py"],
+    shard_count = 50,
     tags = [
+        "no_gpu",  # b/171837334
+        "no_oss",  # Test times out on oss-nightly cpu builds
         "no_pip",
-        "nomac",  # http://b/139946976
-        "notap",  # http://b/31080670
+        "nogpu",  # b/171837334
+        "nomac",  # b/139946976
+        "notap",  # b/31080670
     ],
     deps = [
         "//tensorflow/python:array_ops",
@@ -3312,7 +3366,6 @@ cuda_py_test(
     name = "stage_op_test",
     size = "medium",
     srcs = ["stage_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3328,7 +3381,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["map_stage_op_test.py"],
     tags = ["no_oss"],  # b/124474135
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3344,7 +3396,9 @@ cuda_py_test(
     size = "medium",
     srcs = ["concat_op_test.py"],
     tags = ["no_windows"],  # b/126916429
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:array_ops_gen",
@@ -3366,7 +3420,6 @@ cuda_py_test(
         "nomsan",
         "notsan",
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3379,7 +3432,7 @@ cuda_py_test(
     size = "medium",
     srcs = ["conv_ops_3d_test.py"],
     shard_count = 30,
-    tfrt_enabled = True,
+    tags = ["no_cuda11"],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -3393,8 +3446,10 @@ cuda_py_test(
     size = "medium",
     srcs = ["cwise_ops_test.py"],
     shard_count = 50,
-    tags = ["no_windows"],  # b/163222163
-    tfrt_enabled = True,
+    tags = [
+        "no_cuda_asan",  # b/179032113
+        "no_windows",  # b/163222163
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3415,7 +3470,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["cwise_ops_binary_test.py"],
     shard_count = 50,
-    tfrt_enabled = True,
     # b/140155647: Error just outside of tolerance
     xla_enable_strict_auto_jit = False,
     deps = [
@@ -3460,7 +3514,12 @@ cuda_py_test(
     size = "medium",
     srcs = ["embedding_ops_test.py"],
     shard_count = 20,
-    tfrt_enabled = True,
+    tags = [
+        "no_cuda_asan",  # Size limit: b/192505612
+    ],
+    xla_tags = [
+        "no_cuda_asan",  # Size limit: b/192505612
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3503,7 +3562,9 @@ cuda_py_test(
     size = "medium",
     srcs = ["matrix_band_part_op_test.py"],
     shard_count = 20,
-    tfrt_enabled = True,
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3521,7 +3582,6 @@ tf_py_test(
     tags = [
         "no_windows",
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3542,7 +3602,6 @@ cuda_py_test(
     tags = [
         "no_windows",
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3579,6 +3638,9 @@ cuda_py_test(
         "no_oss",  # b/117185141.
         "nomsan",  # TODO(b/117236102): Re-enable in msan build.
     ],
+    xla_tags = [
+        "no_cuda_asan",  # times out
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3602,7 +3664,6 @@ cuda_py_test(
         "no_windows_gpu",
         "nomsan",
     ],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3635,6 +3696,7 @@ cuda_py_test(
     size = "medium",
     srcs = ["tensordot_op_test.py"],
     shard_count = 20,
+    tags = ["no_rocm"],
     xla_enable_strict_auto_jit = False,  # b/161856380
     deps = [
         "//tensorflow/python:array_ops",
@@ -3646,25 +3708,10 @@ cuda_py_test(
     ],
 )
 
-sycl_py_test(
-    name = "basic_gpu_test",
-    size = "small",
-    srcs = ["basic_gpu_test.py"],
-    deps = [
-        "//tensorflow/python:array_ops_gen",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:math_ops_gen",
-        "//third_party/py/numpy",
-    ],
-)
-
 tf_py_test(
     name = "sets_test",
     size = "medium",
     srcs = ["sets_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:errors",
         "//tensorflow/python:framework",
@@ -3683,7 +3730,6 @@ tf_py_test(
     size = "small",
     srcs = ["weights_broadcast_test.py"],
     shard_count = 3,
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3703,7 +3749,6 @@ tf_py_test(
     srcs = ["metrics_test.py"],
     shard_count = 20,
     tags = ["no_windows_gpu"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3724,7 +3769,6 @@ tf_py_test(
     name = "confusion_matrix_test",
     size = "small",
     srcs = ["confusion_matrix_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3740,7 +3784,6 @@ cuda_py_test(
     name = "bucketize_op_test",
     size = "medium",
     srcs = ["bucketize_op_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -3754,7 +3797,6 @@ tf_py_test(
     size = "small",
     srcs = ["sparse_cross_op_test.py"],
     tags = ["no_windows"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",
@@ -3767,7 +3809,6 @@ tf_py_test(
     name = "garbage_collection_test",
     size = "small",
     srcs = ["garbage_collection_test.py"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:dtypes",
@@ -3849,7 +3890,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["cond_v2_test.py"],
     grpc_enabled = True,
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3900,6 +3940,9 @@ cuda_py_test(
     name = "critical_section_test",
     size = "medium",
     srcs = ["critical_section_test.py"],
+    tags = [
+        "notsan",  # TODO(b/180454366): Re-enable.
+    ],
     deps = [
         "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
@@ -3924,8 +3967,6 @@ cuda_py_test(
     size = "medium",
     srcs = ["tridiagonal_matmul_op_test.py"],
     shard_count = 10,
-    tags = ["no_rocm"],
-    tfrt_enabled = True,
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework_for_generated_wrappers",

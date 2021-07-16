@@ -29,10 +29,10 @@ class XlaPlatformInfo {
  public:
   XlaPlatformInfo() : device_type_("") {}
   XlaPlatformInfo(XlaPlatformInfo&&) = default;
-  explicit XlaPlatformInfo(const DeviceType device_type,
-                           se::Platform::Id platform_id,
-                           const XlaDevice::Metadata* xla_device_metadata,
-                           se::DeviceMemoryAllocator* device_allocator)
+  explicit XlaPlatformInfo(
+      const DeviceType device_type, se::Platform::Id platform_id,
+      const XlaDevice::Metadata* xla_device_metadata,
+      std::shared_ptr<se::DeviceMemoryAllocator> device_allocator)
       : device_type_(device_type),
         platform_id_(platform_id),
         xla_device_metadata_(xla_device_metadata),
@@ -45,7 +45,7 @@ class XlaPlatformInfo {
   }
 
   // Non-null only when run on an XLA device.
-  se::DeviceMemoryAllocator* custom_allocator() const {
+  std::shared_ptr<se::DeviceMemoryAllocator> custom_allocator() const {
     return device_allocator_;
   }
 
@@ -74,34 +74,45 @@ class XlaPlatformInfo {
   // If the op associated with this XlaPlatformInfo is placed on an XLA device
   // then device_allocator_ is the xla::Backend's memory allocator.  If the op
   // is placed on a regular CPU or GPU device then device_allocator_ is null.
-  se::DeviceMemoryAllocator* device_allocator_;
+  // The allocator is of unknown provenance; keep it in a shared pointer to
+  // set an artificial refcount of one.
+  std::shared_ptr<se::DeviceMemoryAllocator> device_allocator_;
 
   TF_DISALLOW_COPY_AND_ASSIGN(XlaPlatformInfo);
 };
 
+// Returns a set containing the device ids contained in visible_device_list or
+// nullopt if it is empty. It returns error in case of malformed configuration
+// string.
+StatusOr<absl::optional<std::set<int>>> ParseVisibleDeviceList(
+    absl::string_view visible_device_list);
+
 // Returns created XLA compilation cache.
-Status BuildXlaCompilationCache(OpKernelContext* ctx,
+Status BuildXlaCompilationCache(DeviceBase* dev, FunctionLibraryRuntime* flr,
                                 const XlaPlatformInfo& platform_info,
                                 XlaCompilationCache** cache);
 
 // Returns information about the platform from kernel context.
-XlaPlatformInfo XlaPlatformInfoFromContext(OpKernelConstruction* ctx);
+XlaPlatformInfo XlaPlatformInfoFromDevice(DeviceBase* device);
 
 // Returns allocator from platform info if non-null, or populate and return a
 // pointer to the allocator adapter with allocator from context.
 //
 // This is necessary because for XLA devices the underlying TF allocator returns
 // dummy tensors.
-se::DeviceMemoryAllocator* GetAllocator(
-    absl::optional<se::TfAllocatorAdapter>* tf_allocator_adapter,
-    OpKernelContext* ctx, const XlaPlatformInfo& platform_info);
+//
+// `stream` parameter is nullable when running on host.
+std::shared_ptr<se::DeviceMemoryAllocator> GetAllocator(
+    DeviceBase* device, se::Stream* stream,
+    const XlaPlatformInfo& platform_info);
 
 // Returns created options for the XLA compiler, and writes the used allocator
 // into `tf_allocator_adapter`.
 XlaCompiler::Options GenerateCompilerOptions(
-    const XlaCompilationCache& cache, OpKernelContext* ctx,
-    const XlaPlatformInfo& platform_info, bool has_ref_vars,
-    absl::optional<se::TfAllocatorAdapter>* tf_allocator_adapter);
+    const XlaCompilationCache& cache,
+    const FunctionLibraryRuntime& function_library, DeviceBase* device,
+    se::Stream* stream, const XlaPlatformInfo& platform_info,
+    bool has_ref_vars);
 
 }  // namespace tensorflow
 

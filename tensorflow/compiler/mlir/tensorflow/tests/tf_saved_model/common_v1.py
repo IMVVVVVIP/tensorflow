@@ -46,7 +46,11 @@ def set_tf_options():
 # This function needs to take a "create_module_fn", as opposed to just the
 # module itself, because the creation of the module has to be delayed until
 # after absl and tensorflow have run various initialization steps.
-def do_test(create_signature, canonicalize=False, show_debug_info=False):
+def do_test(create_signature,
+            canonicalize=False,
+            show_debug_info=False,
+            use_lite=False,
+            lift_variables=True):
   """Runs test.
 
   1. Performs absl and tf "main"-like initialization that must run before almost
@@ -65,6 +69,9 @@ def do_test(create_signature, canonicalize=False, show_debug_info=False):
       MLIR.
     canonicalize: If true, canonicalizer will be run on the resulting MLIR.
     show_debug_info: If true, shows debug locations in the resulting MLIR.
+    use_lite: If true, importer will not do any graph transformation such as
+      lift variables.
+    lift_variables: If false, no variable lifting will be done on the graph.
   """
 
   # Make LOG(ERROR) in C++ code show up on the console.
@@ -95,13 +102,24 @@ def do_test(create_signature, canonicalize=False, show_debug_info=False):
     builder.save()
 
     logging.info('Saved model to: %s', save_model_path)
-    # TODO(b/153507667): Set the following boolean flag once the hoisting
-    #                    variables logic from SavedModel importer is removed.
-    lift_variables = False
+    exported_names = ''
     upgrade_legacy = True
-    mlir = pywrap_mlir.experimental_convert_saved_model_v1_to_mlir(
-        save_model_path, ','.join([tf.saved_model.tag_constants.SERVING]),
-        lift_variables, upgrade_legacy, show_debug_info)
+    if use_lite:
+      mlir = pywrap_mlir.experimental_convert_saved_model_v1_to_mlir_lite(
+          save_model_path, exported_names,
+          ','.join([tf.saved_model.tag_constants.SERVING]),
+          upgrade_legacy, show_debug_info)
+      # We don't strictly need this, but it serves as a handy sanity check
+      # for that API, which is otherwise a bit annoying to test.
+      # The canonicalization shouldn't affect these tests in any way.
+      mlir = pywrap_mlir.experimental_run_pass_pipeline(mlir,
+                                                        'tf-standard-pipeline',
+                                                        show_debug_info)
+    else:
+      mlir = pywrap_mlir.experimental_convert_saved_model_v1_to_mlir(
+          save_model_path, exported_names,
+          ','.join([tf.saved_model.tag_constants.SERVING]),
+          lift_variables, upgrade_legacy, show_debug_info)
 
     if canonicalize:
       mlir = pywrap_mlir.experimental_run_pass_pipeline(mlir, 'canonicalize',

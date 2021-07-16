@@ -18,9 +18,10 @@ limitations under the License.
 
 #include "grpcpp/server.h"
 #include "grpcpp/server_builder.h"
+#include "tensorflow/core/data/service/data_transfer.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/profiler/rpc/profiler_service_impl.h"
-#include "tensorflow/core/protobuf/data/experimental/service_config.pb.h"
+#include "tensorflow/core/protobuf/service_config.pb.h"
 
 namespace tensorflow {
 namespace data {
@@ -53,11 +54,12 @@ class GrpcDataServerBase {
   int BoundPort();
 
  protected:
-  virtual void AddDataServiceToBuilder(::grpc::ServerBuilder* builder) = 0;
-  void AddProfilerServiceToBuilder(::grpc::ServerBuilder* builder);
+  virtual void AddDataServiceToBuilder(::grpc::ServerBuilder& builder) = 0;
+  void AddProfilerServiceToBuilder(::grpc::ServerBuilder& builder);
   // Starts the service. This will be called after building the service, so
   // bound_port() will return the actual bound port.
   virtual Status StartServiceInternal() = 0;
+  virtual void StopServiceInternal() {}
 
   int bound_port() { return bound_port_; }
 
@@ -84,7 +86,7 @@ class DispatchGrpcDataServer : public GrpcDataServerBase {
   Status NumWorkers(int* num_workers);
 
  protected:
-  void AddDataServiceToBuilder(::grpc::ServerBuilder* builder) override;
+  void AddDataServiceToBuilder(::grpc::ServerBuilder& builder) override;
   Status StartServiceInternal() override;
 
  private:
@@ -98,23 +100,28 @@ class WorkerGrpcDataServer : public GrpcDataServerBase {
   explicit WorkerGrpcDataServer(const experimental::WorkerConfig& config);
   ~WorkerGrpcDataServer() override;
 
+  // Returns the number of tasks currently being executed by the worker.
+  Status NumTasks(int* num_tasks);
+
  protected:
-  void AddDataServiceToBuilder(::grpc::ServerBuilder* builder) override;
+  void AddDataServiceToBuilder(::grpc::ServerBuilder& builder) override;
   Status StartServiceInternal() override;
+  void StopServiceInternal() override;
 
  private:
   const experimental::WorkerConfig config_;
   // Owned. We use a raw pointer because GrpcWorkerImpl is forward-declared.
   GrpcWorkerImpl* service_;
+  std::shared_ptr<DataTransferServer> transfer_server_;
 };
 
-// Creates a dispatch tf.data server and stores it in `*out_server`.
+// Creates a dispatch tf.data server and stores it in `out_server`.
 Status NewDispatchServer(const experimental::DispatcherConfig& config,
-                         std::unique_ptr<DispatchGrpcDataServer>* out_server);
+                         std::unique_ptr<DispatchGrpcDataServer>& out_server);
 
-// Creates a worker tf.data server and stores it in `*out_server`.
+// Creates a worker tf.data server and stores it in `out_server`.
 Status NewWorkerServer(const experimental::WorkerConfig& config,
-                       std::unique_ptr<WorkerGrpcDataServer>* out_server);
+                       std::unique_ptr<WorkerGrpcDataServer>& out_server);
 
 }  // namespace data
 }  // namespace tensorflow

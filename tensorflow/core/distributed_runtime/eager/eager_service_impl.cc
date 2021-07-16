@@ -171,7 +171,8 @@ Status TensorHandleShape(TensorHandle* handle, TensorShapeProto* proto) {
 
 Status AddOpRetvalsToResponse(
     EagerContext* eager_context, int op_id, int num_retvals,
-    TensorHandle** retvals, std::function<TensorProto*()> add_tensor_proto_fn,
+    const std::vector<int32>& output_nums, TensorHandle** retvals,
+    std::function<TensorProto*()> add_tensor_proto_fn,
     std::function<TensorShapeProto*()> add_shape_proto_fn,
     std::function<string*()> add_device_fn = nullptr) {
   if (op_id == kInvalidRemoteOpId) {
@@ -184,18 +185,16 @@ Status AddOpRetvalsToResponse(
   } else {
     for (int i = 0; i < num_retvals; i++) {
       TF_RETURN_IF_ERROR(TensorHandleShape(retvals[i], add_shape_proto_fn()));
-      const bool is_remote = retvals[i]->Type() == TensorHandle::REMOTE;
       if (add_device_fn) {
-        *add_device_fn() =
-            is_remote ? absl::get<Device*>(
-                            retvals[i]->DeviceOrHostCPU(*eager_context))
-                            ->name()
-                      : "";
+        Device* device = retvals[i]->device();
+        *add_device_fn() = device ? device->name() : "";
       }
-      if (is_remote) {
+      if (retvals[i]->Type() == TensorHandle::REMOTE) {
         retvals[i]->Unref();
       } else {
-        eager_context->RemoteMgr()->AddOperationOutput(retvals[i], op_id, i);
+        const int output_num = output_nums.empty() ? i : output_nums.at(i);
+        eager_context->RemoteMgr()->AddOperationOutput(retvals[i], op_id,
+                                                       output_num);
       }
     }
   }
@@ -256,7 +255,7 @@ Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
   TF_RETURN_IF_ERROR(env_->session_mgr->WorkerSessionForSession(
       session_name, &worker_session));
 
-  const tensorflow::DeviceMgr* device_mgr = worker_session->device_mgr();
+  tensorflow::DeviceMgr* device_mgr = worker_session->device_mgr();
 
   // Initialize remote tensor communication based on worker session.
   TF_RETURN_IF_ERROR(r->Initialize(worker_session.get()));
@@ -275,9 +274,8 @@ Status EagerServiceImpl::CreateContext(const CreateContextRequest* request,
   opts.config = request->server_def().default_session_config();
   tensorflow::EagerContext* ctx = new tensorflow::EagerContext(
       opts, tensorflow::ContextDevicePlacementPolicy::DEVICE_PLACEMENT_SILENT,
-      tensorflow::ContextMirroringPolicy::MIRRORING_NONE, request->async(),
-      request->lazy_copy_remote_function_inputs(), device_mgr, false, r,
-      GetDefaultCustomKernelCreator(), worker_session->cluster_flr());
+      request->async(), device_mgr, false, r, worker_session->cluster_flr(),
+      env_->collective_executor_mgr.get());
   // Ownership will be transferred to the ServerContext, or else in an error
   // case ctx will be deleted by this unref.
   core::ScopedUnref unref_ctx(ctx);
@@ -359,8 +357,6 @@ Status EagerServiceImpl::UpdateContext(const UpdateContextRequest* request,
             << ctx->HostCPU()->name();
     return Status::OK();
   }
-  // TODO(b/143914772): Potential memory leak if rendezvous has pending
-  // tensors for removed / replaced workers.
 
   auto session_name =
       tensorflow::strings::StrCat("eager_", request->context_id());
@@ -474,6 +470,10 @@ void EagerServiceImpl::RunComponentFunction(
   auto* retvals = new absl::FixedArray<TensorHandle*>(*num_retvals);
   VLOG(3) << "ServerContext: Calling EagerLocalExecuteAsync for op "
           << operation.id();
+  std::vector<int32> output_nums;
+  for (const int32 output_num : request->output_num()) {
+    output_nums.push_back(output_num);
+  }
 
   auto cm = std::make_shared<CancellationManager>();
   op->SetCancellationManager(cm.get());
@@ -482,8 +482,8 @@ void EagerServiceImpl::RunComponentFunction(
   context->Ref();
   EagerLocalExecuteAsync(
       op, retvals->data(), num_retvals,
-      [op, op_id = operation.id(), num_retvals, retvals, cm, call_opts,
-       response, eager_context, context,
+      [op, op_id = operation.id(), num_retvals, retvals, output_nums, cm,
+       call_opts, response, eager_context, context,
        done = std::move(done)](const Status& status) {
         call_opts->ClearCancelCallback();
         auto wrapped_done = [&](const Status& status) {
@@ -500,7 +500,7 @@ void EagerServiceImpl::RunComponentFunction(
         // The output device of a component function is the component device
         // which is known on the default device of it's parent function.
         wrapped_done(AddOpRetvalsToResponse(
-            eager_context, op_id, *num_retvals, retvals->data(),
+            eager_context, op_id, *num_retvals, output_nums, retvals->data(),
             [response] { return response->add_tensor(); },
             [response] { return response->add_shape(); }));
       });
@@ -539,8 +539,8 @@ Status EagerServiceImpl::ExecuteOp(CallOptions* call_opts,
   }
 
   return AddOpRetvalsToResponse(
-      eager_context, operation.id(), num_retvals, retvals.data(),
-      [queue_response] { return queue_response->add_tensor(); },
+      eager_context, operation.id(), num_retvals, /*output_nums=*/{},
+      retvals.data(), [queue_response] { return queue_response->add_tensor(); },
       [queue_response] { return queue_response->add_shape(); },
       std::move(add_device_fn));
 }
@@ -590,7 +590,6 @@ Status EagerServiceImpl::Enqueue(CallOptions* call_opts,
 
     if (!s.ok()) {
       if (stream_id != kInvalidStreamId) {
-        // TODO(b/138847548): Cleanup the executor when StreamCall is deleted.
         context->Context()->RemoteMgr()->DeleteExecutorForStream(stream_id);
       }
       return s;
@@ -750,7 +749,7 @@ tensorflow::Status EagerServiceImpl::GetServerContext(
   auto iter = contexts_.find(context_id);
   if (iter == contexts_.end()) {
     *server_context = nullptr;
-    return errors::InvalidArgument(strings::Printf(
+    return errors::Unavailable(strings::Printf(
         "Unable to find a context_id matching the specified one "
         "(%llu). Perhaps the worker was restarted, or the context was GC'd?",
         static_cast<unsigned long long>(context_id)));

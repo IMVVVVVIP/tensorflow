@@ -51,8 +51,8 @@ Status GrpcDataServerBase::Start() {
                            credentials, &bound_port_);
   builder.SetMaxReceiveMessageSize(-1);
 
-  AddDataServiceToBuilder(&builder);
-  AddProfilerServiceToBuilder(&builder);
+  AddDataServiceToBuilder(builder);
+  AddProfilerServiceToBuilder(builder);
   server_ = builder.BuildAndStart();
   if (!server_) {
     return errors::Internal("Could not start gRPC server");
@@ -70,7 +70,12 @@ void GrpcDataServerBase::Stop() {
   if (stopped_) {
     return;
   }
-  server_->Shutdown();
+  if (server_) {
+    StopServiceInternal();
+    server_->Shutdown();
+    LOG(INFO) << "Shut down " << server_type_ << " server running at port "
+              << BoundPort();
+  }
   stopped_ = true;
 }
 
@@ -79,9 +84,9 @@ void GrpcDataServerBase::Join() { server_->Wait(); }
 int GrpcDataServerBase::BoundPort() { return bound_port(); }
 
 void GrpcDataServerBase::AddProfilerServiceToBuilder(
-    ::grpc::ServerBuilder* builder) {
-  profiler_service_ = CreateProfilerService();
-  builder->RegisterService(profiler_service_.get());
+    ::grpc::ServerBuilder& builder) {
+  profiler_service_ = profiler::CreateProfilerService();
+  builder.RegisterService(profiler_service_.get());
 }
 
 DispatchGrpcDataServer::DispatchGrpcDataServer(
@@ -92,8 +97,8 @@ DispatchGrpcDataServer::DispatchGrpcDataServer(
 DispatchGrpcDataServer::~DispatchGrpcDataServer() { delete service_; }
 
 void DispatchGrpcDataServer::AddDataServiceToBuilder(
-    ::grpc::ServerBuilder* builder) {
-  service_ = absl::make_unique<GrpcDispatcherImpl>(builder, config_).release();
+    ::grpc::ServerBuilder& builder) {
+  service_ = absl::make_unique<GrpcDispatcherImpl>(config_, builder).release();
 }
 
 Status DispatchGrpcDataServer::StartServiceInternal() {
@@ -120,31 +125,58 @@ WorkerGrpcDataServer::WorkerGrpcDataServer(
 WorkerGrpcDataServer::~WorkerGrpcDataServer() { delete service_; }
 
 void WorkerGrpcDataServer::AddDataServiceToBuilder(
-    ::grpc::ServerBuilder* builder) {
-  service_ = absl::make_unique<GrpcWorkerImpl>(builder, config_).release();
+    ::grpc::ServerBuilder& builder) {
+  service_ = absl::make_unique<GrpcWorkerImpl>(config_, builder).release();
 }
 
 Status WorkerGrpcDataServer::StartServiceInternal() {
-  std::string worker_address = config_.worker_address();
-  if (worker_address.empty()) {
-    worker_address = absl::StrCat("localhost:", kPortPlaceholder);
+  std::string base_address = config_.worker_address();
+  if (base_address.empty()) {
+    base_address = absl::StrCat("localhost:", kPortPlaceholder);
   }
-  std::string resolved_address = str_util::StringReplace(
-      worker_address, kPortPlaceholder, absl::StrCat(bound_port()),
+  std::string worker_address = str_util::StringReplace(
+      base_address, kPortPlaceholder, absl::StrCat(bound_port()),
       /*replace_all=*/false);
-  TF_RETURN_IF_ERROR(service_->Start(resolved_address));
+  std::string transfer_address = worker_address;
+  std::string transfer_protocol = config_.data_transfer_protocol();
+  if (!transfer_protocol.empty() && transfer_protocol != "grpc") {
+    TF_RETURN_IF_ERROR(DataTransferServer::Build(
+        transfer_protocol, service_->get_element_getter(), &transfer_server_));
+    TF_RETURN_IF_ERROR(transfer_server_->Start());
+    LOG(INFO) << "Data transfer server started at 0.0.0.0:"
+              << transfer_server_->get_port();
+    transfer_address = str_util::StringReplace(
+        config_.data_transfer_address(), kPortPlaceholder,
+        absl::StrCat(transfer_server_->get_port()),
+        /*replace_all=*/false);
+  }
+  TF_RETURN_IF_ERROR(service_->Start(worker_address, transfer_address));
+  return Status::OK();
+}
+
+void WorkerGrpcDataServer::StopServiceInternal() { service_->Stop(); }
+
+Status WorkerGrpcDataServer::NumTasks(int* num_tasks) {
+  GetWorkerTasksRequest req;
+  GetWorkerTasksResponse resp;
+  ::grpc::ServerContext ctx;
+  ::grpc::Status s = service_->GetWorkerTasks(&ctx, &req, &resp);
+  if (!s.ok()) {
+    return grpc_util::WrapError("Failed to get tasks", s);
+  }
+  *num_tasks = resp.tasks_size();
   return Status::OK();
 }
 
 Status NewDispatchServer(const experimental::DispatcherConfig& config,
-                         std::unique_ptr<DispatchGrpcDataServer>* out_server) {
-  *out_server = absl::make_unique<DispatchGrpcDataServer>(config);
+                         std::unique_ptr<DispatchGrpcDataServer>& out_server) {
+  out_server = absl::make_unique<DispatchGrpcDataServer>(config);
   return Status::OK();
 }
 
 Status NewWorkerServer(const experimental::WorkerConfig& config,
-                       std::unique_ptr<WorkerGrpcDataServer>* out_server) {
-  *out_server = absl::make_unique<WorkerGrpcDataServer>(config);
+                       std::unique_ptr<WorkerGrpcDataServer>& out_server) {
+  out_server = absl::make_unique<WorkerGrpcDataServer>(config);
   return Status::OK();
 }
 

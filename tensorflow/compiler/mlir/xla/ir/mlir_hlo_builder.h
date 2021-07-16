@@ -21,7 +21,7 @@ limitations under the License.
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "mlir/IR/Builders.h"  // from @llvm-project
-#include "mlir/IR/Function.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
@@ -117,18 +117,30 @@ class MlirHloBuilder : public XlaBuilder {
       absl::Span<const int64> lhs_dilation,
       absl::Span<const int64> rhs_dilation,
       const ConvolutionDimensionNumbers& dimension_numbers,
-      int64 feature_group_count, int64 batch_group_count,
+      int64_t feature_group_count, int64_t batch_group_count,
       const PrecisionConfig* precision_config) override;
 
   StatusOr<XlaOp> FftInternal(const Shape& shape, XlaOp operand,
                               FftType fft_type,
                               absl::Span<const int64> fft_length) override;
 
+  StatusOr<XlaOp> TriangularSolveInternal(
+      const Shape& shape, XlaOp a, XlaOp b,
+      TriangularSolveOptions options) override;
+
+  StatusOr<XlaOp> CholeskyInternal(const Shape& shape, XlaOp a,
+                                   bool lower) override;
+
   StatusOr<XlaOp> CustomCallInternal(
       const string& call_target_name, absl::Span<const XlaOp> operands,
       const Shape& shape, const string& opaque,
       absl::optional<absl::Span<const Shape>> operand_shapes_with_layout,
-      bool has_side_effect) override;
+      bool has_side_effect,
+      absl::Span<const std::pair<ShapeIndex, std::pair<int64, ShapeIndex>>>
+          output_operand_aliasing,
+      const Literal* literal, absl::optional<Window> window,
+      absl::optional<ConvolutionDimensionNumbers> dnums,
+      CustomCallSchedule schedule) override;
 
   StatusOr<XlaOp> ReduceInternal(
       const Shape& shape, absl::Span<const XlaOp> all_operands,
@@ -140,7 +152,7 @@ class MlirHloBuilder : public XlaBuilder {
                                        const XlaComputation& computation,
                                        Window window) override;
 
-  XlaOp Iota(const Shape& shape, int64 iota_dimension) override;
+  XlaOp Iota(const Shape& shape, int64_t iota_dimension) override;
 
   StatusOr<XlaOp> BitcastConvertTypeInternal(const Shape& shape,
                                              XlaOp operand) override;
@@ -155,12 +167,16 @@ class MlirHloBuilder : public XlaBuilder {
   StatusOr<XlaOp> SortInternal(const Shape& shape,
                                absl::Span<const XlaOp> operands,
                                const XlaComputation& comparator,
-                               int64 dimension, bool is_stable) override;
+                               int64_t dimension, bool is_stable) override;
 
   StatusOr<XlaOp> WhileInternal(const Shape& shape,
                                 const XlaComputation& condition,
                                 const XlaComputation& body,
                                 XlaOp init) override;
+
+  StatusOr<XlaOp> ReducePrecisionInternal(const Shape& shape, XlaOp operand,
+                                          const int exponent_bits,
+                                          const int mantissa_bits) override;
 
   StatusOr<XlaOp> GatherInternal(
       const Shape& shape, XlaOp input, XlaOp start_indices,
@@ -173,12 +189,19 @@ class MlirHloBuilder : public XlaBuilder {
       const ScatterDimensionNumbers& dimension_numbers, bool indices_are_sorted,
       bool unique_indices) override;
 
+  StatusOr<XlaOp> SetDimensionSizeInternal(const Shape& shape, XlaOp operand,
+                                           XlaOp val,
+                                           int64_t dimension) override;
+
   StatusOr<XlaOp> RngOpInternal(RandomDistribution distribution,
                                 absl::Span<const XlaOp> parameters,
                                 const Shape& shape) override;
+  StatusOr<XlaOp> RngBitGeneratorInternal(const Shape& full_result_shape,
+                                          RandomAlgorithm algorithm,
+                                          XlaOp initial_state) override;
 
   StatusOr<XlaOp> ReshapeInternal(const Shape& shape, XlaOp operand,
-                                  int64 inferred_dimension) override;
+                                  int64_t inferred_dimension) override;
 
   StatusOr<XlaOp> DotGeneralInternal(
       const Shape& shape, XlaOp lhs, XlaOp rhs,
@@ -189,8 +212,12 @@ class MlirHloBuilder : public XlaBuilder {
       const Shape& shape, XlaOp operand,
       absl::Span<const int64> broadcast_dimensions) override;
 
+  StatusOr<XlaOp> AddInstruction(HloInstructionProto&& instr, HloOpcode opcode,
+                                 absl::Span<const XlaOp> operands) override;
+
   StatusOr<XlaOp> Compare(const Shape& shape, XlaOp lhs, XlaOp rhs,
-                          ComparisonDirection direction) override;
+                          ComparisonDirection direction,
+                          Comparison::Type type) override;
 
   XlaOp BinaryOpNoBroadcast(HloOpcode binop, const Shape& shape, XlaOp lhs,
                             XlaOp rhs) override;
@@ -209,10 +236,10 @@ class MlirHloBuilder : public XlaBuilder {
 
   StatusOr<XlaOp> ConcatInDimInternal(const Shape& shape,
                                       absl::Span<const XlaOp> operands,
-                                      int64 dimension) override;
+                                      int64_t dimension) override;
 
   StatusOr<XlaOp> GetTupleElementInternal(const Shape& shape, XlaOp tuple_data,
-                                          int64 index) override;
+                                          int64_t index) override;
 
   StatusOr<XlaOp> SliceInternal(const Shape& shape, XlaOp operand,
                                 absl::Span<const int64> start_indices,

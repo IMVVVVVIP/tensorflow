@@ -48,9 +48,11 @@ Status XlaCompileOnDemandOp::Run(OpKernelContext* ctx,
                                  const ResourceVarsSnapshot& variable_args) {
   xla::LocalClient* client = static_cast<xla::LocalClient*>(cache->client());
 
-  absl::optional<se::TfAllocatorAdapter> tf_allocator_adapter;
-  se::DeviceMemoryAllocator* allocator =
-      GetAllocator(&tf_allocator_adapter, ctx, platform_info_);
+  se::Stream* stream =
+      ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr;
+  std::shared_ptr<se::DeviceMemoryAllocator> allocator_ptr =
+      GetAllocator(ctx->device(), stream, platform_info_);
+  se::DeviceMemoryAllocator* allocator = allocator_ptr.get();
   XlaComputationLaunchContext launch_context(
       client, allocator, client->default_device_ordinal(),
       /*allocate_xla_tensors=*/platform_info_.xla_device_metadata() != nullptr,
@@ -66,27 +68,31 @@ Status XlaCompileOnDemandOp::Run(OpKernelContext* ctx,
 
   const xla::HloInputOutputAliasConfig& input_output_alias =
       executable->executable()->module().input_output_alias_config();
-  xla::StatusOr<std::vector<xla::ExecutionInput>> execution_inputs =
+  StatusOr<std::vector<xla::ExecutionInput>> execution_inputs =
       launch_context.PopulateInputs(ctx, result, snapshot_ptrs,
                                     /*missing_ctx_input_prefix=*/0,
                                     input_output_alias);
   TF_RETURN_IF_ERROR(execution_inputs.status());
 
-  se::Stream* stream =
-      ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr;
-
   VLOG(2) << "Executing computation: " << name();
+  StatusOr<absl::optional<xla::DeviceAssignment>> device_assignment =
+      ResolveDeviceAssignment(ctx, result->collective_reduce_info);
+  TF_RETURN_IF_ERROR(device_assignment.status());
+
   xla::ExecutableRunOptions run_options;
+  if (*device_assignment) {
+    run_options.set_device_assignment(&**device_assignment);
+  }
   run_options.set_stream(stream);
   run_options.set_allocator(allocator);
   run_options.set_intra_op_thread_pool(&ctx->eigen_cpu_device());
   run_options.set_rng_seed(GetXLARandomSeed());
 
-  xla::StatusOr<xla::ExecutionOutput> run_result =
+  StatusOr<xla::ExecutionOutput> run_result =
       executable->Run(execution_inputs.ConsumeValueOrDie(), run_options);
   TF_RETURN_IF_ERROR(run_result.status());
   xla::ExecutionOutput execution_output = run_result.ConsumeValueOrDie();
-  xla::StatusOr<std::vector<VariableInfo>> variable_infos =
+  StatusOr<std::vector<VariableInfo>> variable_infos =
       GatherVariableInfo(ctx, *result, 0);
   TF_RETURN_IF_ERROR(variable_infos.status());
   TF_RETURN_IF_ERROR(LockVariables(absl::MakeSpan(*variable_infos)));
@@ -101,53 +107,16 @@ Status XlaCompileOnDemandOp::Compile(
     OpKernelContext* ctx, const XlaCompiler::CompilationResult** result,
     XlaCompilationCache** cache, ResourceVarsSnapshot* variable_args,
     xla::LocalExecutable** executable) {
-  std::map<int, Tensor> constant_arguments;
 
   std::vector<int> constant_input_indices;
   TF_RETURN_IF_ERROR(GetCompileTimeConstInputs(
       &ctx->op_kernel(), &constant_input_indices, ctx->function_library()));
-  CHECK(absl::c_is_sorted(constant_input_indices));
-
-  for (int64 i = 0; i < ctx->num_inputs(); ++i) {
-    const Tensor& device_tensor = ctx->input(i);
-
-    if (const XlaTensor* xla_tensor = XlaTensor::FromTensor(&device_tensor)) {
-      if (xla_tensor->has_host_tensor()) {
-        if (absl::c_binary_search(constant_input_indices, i)) {
-          constant_arguments[i] = xla_tensor->host_tensor();
-        }
-      }
-    }
-
-    if (!constant_arguments.count(i)) {
-      if (absl::c_binary_search(constant_input_indices, i)) {
-        if (ctx->input_memory_type(i) != HOST_MEMORY &&
-            ctx->op_device_context()) {
-          // Slow path; the argument is not available as a host constant so we
-          // must fetch it synchronously.
-          Tensor host_tensor;
-          AllocatorAttributes attrs;
-          attrs.set_on_host(true);
-          TF_RETURN_IF_ERROR(ctx->allocate_temp(device_tensor.dtype(),
-                                                device_tensor.shape(),
-                                                &host_tensor, attrs));
-          Status status = ctx->op_device_context()->CopyDeviceTensorToCPUSync(
-              &device_tensor, "ConstantArgument",
-              reinterpret_cast<Device*>(ctx->device()), &host_tensor);
-          if (!status.ok()) {
-            LOG(ERROR) << "Copying tensor of shape "
-                       << device_tensor.shape().DebugString() << " from "
-                       << ctx->device()->name() << "to CPU failed with "
-                       << status.ToString();
-            return status;
-          }
-          constant_arguments[i] = host_tensor;
-        } else {
-          constant_arguments[i] = device_tensor;
-        }
-      }
-    }
+  if (!absl::c_all_of(constant_input_indices, [&](int idx) {
+        return ctx->input_memory_type(idx) == HOST_MEMORY;
+      })) {
+    return errors::Internal("Unexpected device placement for a constant input");
   }
+  std::vector<const Tensor*> inputs = InputsFromContext(ctx);
 
   // We store information about the JIT-compiled XLA computation
   // in the ResourceMgr.
@@ -157,14 +126,16 @@ Status XlaCompileOnDemandOp::Compile(
   TF_RETURN_IF_ERROR(rm->LookupOrCreate<XlaCompilationCache>(
       rm->default_container(), "xla_cache", cache,
       [&](XlaCompilationCache** write_into_cache) {
-        return BuildXlaCompilationCache(ctx, platform_info_, write_into_cache);
+        return BuildXlaCompilationCache(ctx->device(), ctx->function_library(),
+                                        platform_info_, write_into_cache);
       }));
 
-  absl::optional<se::TfAllocatorAdapter> tf_allocator_adapter;
-  XlaCompiler::Options options =
-      GenerateCompilerOptions(**cache, ctx, platform_info_,
-                              /*has_ref_vars=*/true, &tf_allocator_adapter);
-
+  XlaCompiler::Options options = GenerateCompilerOptions(
+      **cache, *ctx->function_library(), ctx->device(),
+      ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr,
+      platform_info_, /*has_ref_vars=*/true);
+  // No detailed logging from on demand op.
+  options.detailed_logging = false;
   XlaCompiler::CompileOptions compile_options;
   compile_options.is_entry_computation = true;
   // Optimization: where possible, have the computation return a naked array
@@ -172,19 +143,24 @@ Status XlaCompileOnDemandOp::Compile(
   compile_options.always_return_tuple = false;
 
   std::vector<int> variables_indices = GetResourceVariableIndices(ctx);
-  std::vector<XlaCompiler::Argument> args;
+  StatusOr<std::vector<XlaCompiler::Argument>> args;
   {
     std::vector<VariableInfo> variable_infos;
     TF_RETURN_IF_ERROR(
-        GetVariableInfosFromCtxInputs(ctx, variables_indices, &variable_infos));
+        GetVariableInfosFromInputs(ctx->resource_manager(), ctx->device(),
+                                   inputs, variables_indices, &variable_infos));
+
     TF_RETURN_IF_ERROR(LockVariables(absl::MakeSpan(variable_infos)));
     TF_RETURN_IF_ERROR(SnapshotResourceVariables(
         ctx, variables_indices, variable_infos, variable_args));
-    TF_RETURN_IF_ERROR(XlaComputationLaunchContext::BuildXlaCompilerArguments(
-        constant_arguments, variable_infos, ctx, &args));
+
+    args = XlaComputationLaunchContext::BuildXlaCompilerArguments(
+        constant_input_indices, inputs, variable_infos,
+        static_cast<Device*>(ctx->device()));
+    TF_RETURN_IF_ERROR(args.status());
   }
 
-  return (*cache)->CompileSingleOp(options, args, ctx, compile_options, result,
+  return (*cache)->CompileSingleOp(options, *args, ctx, compile_options, result,
                                    executable);
 }
 

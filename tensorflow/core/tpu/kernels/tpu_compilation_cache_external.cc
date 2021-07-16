@@ -25,11 +25,10 @@ limitations under the License.
 #include "tensorflow/core/tpu/kernels/compiled_subgraph.h"
 #include "tensorflow/core/tpu/kernels/tpu_compilation_cache_entry.h"
 #include "tensorflow/core/tpu/kernels/tpu_compilation_metrics.h"
-#include "tensorflow/core/tpu/kernels/tpu_compile_c_api.h"
 #include "tensorflow/core/tpu/kernels/tpu_compile_op_support.h"
-#include "tensorflow/core/tpu/kernels/tpu_program_c_api.h"
 #include "tensorflow/core/tpu/kernels/tpu_util.h"
 #include "tensorflow/core/tpu/kernels/trace_util.h"
+#include "tensorflow/core/tpu/tpu_ops_c_api.h"
 
 namespace tensorflow {
 namespace tpu {
@@ -119,6 +118,11 @@ CompiledSubgraph* TpuCompilationCacheExternal::InitializeEntry(
     TpuProgramGroup sharding_programs;
     sharding_programs.Initialize(
         tpu_program_group.tpu_programs(TpuProgramShardingType::kSharding));
+
+    for (const auto& fingerprint : sharding_programs.fingerprints()) {
+      main_entry->sharding_key.emplace_back(fingerprint);
+    }
+
     PopulateEntry(key, main_entry->sharding_entry.get(),
                   std::move(sharding_programs));
 
@@ -133,7 +137,7 @@ CompiledSubgraph* TpuCompilationCacheExternal::InitializeEntry(
 
   PopulateEntry(key, main_entry, std::move(tpu_program_group));
 
-  for (int64 i = 0; i < main_entry->proto_key.size(); ++i) {
+  for (int64_t i = 0; i < main_entry->proto_key.size(); ++i) {
     auto entry_inserted = entries_by_proto_key_.insert(
         std::pair<std::string, std::pair<CompiledSubgraph*, int>>(
             main_entry->proto_key[i], std::make_pair(main_entry, i)));

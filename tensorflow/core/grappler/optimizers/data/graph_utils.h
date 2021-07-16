@@ -76,7 +76,7 @@ NodeDef* AddScalarConstNode(float v, MutableGraphView* graph);
 template <>
 NodeDef* AddScalarConstNode(int v, MutableGraphView* graph);
 template <>
-NodeDef* AddScalarConstNode(int64 v, MutableGraphView* graph);
+NodeDef* AddScalarConstNode(int64_t v, MutableGraphView* graph);
 template <>
 NodeDef* AddScalarConstNode(StringPiece v, MutableGraphView* graph);
 
@@ -126,7 +126,7 @@ NodeDef* GetInputNode(const NodeDef& node, const MutableGraphView& graph);
 
 // Gets the ith input to a node in the graph.
 NodeDef* GetInputNode(const NodeDef& node, const MutableGraphView& graph,
-                      int64 i);
+                      int64_t i);
 
 // Gets the attr corresponding to a dataset node's output types, if it exists.
 Status GetDatasetOutputTypesAttr(const NodeDef& node,
@@ -168,6 +168,13 @@ Status EnsureNodeNamesUnique(Graph* g);
 // error.
 Status GetFetchNode(const MutableGraphView& graph, const GrapplerItem& item,
                     NodeDef** fetch_node);
+
+// Returns true if `item` is derived from a `FunctionDef`, false otherwise.
+// Currently, we determine this heuristically: If we don't have any fetch nodes
+// or all fetch nodes are `Retval` ops, then we consider this item as derived
+// from a `FunctionDef`.
+bool IsItemDerivedFromFunctionDef(const GrapplerItem& item,
+                                  const MutableGraphView& graph_view);
 
 }  // namespace graph_utils
 }  // namespace grappler

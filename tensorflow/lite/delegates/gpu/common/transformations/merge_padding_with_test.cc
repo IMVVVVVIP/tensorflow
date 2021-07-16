@@ -15,13 +15,19 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/common/transformations/merge_padding_with.h"
 
-#include <gmock/gmock.h>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
+#include "absl/status/status.h"
 #include "absl/types/any.h"
+#include "tensorflow/lite/delegates/gpu/common/data_type.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
 #include "tensorflow/lite/delegates/gpu/common/model_transformer.h"
 #include "tensorflow/lite/delegates/gpu/common/operations.h"
 #include "tensorflow/lite/delegates/gpu/common/shape.h"
+#include "tensorflow/lite/delegates/gpu/common/tensor.h"
 
 namespace tflite {
 namespace gpu {
@@ -40,7 +46,7 @@ TEST(MergePaddingWith, Smoke) {
   pad_node->operation.attributes = attr;
 
   auto conv_node = graph.NewNode();
-  Value* temp;
+  Value* temp = nullptr;
   ASSERT_TRUE(ConnectTwoNodes(&graph, pad_node, conv_node, &temp).ok());
   ASSERT_TRUE(AddOutput(&graph, conv_node, &temp).ok());
   conv_node->operation.type = ToString(OperationType::CONVOLUTION_2D);
@@ -52,7 +58,7 @@ TEST(MergePaddingWith, Smoke) {
   ASSERT_EQ(2, graph.nodes().size());
 
   auto transformation = NewMergePaddingWithConvolution2D();
-  ModelTransformer transformer(&graph, nullptr);
+  ModelTransformer transformer(&graph);
   transformer.Apply("merge_padding", transformation.get());
 
   ASSERT_EQ(1, graph.nodes().size());
@@ -77,16 +83,17 @@ TEST(MergePaddingWith, MergeTwo) {
   pad_node1->operation.attributes = attr;
 
   auto pad_node2 = graph.NewNode();
-  Value* temp;
-  ASSERT_TRUE(ConnectTwoNodes(&graph, pad_node1, pad_node2, &temp).ok());
+  Value* temp1 = nullptr;
+  ASSERT_TRUE(ConnectTwoNodes(&graph, pad_node1, pad_node2, &temp1).ok());
   pad_node2->operation.type = ToString(OperationType::PAD);
   attr.prepended = BHWC(0, 0, 0, 0);
   attr.appended = BHWC(0, 2, 2, 0);
   pad_node2->operation.attributes = attr;
 
   auto conv_node = graph.NewNode();
-  ASSERT_TRUE(ConnectTwoNodes(&graph, pad_node2, conv_node, &temp).ok());
-  ASSERT_TRUE(AddOutput(&graph, conv_node, &temp).ok());
+  Value* temp2 = nullptr;
+  ASSERT_TRUE(ConnectTwoNodes(&graph, pad_node2, conv_node, &temp2).ok());
+  ASSERT_TRUE(AddOutput(&graph, conv_node, &temp2).ok());
   conv_node->operation.type = ToString(OperationType::CONVOLUTION_2D);
   Convolution2DAttributes conv_attr;
   conv_attr.padding.appended = HW(0, 0);
@@ -96,7 +103,7 @@ TEST(MergePaddingWith, MergeTwo) {
   ASSERT_EQ(3, graph.nodes().size());
 
   auto transformation = NewMergePaddingWithConvolution2D();
-  ModelTransformer transformer(&graph, nullptr);
+  ModelTransformer transformer(&graph);
   transformer.Apply("merge_padding", transformation.get());
 
   ASSERT_EQ(1, graph.nodes().size());
@@ -138,7 +145,7 @@ TEST(MergePaddingWithAdd, MergeAlignedPadding) {
   ASSERT_EQ(4, graph.values().size());
 
   auto transformation = NewMergePaddingWithAdd();
-  ModelTransformer transformer(&graph, nullptr);
+  ModelTransformer transformer(&graph);
   transformer.Apply("merge_padding", transformation.get());
 
   ASSERT_EQ(1, graph.nodes().size());
@@ -177,7 +184,7 @@ TEST(MergePaddingWithAdd, DoNotTrigger_AddWithAttributes) {
   ASSERT_EQ(4, graph.values().size());
 
   auto transformation = NewMergePaddingWithAdd();
-  ModelTransformer transformer(&graph, nullptr);
+  ModelTransformer transformer(&graph);
   transformer.Apply("merge_padding", transformation.get());
 
   ASSERT_EQ(2, graph.nodes().size());

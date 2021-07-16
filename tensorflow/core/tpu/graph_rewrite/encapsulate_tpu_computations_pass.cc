@@ -54,6 +54,7 @@ namespace {
 const char* const kTPUReplicatedInput = "TPUReplicatedInput";
 const char* const kTPUReplicatedOutput = "TPUReplicatedOutput";
 const char* const kPivotForClusterAttr = "_pivot_for_cluster";
+const char* const kTPUPartitionedInput = "TPUPartitionedInput";
 
 // Finds the `index` of an _Arg or _Retval node.
 Status GetIndexAttr(const Node& n, int num_args, int* index) {
@@ -162,7 +163,7 @@ Status RewriteSubgraph(const std::vector<OutputTensor>& arg_source_tensors,
       TF_RETURN_IF_ERROR(
           GetNodeAttr(metadata_node->attrs(), "computation_shape", &shape));
       if (!shape.empty()) {
-        int64 num_cores_per_replica = 1LL;
+        int64_t num_cores_per_replica = 1LL;
         for (int dim : shape) {
           num_cores_per_replica *= dim;
         }
@@ -323,6 +324,28 @@ Status RemoveIdentityNodesForArgRetval(Graph* g) {
     g->RemoveNode(n);
   }
 
+  return Status::OK();
+}
+
+// Updates the TPUREPLICATE_MIRRORED_VAR_INDICES_ATTR when
+// 'additional_per_replicate_inputs' are added to the inputs of `xla_node`.
+Status UpdateMirroredVariableIndices(int additional_per_replica_inputs,
+                                     Node* xla_node) {
+  std::vector<int> mirrored_variable_indices;
+  if (xla_node->attrs().Find(TPUREPLICATE_MIRRORED_VAR_INDICES_ATTR) !=
+      nullptr) {
+    TF_RETURN_IF_ERROR(GetNodeAttr(xla_node->def(),
+                                   TPUREPLICATE_MIRRORED_VAR_INDICES_ATTR,
+                                   &mirrored_variable_indices));
+  }
+
+  if (!mirrored_variable_indices.empty()) {
+    for (int i = 0; i < mirrored_variable_indices.size(); ++i)
+      mirrored_variable_indices[i] += additional_per_replica_inputs;
+    xla_node->ClearAttr(TPUREPLICATE_MIRRORED_VAR_INDICES_ATTR);
+    xla_node->AddAttr(TPUREPLICATE_MIRRORED_VAR_INDICES_ATTR,
+                      mirrored_variable_indices);
+  }
   return Status::OK();
 }
 
@@ -544,6 +567,9 @@ Status MoveHeadOutsideCompilationToHost(
   }
   xla_node->ClearAttr("Tinputs");
   xla_node->AddAttr("Tinputs", new_input_types);
+
+  TF_RETURN_IF_ERROR(UpdateMirroredVariableIndices(
+      /*additional_per_replica_inputs=*/oc_output_edges.size(), xla_node));
 
   int new_variable_start_index =
       num_new_per_replica_input_types / num_replicas + num_distributed_vars +
@@ -1561,7 +1587,18 @@ void RemoveUnusedTPUReplicatedInputs(Graph* graph) {
         }
       }
       if (!has_output) {
+        // Remove any TPUPartitionedInput node from the src nodes of the
+        // to-be-removed TPUReplicatedInput node
+        std::vector<Node*> to_be_removed_src_nodes;
+        for (const auto& e_in : n->in_edges()) {
+          if (!e_in->IsControlEdge() &&
+              e_in->src()->type_string() == kTPUPartitionedInput)
+            to_be_removed_src_nodes.push_back(e_in->src());
+        }
         graph->RemoveNode(n);
+        for (Node* node : to_be_removed_src_nodes) {
+          graph->RemoveNode(node);
+        }
       }
     }
   }

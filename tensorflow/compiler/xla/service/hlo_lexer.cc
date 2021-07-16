@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/hlo_lexer.h"
 
+#include <limits>
+#include <string>
 #include <unordered_map>
 
 #include "absl/base/casts.h"
@@ -222,6 +224,28 @@ TokKind HloLexer::LexToken() {
   }
 }
 
+absl::optional<int64> HloLexer::LexNanPayload(absl::string_view& consumable) {
+  static LazyRE2 payload_pattern = {R"(\(0x[0-9a-fA-F]+\))"};
+  if (!RE2::Consume(&consumable, *payload_pattern)) {
+    return absl::nullopt;
+  }
+  auto slice = StringPieceFromPointers(current_ptr_, consumable.begin());
+  current_ptr_ = consumable.begin();
+  CHECK(absl::StartsWith(slice, "(0x"));
+  slice.remove_prefix(std::strlen("(0x"));
+  CHECK(absl::EndsWith(slice, ")"));
+  slice.remove_suffix(std::strlen(")"));
+  uint64 payload_value;
+  if (tensorflow::strings::HexStringToUint64(slice, &payload_value)) {
+    if (payload_value <= 0 || payload_value > NanPayloadBitMask<double>()) {
+      LOG(ERROR) << "NaN payload out of range: " << payload_value;
+      return absl::nullopt;
+    }
+    return payload_value;
+  }
+  return absl::nullopt;
+}
+
 // Lex a shape, name, keyword, attribute name, the dim labels pattern, and
 // other identifiers.
 //
@@ -264,6 +288,21 @@ TokKind HloLexer::LexIdentifier() {
     }
   }
 
+  if (identifier == "nan") {
+    absl::optional<int64_t> payload;
+    if (PeekCurrentChar() == '(') {
+      absl::string_view consumable =
+          StringPieceFromPointers(current_ptr_, buf_.end());
+      payload = LexNanPayload(consumable);
+      if (!payload.has_value()) {
+        return TokKind::kError;
+      }
+    }
+    token_state_.decimal_val = NanWithSignAndPayload<double>(
+        /*sign=*/false, payload.value_or(QuietNanWithoutPayload<double>()));
+    return TokKind::kDecimal;
+  }
+
   // See if this is a keyword.
 #define KEYWORD(STR)            \
   do {                          \
@@ -275,12 +314,12 @@ TokKind HloLexer::LexIdentifier() {
   KEYWORD(true);
   KEYWORD(false);
   KEYWORD(inf);
-  KEYWORD(nan);
   KEYWORD(HloModule);
   KEYWORD(ENTRY);
   KEYWORD(ROOT);
   KEYWORD(maximal);
   KEYWORD(replicated);
+  KEYWORD(manual);
   KEYWORD(last_tile_dim_replicate);
 
 #undef KEYWORD
@@ -289,7 +328,7 @@ TokKind HloLexer::LexIdentifier() {
     absl::string_view consumable =
         StringPieceFromPointers(token_state_.token_start, buf_.end());
     static LazyRE2 dim_labels_pattern = {
-        R"([0-9bf]{2,}_[0-9io]{2,}->[0-9bf]{2,})"};
+        R"([0-9bf?]{2,}_[0-9io?]{2,}->[0-9bf?]{2,})"};
     if (RE2::Consume(&consumable, *dim_labels_pattern)) {
       current_ptr_ = consumable.begin();
       token_state_.str_val.assign(token_state_.token_start, current_ptr_);
@@ -385,6 +424,22 @@ TokKind HloLexer::LexNumberOrPattern() {
   if (RE2::Consume(&consumable, *neg_inf)) {
     current_ptr_ = consumable.begin();
     return TokKind::kNegInf;
+  }
+
+  static LazyRE2 neg_nan = {"-nan"};
+  if (RE2::Consume(&consumable, *neg_nan)) {
+    current_ptr_ = consumable.begin();
+
+    absl::optional<int64_t> payload;
+    if (PeekCurrentChar() == '(') {
+      payload = LexNanPayload(consumable);
+      if (!payload.has_value()) {
+        return TokKind::kError;
+      }
+    }
+    token_state_.decimal_val = NanWithSignAndPayload<double>(
+        /*sign=*/true, payload.value_or(QuietNanWithoutPayload<double>()));
+    return TokKind::kDecimal;
   }
 
   return TokKind::kError;
@@ -496,10 +551,10 @@ string TokKindToString(TokKind kind) {
       return "kw_maximal";
     case TokKind::kw_replicated:
       return "kw_replicated";
+    case TokKind::kw_manual:
+      return "kw_manual";
     case TokKind::kw_last_tile_dim_replicate:
       return "kw_last_tile_dim_replicate";
-    case TokKind::kw_nan:
-      return "kw_nan";
     case TokKind::kw_inf:
       return "kw_inf";
     case TokKind::kNegInf:

@@ -18,8 +18,8 @@ limitations under the License.
 #include <cstddef>
 #include <vector>
 
+#include "tensorflow/core/common_runtime/device/device_id_utils.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_id.h"
-#include "tensorflow/core/common_runtime/gpu/gpu_id_utils.h"
 #include "tensorflow/core/common_runtime/gpu/gpu_init.h"
 #include "tensorflow/core/platform/stream_executor.h"
 
@@ -29,7 +29,7 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-int64* NewMask(int64 word) {
+int64* NewMask(int64_t word) {
   int64* m = new int64[MASK_WORDS];
   for (int i = 0; i < MASK_WORDS; ++i) {
     m[i] = word;
@@ -76,10 +76,11 @@ void InitMask(se::StreamExecutor* exec, void* ptr, int64* mask) {
 // GPUDebugAllocator
 // -----------------------------------------------------------------------------
 GPUDebugAllocator::GPUDebugAllocator(Allocator* allocator,
-                                     PlatformGpuId platform_gpu_id)
+                                     PlatformDeviceId platform_device_id)
     : base_allocator_(allocator) {
-  stream_exec_ =
-      GpuIdUtil::ExecutorForPlatformGpuId(platform_gpu_id).ValueOrDie();
+  stream_exec_ = DeviceIdUtil::ExecutorForPlatformDeviceId(GPUMachineManager(),
+                                                           platform_device_id)
+                     .ValueOrDie();
 }
 
 GPUDebugAllocator::~GPUDebugAllocator() { delete base_allocator_; }
@@ -136,7 +137,7 @@ absl::optional<AllocatorStats> GPUDebugAllocator::GetStats() {
   return base_allocator_->GetStats();
 }
 
-void GPUDebugAllocator::ClearStats() { base_allocator_->ClearStats(); }
+bool GPUDebugAllocator::ClearStats() { return base_allocator_->ClearStats(); }
 
 bool GPUDebugAllocator::CheckHeader(void* ptr) {
   return CheckMask(stream_exec_, static_cast<char*>(ptr) - MASK_BYTES,
@@ -154,10 +155,11 @@ bool GPUDebugAllocator::CheckFooter(void* ptr) {
 // GPUNanResetAllocator
 // -----------------------------------------------------------------------------
 GPUNanResetAllocator::GPUNanResetAllocator(Allocator* allocator,
-                                           PlatformGpuId platform_gpu_id)
+                                           PlatformDeviceId platform_device_id)
     : base_allocator_(allocator) {
-  stream_exec_ =
-      GpuIdUtil::ExecutorForPlatformGpuId(platform_gpu_id).ValueOrDie();
+  stream_exec_ = DeviceIdUtil::ExecutorForPlatformDeviceId(GPUMachineManager(),
+                                                           platform_device_id)
+                     .ValueOrDie();
 }
 
 GPUNanResetAllocator::~GPUNanResetAllocator() { delete base_allocator_; }
@@ -212,6 +214,8 @@ absl::optional<AllocatorStats> GPUNanResetAllocator::GetStats() {
   return base_allocator_->GetStats();
 }
 
-void GPUNanResetAllocator::ClearStats() { base_allocator_->ClearStats(); }
+bool GPUNanResetAllocator::ClearStats() {
+  return base_allocator_->ClearStats();
+}
 
 }  // namespace tensorflow

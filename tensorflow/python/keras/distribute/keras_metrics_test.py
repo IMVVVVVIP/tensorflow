@@ -13,18 +13,21 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for Keras metrics."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from absl.testing import parameterized
+from tensorflow.python import tf2
 from tensorflow.python.data.ops import dataset_ops
-from tensorflow.python.distribute import combinations
+from tensorflow.python.distribute import combinations as ds_combinations
 from tensorflow.python.distribute import strategy_combinations
-from tensorflow.python.eager import test
+from tensorflow.python.eager import def_function
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import test_combinations as combinations
 from tensorflow.python.keras import metrics
+from tensorflow.python.keras.engine import base_layer
+from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import variables
+from tensorflow.python.platform import test
 
 
 def _labeled_dataset_fn():
@@ -76,16 +79,14 @@ def all_combinations():
           strategy_combinations.default_strategy,
           strategy_combinations.one_device_strategy,
           strategy_combinations.mirrored_strategy_with_gpu_and_cpu,
-          strategy_combinations.mirrored_strategy_with_two_gpus,
+          strategy_combinations.mirrored_strategy_with_two_gpus
       ],
       mode=["graph"])
 
 
 def tpu_combinations():
   return combinations.combine(
-      distribution=[
-          strategy_combinations.tpu_strategy_one_step,
-      ],
+      distribution=[strategy_combinations.tpu_strategy,],
       mode=["graph"])
 
 
@@ -114,7 +115,7 @@ class KerasMetricsTest(test.TestCase, parameterized.TestCase):
         if batches_consumed >= 4:  # Consume 4 input batches in total.
           break
 
-  @combinations.generate(all_combinations() + tpu_combinations())
+  @ds_combinations.generate(all_combinations() + tpu_combinations())
   def testMean(self, distribution):
     def _dataset_fn():
       return dataset_ops.Dataset.range(1000).map(math_ops.to_float).batch(
@@ -125,6 +126,60 @@ class KerasMetricsTest(test.TestCase, parameterized.TestCase):
       return num_batches * 2 - 0.5
 
     self._test_metric(distribution, _dataset_fn, metrics.Mean, _expected_fn)
+
+  @ds_combinations.generate(
+      combinations.combine(
+          distribution=[
+              strategy_combinations.mirrored_strategy_with_one_cpu,
+              strategy_combinations.mirrored_strategy_with_gpu_and_cpu,
+              strategy_combinations.mirrored_strategy_with_two_gpus,
+              strategy_combinations.tpu_strategy_packed_var
+          ],
+          mode=["eager"],
+          jit_compile=[False]) +
+      combinations.combine(
+          distribution=[strategy_combinations.mirrored_strategy_with_two_gpus],
+          mode=["eager"],
+          jit_compile=[True]))
+  def testAddMetric(self, distribution, jit_compile):
+    if not tf2.enabled():
+      self.skipTest("Skip test since tf2 is not enabled. Pass "
+                    " --test_env=TF2_BEHAVIOR=1 to enable tf2 behavior.")
+
+    class MetricLayer(base_layer.Layer):
+
+      def __init__(self):
+        super(MetricLayer, self).__init__(name="metric_layer")
+        self.sum = metrics.Sum(name="sum")
+        self.sum_var = variables.Variable(1.0)
+
+      def call(self, inputs):
+        self.add_metric(self.sum(inputs))
+        self.add_metric(
+            math_ops.reduce_mean(inputs), name="mean", aggregation="mean")
+        self.sum_var.assign(self.sum.result())
+        return inputs
+
+    with distribution.scope():
+      layer = MetricLayer()
+
+    def func():
+      return layer(array_ops.ones(()))
+
+    if jit_compile:
+      func = def_function.function(jit_compile=True)(func)
+
+    @def_function.function
+    def run():
+      return distribution.run(func)
+
+    run()
+
+    self.assertEqual(layer.metrics[0].result().numpy(),
+                     1.0 * distribution.num_replicas_in_sync)
+    self.assertEqual(layer.metrics[1].result().numpy(), 1.0)
+    self.assertEqual(layer.sum_var.read_value().numpy(),
+                     1.0 * distribution.num_replicas_in_sync)
 
 
 if __name__ == "__main__":

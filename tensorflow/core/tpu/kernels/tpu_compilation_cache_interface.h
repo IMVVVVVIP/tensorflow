@@ -31,7 +31,7 @@ limitations under the License.
 #include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/tpu/kernels/compiled_subgraph.h"
-#include "tensorflow/core/tpu/kernels/tpu_compilation_cache.pb.h"
+#include "tensorflow/core/tpu/kernels/tpu_compilation_cache_common.pb.h"
 #include "tensorflow/core/tpu/kernels/tpu_compilation_cache_entry.h"
 #include "tensorflow/core/tpu/kernels/tpu_compilation_cache_key.h"
 #include "tensorflow/core/tpu/kernels/tpu_compilation_metrics.h"
@@ -85,7 +85,7 @@ class CompilationCacheEntryRef {
 
 class TpuCompilationCacheInterface : public ResourceBase {
  public:
-  explicit TpuCompilationCacheInterface(int64 max_cache_size);
+  explicit TpuCompilationCacheInterface(int64_t max_cache_size);
   ~TpuCompilationCacheInterface() override;
 
   // Ensures there is an entry for key present in the cache. By the time
@@ -109,6 +109,7 @@ class TpuCompilationCacheInterface : public ResourceBase {
       const SessionMetadata* session_metadata,
       CompilationRefHolder* per_step_ref_holder, int64* uid,
       std::vector<std::string>* proto_key,
+      std::vector<std::string>* sharding_key,
       std::vector<bool>* may_modify_variables,
       absl::Span<const xla::HloProto* const>* hlo_metadatas,
       const std::function<Status(TpuProgramGroupInterface*)>& compile_function);
@@ -126,12 +127,12 @@ class TpuCompilationCacheInterface : public ResourceBase {
   // called if per_step_ref_holder was NOT nullptr in the corresponding call to
   // CompileIfKeyAbsent(subgraph_key, ...). Otherwise, use Release(int64
   // subgraph_uid).
-  Status MarkEntryForEviction(int64 subgraph_uid);
+  Status MarkEntryForEviction(int64_t subgraph_uid);
 
   // Manually discards a reference to the compiled subgraph. This should only be
   // called if per_step_ref_holder was nullptr in the corresponding call to
   // CompileIfKeyAbsent(subgraph_key, ...).
-  Status Release(int64 subgraph_uid);
+  Status Release(int64_t subgraph_uid);
 
   // Looks up an executable corresponding to the model-parallel core index of
   // the subgraph represented by key. On success a pointer to an EntryRef
@@ -142,12 +143,12 @@ class TpuCompilationCacheInterface : public ResourceBase {
   // Looks up an executable corresponding to the model-parallel core index of
   // the subgraph represented by uid. On success a pointer to an EntryRef
   // holding the program is returned in entry.
-  Status Lookup(int64 uid, int proto_index,
+  Status Lookup(int64_t uid, int proto_index,
                 std::unique_ptr<CompilationCacheEntryRef>* entry);
 
   // Looks up the subgraph represented by uid, and returns the vector of keys,
   // one per core, corresponding to that subgraph.
-  Status GetKeysFromUid(int64 uid, std::vector<std::string>* keys);
+  Status GetKeysFromUid(int64_t uid, std::vector<std::string>* keys);
 
   // Makes a reference holder for this cache, that can be stored in the per-step
   // resource manager and will ensure that compiled entries persist until the
@@ -197,6 +198,7 @@ class TpuCompilationCacheInterface : public ResourceBase {
       const SessionMetadata* session_metadata,
       CompilationRefHolder* per_step_ref_holder, int64* uid,
       std::vector<std::string>* proto_key,
+      std::vector<std::string>* sharding_key,
       std::vector<bool>* may_modify_variables,
       std::vector<CompiledSubgraph*>* removed_entries,
       absl::Span<const xla::HloProto* const>* hlo_metadatas,

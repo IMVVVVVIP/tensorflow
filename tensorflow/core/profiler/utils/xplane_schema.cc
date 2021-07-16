@@ -21,15 +21,20 @@ limitations under the License.
 #include "tensorflow/core/lib/gtl/map_util.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/profiler/utils/tf_op_utils.h"
 
 namespace tensorflow {
 namespace profiler {
 
 const absl::string_view kHostThreadsPlaneName = "/host:CPU";
 const absl::string_view kGpuPlanePrefix = "/device:GPU:";
+const absl::string_view kTpuPlanePrefix = "/device:TPU:";
+const absl::string_view kTpuRuntimePlaneName = "/host:TPU-runtime";
 const absl::string_view kCuptiDriverApiPlaneName = "/host:CUPTI";
+const absl::string_view kRoctracerApiPlaneName = "/host:ROCTRACER";
 const absl::string_view kMetadataPlaneName = "/host:metadata";
 const absl::string_view kTFStreamzPlaneName = "/host:tfstreamz";
+const absl::string_view kPythonTracerPlaneName = "/host:python-tracer";
 
 const absl::string_view kStepLineName = "Steps";
 const absl::string_view kTensorFlowNameScopeLineName = "TensorFlow Name Scope";
@@ -37,6 +42,7 @@ const absl::string_view kTensorFlowOpLineName = "TensorFlow Ops";
 const absl::string_view kXlaModuleLineName = "XLA Modules";
 const absl::string_view kXlaOpLineName = "XLA Ops";
 const absl::string_view kKernelLaunchLineName = "Launch Stats";
+const absl::string_view kSourceLineName = "Source code";
 
 namespace {
 
@@ -107,6 +113,18 @@ const HostEventTypeMap& GetHostEventTypeMap() {
       {"MapAndBatchConsume", kMapAndBatchConsume},
       {"ParseExampleProduce", kParseExampleProduce},
       {"ParseExampleConsume", kParseExampleConsume},
+      {"ParallelBatchProduce", kParallelBatchProduce},
+      {"ParallelBatchConsume", kParallelBatchConsume},
+      // Batching related.
+      {"BatchingSessionRun", kBatchingSessionRun},
+      {"ProcessBatch", kProcessBatch},
+      {"ConcatInputTensors", kConcatInputTensors},
+      {"MergeInputTensors", kMergeInputTensors},
+      {"ScheduleWithoutSplit", kScheduleWithoutSplit},
+      {"ScheduleWithSplit", kScheduleWithSplit},
+      {"ASBSQueue::Schedule", kASBSQueueSchedule},
+      // TFRT related.
+      {"TfrtModelRun", kTfrtModelRun},
       // JAX related.
       {"LocalExecutable::ExecuteOnLocalDevices", kExecuteOnLocalDevices},
       // GPU related.
@@ -147,6 +165,7 @@ const StatTypeMap& GetStatTypeMap() {
       {"region_type", kRegionType},
       {"data_type", kDataType},
       {"shape", kTensorShapes},
+      {"layout", kTensorLayout},
       {"kpi_name", kKpiName},
       {"kpi_value", kKpiValue},
       {"element_id", kElementId},
@@ -164,8 +183,12 @@ const StatTypeMap& GetStatTypeMap() {
       {"correlation_id", kCorrelationId},
       {"memcpy_details", kMemcpyDetails},
       {"memalloc_details", kMemallocDetails},
+      {"MemFree_details", kMemFreeDetails},
+      {"Memset_details", kMemsetDetails},
+      {"MemoryResidency_details", kMemoryResidencyDetails},
       {"kernel_details", kKernelDetails},
       {"annotation", kKernelAnnotation},
+      {"nvtx_range", kNVTXRange},
       {"stream", kStream},
       // Stats added when processing traces.
       {"group_id", kGroupId},
@@ -181,6 +204,10 @@ const StatTypeMap& GetStatTypeMap() {
       {"tracing_count", kTfFunctionTracingCount},
       {"flops", kFlops},
       {"bytes_accessed", kBytesAccessed},
+      {"selected_group_ids", kSelectedGroupIds},
+      {"source", kSourceInfo},
+      {"model_name", kModelName},
+      {"model_version", kModelVersion},
       // Performance counter related.
       {"Raw Value", kRawValue},
       {"Scaled Value", kScaledValue},
@@ -196,6 +223,14 @@ const StatTypeMap& GetStatTypeMap() {
       {"memory_size", kDevCapMemorySize},
       {"compute_cap_major", kDevCapComputeCapMajor},
       {"compute_cap_minor", kDevCapComputeCapMinor},
+      // Batching related.
+      {"batch_size_after_padding", kBatchSizeAfterPadding},
+      {"padding_amount", kPaddingAmount},
+      {"batching_input_task_size", kBatchingInputTaskSize},
+      // GPU related metrics.
+      {"theoretical_occupancy_pct", kTheoreticalOccupancyPct},
+      {"occupancy_min_grid_size", kOccupancyMinGridSize},
+      {"occupancy_suggested_block_size", kOccupancySuggestedBlockSize},
   });
   DCHECK_EQ(stat_type_map->size(), kNumStatTypes);
   return *stat_type_map;
@@ -224,6 +259,19 @@ absl::optional<int64> FindHostEventType(absl::string_view event_name) {
     return *event_type;
   }
   return absl::nullopt;
+}
+
+absl::optional<int64> FindTfOpEventType(absl::string_view event_name) {
+  // TF op names.
+  Category category = ParseTfOpFullname(event_name).category;
+  switch (category) {
+    case Category::kTensorFlow:
+      return HostEventType::kTfOpRun;
+    case Category::kTfData:
+      return HostEventType::kIterator;
+    default:
+      return absl::nullopt;
+  }
 }
 
 absl::string_view GetStatTypeStr(StatType stat_type) {

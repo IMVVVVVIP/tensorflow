@@ -33,6 +33,7 @@ limitations under the License.
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/util/determinism.h"
 #include "tensorflow/core/util/work_sharder.h"
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -189,7 +190,7 @@ class CropAndResizeOp : public AsyncOpKernel {
 
       if (!status) {
         context->SetStatus(
-            errors::Internal("Failed launch CropAndResizeKernel."));
+            errors::Internal("Failed to launch CropAndResizeKernel."));
       }
     };
 
@@ -207,7 +208,7 @@ class CropAndResizeOp : public AsyncOpKernel {
 namespace functor {
 template <typename T>
 struct CropAndResize<CPUDevice, T> {
-  bool operator()(const OpKernelContext* context,
+  bool operator()(OpKernelContext* context,
                   typename TTypes<T, 4>::ConstTensor image,
                   typename TTypes<float, 2>::ConstTensor boxes,
                   typename TTypes<int32, 1>::ConstTensor box_index,
@@ -222,8 +223,19 @@ struct CropAndResize<CPUDevice, T> {
     const int crop_width = crops.dimension(2);
     const int depth = crops.dimension(3);
 
+    // Since `functor::CropAndResize` operates on float, we first validate
+    // that we don't overflow (since overflow causes undefined behavior which
+    // could result in segfault in this scenario).
+    const Eigen::Tensor<bool, 0, Eigen::RowMajor> only_finite_elements =
+        boxes.isfinite().all();
+    if (!only_finite_elements()) {
+      context->SetStatus(errors::InvalidArgument(
+          "Boxes contains at least one element that is not finite"));
+      return false;
+    }
+
     // Sharding across boxes.
-    auto CropAndResizePerBox = [&](int start_box, int limit_box) {
+    auto CropAndResizePerBox = [&](int64 start_box, int64 limit_box) {
       for (int b = start_box; b < limit_box; ++b) {
         const float y1 = boxes(b, 0);
         const float x1 = boxes(b, 1);
@@ -396,6 +408,15 @@ class CropAndResizeGradImageOp : public AsyncOpKernel {
         context, grads.dim_size(3) == depth,
         errors::InvalidArgument("image_size and grads are incompatible"), done);
 
+    if (std::is_same<Device, GPUDevice>::value) {
+      OP_REQUIRES_ASYNC(
+          context, !OpDeterminismRequired(),
+          errors::Unimplemented(
+              "Deterministic GPU implementation of CropAndResizeBackpropImage"
+              " not available."),
+          done);
+    }
+
     // Allocate output tensor.
     Tensor* output = nullptr;
     OP_REQUIRES_OK_ASYNC(
@@ -415,7 +436,7 @@ class CropAndResizeGradImageOp : public AsyncOpKernel {
 
       if (!status) {
         context->SetStatus(errors::Internal(
-            "Failed launch CropAndResizeBackpropImage kernel."));
+            "Failed to launch CropAndResizeBackpropImage kernel."));
       }
     };
 
@@ -449,7 +470,7 @@ struct CropAndResizeBackpropImage<CPUDevice, T> {
 
     grads_image.setZero();
 
-    auto CropAndResizeBackImgPerBox = [&](int start_box, int limit_box) {
+    auto CropAndResizeBackImgPerBox = [&](int64 start_box, int64 limit_box) {
       for (int b = start_box; b < limit_box; ++b) {
         const float y1 = boxes(b, 0);
         const float x1 = boxes(b, 1);
@@ -534,8 +555,13 @@ struct CropAndResizeBackpropImage<CPUDevice, T> {
 
     const DeviceBase::CpuWorkerThreads& worker_threads =
         *(context->device()->tensorflow_cpu_worker_threads());
-    Shard(worker_threads.num_threads, worker_threads.workers, num_boxes,
-          cost_per_box, CropAndResizeBackImgPerBox);
+
+    // Sharding introduces nondeterminism when the gradients associated with
+    // more than two crops backprop into the same element in the source image.
+    int max_threads = OpDeterminismRequired() ? 1 : worker_threads.num_threads;
+
+    Shard(max_threads, worker_threads.workers, num_boxes, cost_per_box,
+          CropAndResizeBackImgPerBox);
 
     return true;
   }
@@ -599,6 +625,15 @@ class CropAndResizeGradBoxesOp : public AsyncOpKernel {
         errors::InvalidArgument("boxes and grads have incompatible shape"),
         done);
 
+    if (std::is_same<Device, GPUDevice>::value) {
+      OP_REQUIRES_ASYNC(
+          context, !OpDeterminismRequired(),
+          errors::Unimplemented(
+              "Deterministic GPU implementation of CropAndResizeBackpropBoxes"
+              " not available."),
+          done);
+    }
+
     // Allocate output tensor.
     Tensor* output = nullptr;
     OP_REQUIRES_OK_ASYNC(
@@ -617,7 +652,7 @@ class CropAndResizeGradBoxesOp : public AsyncOpKernel {
           box_index.tensor<int32, 1>(), output->tensor<float, 2>());
       if (!status) {
         context->SetStatus(errors::Internal(
-            "Failed launch CropAndResizeBackpropBoxes kernel."));
+            "Failed to launch CropAndResizeBackpropBoxes kernel."));
       }
     };
 

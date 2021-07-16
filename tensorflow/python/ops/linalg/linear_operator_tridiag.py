@@ -39,6 +39,7 @@ _DIAGONAL_FORMATS = frozenset({_COMPACT, _MATRIX, _SEQUENCE})
 
 
 @tf_export('linalg.LinearOperatorTridiag')
+@linear_operator.make_composite_tensor
 class LinearOperatorTridiag(linear_operator.LinearOperator):
   """`LinearOperator` acting like a [batch] square tridiagonal matrix.
 
@@ -171,6 +172,15 @@ class LinearOperatorTridiag(linear_operator.LinearOperator):
       TypeError:  If `diag.dtype` is not an allowed type.
       ValueError:  If `diag.dtype` is real, and `is_self_adjoint` is not `True`.
     """
+    parameters = dict(
+        diagonals=diagonals,
+        diagonals_format=diagonals_format,
+        is_non_singular=is_non_singular,
+        is_self_adjoint=is_self_adjoint,
+        is_positive_definite=is_positive_definite,
+        is_square=is_square,
+        name=name
+    )
 
     with ops.name_scope(name, values=[diagonals]):
       if diagonals_format not in _DIAGONAL_FORMATS:
@@ -193,6 +203,7 @@ class LinearOperatorTridiag(linear_operator.LinearOperator):
           is_self_adjoint=is_self_adjoint,
           is_positive_definite=is_positive_definite,
           is_square=is_square,
+          parameters=parameters,
           name=name)
 
   def _shape(self):
@@ -373,3 +384,7 @@ class LinearOperatorTridiag(linear_operator.LinearOperator):
   @property
   def diagonals_format(self):
     return self._diagonals_format
+
+  @property
+  def _composite_tensor_fields(self):
+    return ('diagonals', 'diagonals_format')

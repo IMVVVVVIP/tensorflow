@@ -16,8 +16,14 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/common/memory_management/greedy_by_size_assignment.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <iterator>
+#include <vector>
 
+#include "absl/status/status.h"
 #include "tensorflow/lite/delegates/gpu/common/memory_management/internal.h"
+#include "tensorflow/lite/delegates/gpu/common/memory_management/types.h"
+#include "tensorflow/lite/delegates/gpu/common/util.h"
 
 namespace tflite {
 namespace gpu {
@@ -62,7 +68,7 @@ struct SizeDistPriorityInfo {
 
 absl::Status GreedyBySizeAssignment(
     const std::vector<TensorUsageRecord<size_t>>& usage_records,
-    OffsetsAssignment* assignment) {
+    size_t base_addr_align_bytes, OffsetsAssignment* assignment) {
   const size_t num_tensors = usage_records.size();
   assignment->offsets.resize(num_tensors);
   assignment->total_size = 0;
@@ -101,7 +107,9 @@ absl::Status GreedyBySizeAssignment(
         }
       }
       prev_offset = std::max(
-          prev_offset, cur_offset + usage_records[allocated_id].tensor_size);
+          prev_offset,
+          AlignByN(cur_offset + usage_records[allocated_id].tensor_size,
+                   base_addr_align_bytes));
     }
     if (assignment->total_size < prev_offset) {
       return absl::InternalError("Total size is wrong.");

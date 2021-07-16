@@ -23,6 +23,7 @@ import functools
 from tensorflow.python.eager import context
 from tensorflow.python.eager import lift_to_graph
 from tensorflow.python.eager import wrap_function
+from tensorflow.python.framework import composite_tensor
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import func_graph
@@ -33,9 +34,14 @@ from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.saved_model import function_deserialization
 from tensorflow.python.saved_model import loader_impl
 from tensorflow.python.saved_model import signature_serialization
+from tensorflow.python.saved_model.experimental.pywrap_libexport import metrics
 from tensorflow.python.training import monitored_session
 from tensorflow.python.training import saver as tf_saver
 from tensorflow.python.training.tracking import tracking
+from tensorflow.python.util import nest
+
+# API label for SavedModel metrics.
+_LOAD_V1_V2_LABEL = "load_v1_in_v2"
 
 
 class _Initializer(tracking.CapturableResource):
@@ -111,11 +117,11 @@ class _EagerSavedModelLoader(loader_impl.SavedModelLoader):
       initializer, _ = restore_from_saver(
           constant_op.constant(self._variables_path))
       if not ops.executing_eagerly_outside_functions():
-        # Add the initialization operation to the table initializers collection
-        # in case we don't have any lifted variables to attach it to. There
-        # isn't another great place to put it.
-        ops.add_to_collection(ops.GraphKeys.TABLE_INITIALIZERS, initializer)
+        # Add the initialization operation to the "saved_model_initializers"
+        # collection in case we don't have any lifted variables to attach it to.
+        ops.add_to_collection("saved_model_initializers", initializer)
         one_unlifted = False
+
         for variable in wrapped.graph.get_collection_ref(
             ops.GraphKeys.GLOBAL_VARIABLES):
           if variable.graph is wrapped.graph:
@@ -126,7 +132,8 @@ class _EagerSavedModelLoader(loader_impl.SavedModelLoader):
         if one_unlifted:
           logging.warning(
               "Some variables could not be lifted out of a loaded function. "
-              "Run the tf.initializers.tables_initializer() operation to "
+              "Please run "
+              "`sess.run(tf.get_collection(\"saved_model_initializers\"))`to "
               "restore these variables.")
 
   def _extract_signatures(self, wrapped, meta_graph_def):
@@ -134,7 +141,9 @@ class _EagerSavedModelLoader(loader_impl.SavedModelLoader):
     signature_functions = {}
     for signature_key, signature_def in meta_graph_def.signature_def.items():
       if signature_def.inputs:
-        original_input_names, input_specs = zip(*signature_def.inputs.items())
+        input_items = sorted(
+            signature_def.inputs.items(), key=lambda item: item[1].name)
+        original_input_names, input_specs = zip(*input_items)
       else:
         original_input_names = []
         input_specs = []
@@ -154,6 +163,11 @@ class _EagerSavedModelLoader(loader_impl.SavedModelLoader):
           dense_shape_name = "%s_dense_shape" % original_input_name
           input_names.extend([indices_name, values_name, dense_shape_name])
           input_tensors.extend([feed.indices, feed.values, feed.dense_shape])
+        elif isinstance(feed, composite_tensor.CompositeTensor):
+          component_tensors = nest.flatten(feed, expand_composites=True)
+          input_names.extend("%s_component_%d" % (original_input_name, n)
+                             for n in range(len(component_tensors)))
+          input_tensors.extend(component_tensors)
         else:
           input_names.append(original_input_name)
           input_tensors.append(feed)
@@ -209,8 +223,7 @@ class _EagerSavedModelLoader(loader_impl.SavedModelLoader):
     # the GraphDef itself for consistency.
     for node_def in meta_graph_def.graph_def.node:
       function_deserialization.fix_node_def(node_def, functions,
-                                            load_shared_name_suffix,
-                                            debug_name="MetaGraph import")
+                                            load_shared_name_suffix)
 
     load_graph_returns = [None]
     wrapped = wrap_function.wrap_function(
@@ -268,5 +281,6 @@ class _EagerSavedModelLoader(loader_impl.SavedModelLoader):
 
 def load(export_dir, tags):
   """Load a v1-style SavedModel as an object."""
+  metrics.IncrementReadApi(_LOAD_V1_V2_LABEL, write_version="1")
   loader = _EagerSavedModelLoader(export_dir)
   return loader.load(tags=tags)

@@ -18,7 +18,9 @@ limitations under the License.
 #include <vector>
 
 #include "absl/strings/str_cat.h"
+#include "tensorflow/core/framework/variant.h"
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/context_util.h"
 #include "tensorflow/lite/core/macros.h"
 #include "tensorflow/lite/delegates/flex/buffer_map.h"
@@ -29,15 +31,6 @@ limitations under the License.
 #include "tensorflow/lite/util.h"
 
 namespace tflite {
-
-// Corresponding weak declaration found in lite/interpreter_builder.cc.
-#if TFLITE_HAS_ATTRIBUTE_WEAK
-// If weak symbol is not supported (Windows), it can use
-// TF_AcquireFlexDelegate() path instead.
-TfLiteDelegateUniquePtr AcquireFlexDelegate() {
-  return tflite::FlexDelegate::Create();
-}
-#endif
 
 TfLiteDelegateUniquePtr FlexDelegate::Create(
     std::unique_ptr<FlexDelegate> base_delegate) {
@@ -67,7 +60,8 @@ TfLiteStatus FlexDelegate::Initialize(TfLiteContext* context) {
         context->recommended_num_threads);
   }
 
-  auto status = delegate_data_.Prepare(session_options);
+  auto status = delegate_data_.Prepare(
+      session_options, reinterpret_cast<Subgraph*>(context->impl_));
   if (!status.ok()) {
     context->ReportError(context, "Failed to initialize TensorFlow context: %s",
                          status.error_message().c_str());
@@ -124,6 +118,31 @@ TfLiteStatus FlexDelegate::CopyFromBufferHandle(
     return kTfLiteOk;
   }
 
+  // TODO(b/179094265): This is an experimental implementation, subject to
+  // change. This can be re-implemented with life cycle management mechanism
+  // like reference counting.
+  // When copying resource and variant tensors from Flex delegate to TensorFlow
+  // Lite tensors, the CopyFromBufferHandle method of the Flex delegate is
+  // invoked and it will store the `data` field of the given TensorFlow Lite
+  // tensor and pass the TensorFlow Lite tensor pointer. Copying the `data`
+  // field will act as passing pointers between TensorFlow Lite tensors.
+  //
+  // The life cycle of the pointer will be managed by the reference counting in
+  // the TensorFlow world and the pointer will be freed when all the buffer
+  // maps, who own it, are gone.
+  if (output->type == kTfLiteResource || output->type == kTfLiteVariant) {
+    const size_t required_bytes = sizeof(tensorflow::Tensor**);
+    const tensorflow::Tensor** tf_tensor_ptr =
+        reinterpret_cast<const tensorflow::Tensor**>(malloc(required_bytes));
+    *tf_tensor_ptr = buffer_map->GetTensorPtr(buffer_handle);
+
+    TfLiteTensorDataFree(output);
+    output->data.raw = reinterpret_cast<char*>(tf_tensor_ptr);
+    output->bytes = required_bytes;
+    output->data_is_stale = true;
+    return kTfLiteOk;
+  }
+
   tensorflow::StringPiece t_data = t.tensor_data();
 
   if (output->bytes != t_data.size()) {
@@ -141,15 +160,3 @@ TfLiteStatus FlexDelegate::CopyFromBufferHandle(
 }
 
 }  // namespace tflite
-
-// Exported C interface function which is used by AcquireFlexDelegate() at
-// interpreter_build.cc. To export the function name globally, the function name
-// must be matched with patterns in tf_version_script.lds
-extern "C" {
-#if defined(_WIN32)
-__declspec(dllexport)
-#endif
-    tflite::TfLiteDelegateUniquePtr TF_AcquireFlexDelegate() {
-  return tflite::FlexDelegate::Create();
-}
-}  // extern "C"

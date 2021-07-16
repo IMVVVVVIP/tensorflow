@@ -36,6 +36,7 @@ __all__ = ["LinearOperatorBlockLowerTriangular"]
 
 
 @tf_export("linalg.LinearOperatorBlockLowerTriangular")
+@linear_operator.make_composite_tensor
 class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
   """Combines `LinearOperators` into a blockwise lower-triangular matrix.
 
@@ -231,6 +232,15 @@ class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
       ValueError:  If `operators` is empty, contains an erroneous number of
         elements, or contains operators with incompatible shapes.
     """
+    parameters = dict(
+        operators=operators,
+        is_non_singular=is_non_singular,
+        is_self_adjoint=is_self_adjoint,
+        is_positive_definite=is_positive_definite,
+        is_square=is_square,
+        name=name
+    )
+
     # Validate operators.
     check_ops.assert_proper_iterable(operators)
     for row in operators:
@@ -256,6 +266,7 @@ class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
           is_self_adjoint=is_self_adjoint,
           is_positive_definite=is_positive_definite,
           is_square=is_square,
+          parameters=parameters,
           name=name)
 
   def _validate_num_operators(self):
@@ -423,10 +434,10 @@ class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
             "Operators are incompatible. Expected `x` to have dimension"
             " {} but got {}.".format(
                 left_operator.domain_dimension, right_operator.range_dimension))
-      with self._name_scope(name):
+      with self._name_scope(name):  # pylint: disable=not-callable
         return linear_operator_algebra.matmul(left_operator, right_operator)
 
-    with self._name_scope(name):
+    with self._name_scope(name):  # pylint: disable=not-callable
       arg_dim = -1 if adjoint_arg else -2
       block_dimensions = (self._block_range_dimensions() if adjoint
                           else self._block_domain_dimensions())
@@ -537,7 +548,7 @@ class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
     Returns:
       A `Tensor` with shape `[..., M]` and same `dtype` as `self`.
     """
-    with self._name_scope(name):
+    with self._name_scope(name):  # pylint: disable=not-callable
       block_dimensions = (self._block_range_dimensions() if adjoint
                           else self._block_domain_dimensions())
       if linear_operator_util.arg_is_blockwise(block_dimensions, x, -1):
@@ -662,10 +673,10 @@ class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
             "Operators are incompatible. Expected `rhs` to have dimension"
             " {} but got {}.".format(
                 left_operator.domain_dimension, right_operator.range_dimension))
-      with self._name_scope(name):
+      with self._name_scope(name):  # pylint: disable=not-callable
         return linear_operator_algebra.solve(left_operator, right_operator)
 
-    with self._name_scope(name):
+    with self._name_scope(name):  # pylint: disable=not-callable
       block_dimensions = (self._block_domain_dimensions() if adjoint
                           else self._block_range_dimensions())
       arg_dim = -1 if adjoint_arg else -2
@@ -716,7 +727,7 @@ class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
           # `Ax_0 + Bx_1 + Dx_2 = y_0` as `Ax_0 = y_0*`, where
           # `y_0* = y_0 - Bx_1 - Dx_2`.
           for j in reversed(range(index + 1, len(self.operators))):
-            y -= self.operators[j][index].matmul(
+            y = y - self.operators[j][index].matmul(
                 solution_list[len(self.operators) - 1 - j],
                 adjoint=adjoint)
           # Continuing the example above, solve `Ax_0 = y_0*` for `x_0`.
@@ -738,7 +749,7 @@ class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
           # `Dx_0 + Ex_1 + Fx_2 = y_2` as `Fx_2 = y_2*`, where
           # `y_2* = y_2 - D_x0 - Ex_1`.
           for i, operator in enumerate(row[:-1]):
-            y -= operator.matmul(solution_list[i], adjoint=adjoint)
+            y = y - operator.matmul(solution_list[i], adjoint=adjoint)
           # Continuing the example above, solve `Fx_2 = y_2*` for `x_2`.
           solution_list.append(row[-1].solve(y, adjoint=adjoint))
 
@@ -789,7 +800,7 @@ class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
     Raises:
       NotImplementedError:  If `self.is_non_singular` or `is_square` is False.
     """
-    with self._name_scope(name):
+    with self._name_scope(name):  # pylint: disable=not-callable
       block_dimensions = (self._block_domain_dimensions() if adjoint
                           else self._block_range_dimensions())
       if linear_operator_util.arg_is_blockwise(block_dimensions, rhs, -1):
@@ -863,3 +874,7 @@ class LinearOperatorBlockLowerTriangular(linear_operator.LinearOperator):
     eig_list = linear_operator_util.broadcast_matrix_batch_dims(eig_list)
     eigs = array_ops.concat(eig_list, axis=-2)
     return array_ops.squeeze(eigs, axis=-1)
+
+  @property
+  def _composite_tensor_fields(self):
+    return ("operators",)

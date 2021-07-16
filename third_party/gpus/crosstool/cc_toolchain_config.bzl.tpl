@@ -353,7 +353,10 @@ def _features(cpu, compiler, ctx):
                     flag_set(
                         actions = all_cpp_compile_actions(),
                         flag_groups = [
-                            flag_group(flags = ["-fexperimental-new-pass-manager"]),
+                            flag_group(flags = [
+                                "-fexperimental-new-pass-manager",
+                                "-fmerge-all-constants",
+                            ]),
                         ] if compiler == "clang" else [],
                     ),
                     flag_set(
@@ -497,12 +500,11 @@ def _features(cpu, compiler, ctx):
                     ),
                     flag_set(
                         actions = all_link_actions(),
-                        flag_groups = [
-                            flag_group(flags = (
-                                ["-Wl,-no-as-needed"] if cpu == "local" else []
-                            ) + [
-                                "-B" + ctx.attr.linker_bin_path,
-                            ]),
+                        flag_groups = ([
+                            flag_group(flags = ["-Wl,-no-as-needed"])
+                        ] if cpu == "local" else []) + ([
+                            flag_group(flags = ["-B" + ctx.attr.linker_bin_path])
+                        ] if ctx.attr.linker_bin_path else []) + [
                             flag_group(
                                 flags = ["@%{linker_param_file}"],
                                 expand_if_available = "linker_param_file",
@@ -977,7 +979,6 @@ def _impl(ctx):
         toolchain_identifier = "local_linux"
         target_cpu = "local"
         target_libc = "local"
-        compiler = "compiler"
         action_configs = _action_configs(
             assembly_path = ctx.attr.host_compiler_path,
             c_compiler_path = ctx.attr.host_compiler_path,

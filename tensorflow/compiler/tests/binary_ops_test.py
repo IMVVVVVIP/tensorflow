@@ -24,10 +24,10 @@ import numpy as np
 
 from tensorflow.compiler.tests import xla_test
 from tensorflow.python.framework import dtypes
-from tensorflow.python.framework import errors
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import bitwise_ops
+from tensorflow.python.ops import gen_array_ops
 from tensorflow.python.ops import gen_math_ops
 from tensorflow.python.ops import gen_nn_ops
 from tensorflow.python.ops import math_ops
@@ -201,6 +201,18 @@ class BinaryOpsTest(xla_test.XLATestCase):
                         [-0.367941, -0.212856, 0.036883, 0.543914]],
                        dtype=dtype),
           ],
+          equality_test=self.ListsAreClose,
+          rtol=1e-4,
+          atol=1e-8)
+
+      # Check -inf logits doesn't create NaNs.
+      self._testBinary(
+          gen_nn_ops.sparse_softmax_cross_entropy_with_logits,
+          np.array([[-np.inf, 0.]], dtype=dtype),
+          np.array([1], dtype=np.int32),
+          expected=[
+              np.array([0.], dtype=dtype),
+              np.array([[0., 0.]], dtype=dtype)],
           equality_test=self.ListsAreClose,
           rtol=1e-4,
           atol=1e-8)
@@ -474,7 +486,6 @@ class BinaryOpsTest(xla_test.XLATestCase):
           expected=np.array([1 << 32, 1 << 36, 1 << 32, 1 << 36],
                             dtype=np.int64))
 
-  @test_util.disable_mlir_bridge("Enable tf.NextAfter Compilation")
   def testNextAfter(self):
     for dtype in self.numeric_types:
       if dtype in [np.float32, np.float64]:
@@ -502,8 +513,6 @@ class BinaryOpsTest(xla_test.XLATestCase):
             expected=expected,
             equality_test=NextAfterEqualityTest)
 
-  @test_util.disable_mlir_bridge(
-      "Complex types not supported in CreateDenseElementsAttrFromLiteral")
   def testComplexOps(self):
     for dtype in self.complex_types:
       ctypes = {np.complex64: np.float32, np.complex128: np.float64}
@@ -701,6 +710,17 @@ class BinaryOpsTest(xla_test.XLATestCase):
           np.array([3, 3, -1, -9, -8], dtype=dtype),
           np.array([2, -2, 7, 2, -4], dtype=dtype),
           expected=np.array([1, -2, -1, -5, 2], dtype=dtype))
+    if dtype in self.signed_int_types:
+      # Overflow cases.
+      int_min = np.iinfo(dtype).min
+      int_max = np.iinfo(dtype).max
+      self._testBinary(
+          gen_math_ops.floor_div,
+          np.array([int_min, -1, 1, int_max], dtype=dtype).reshape([1, 4]),
+          np.array([int_min, -1, 1, int_max], dtype=dtype).reshape([4, 1]),
+          expected=np.array([[1, 0, -1, -1], [int_min, 1, -1, -1 * int_max],
+                             [int_min, -1, 1, int_max], [-2, -1, 0, 1]],
+                            dtype=dtype))
 
   def testIntDivision(self):
     for dtype in self.signed_int_types:
@@ -722,13 +742,29 @@ class BinaryOpsTest(xla_test.XLATestCase):
         np.array([3, 3, -1, -8], dtype=dtype),
         np.array([2, -2, 7, -4], dtype=dtype),
         expected=np.array([1, 1, -1, 0], dtype=dtype))
+    if dtype in self.signed_int_types:
+      # Overflow cases.
+      int_min = np.iinfo(dtype).min
+      int_max = np.iinfo(dtype).max
+      self._testBinary(
+          gen_math_ops.floor_mod,
+          np.array([int_min, -1, 1, int_max], dtype=dtype).reshape([1, 4]),
+          np.array([int_min, -1, 1, int_max], dtype=dtype).reshape([4, 1]),
+          expected=np.array([[0, -1, -1 * int_max, -1], [0, 0, 0, 0],
+                             [0, 0, 0, 0], [int_max - 1, int_max - 1, 1, 0]],
+                            dtype=dtype))
+      self._testBinary(
+          gen_math_ops.truncate_mod,
+          np.array([int_min, -1, 1, int_max], dtype=dtype).reshape([1, 4]),
+          np.array([int_min, -1, 1, int_max], dtype=dtype).reshape([4, 1]),
+          expected=np.array(
+              [[0, -1, 1, int_max], [0, 0, 0, 0], [0, 0, 0, 0], [-1, -1, 1, 0]],
+              dtype=dtype))
 
   def testIntRemainder(self):
     for dtype in self.signed_int_types - {np.int8}:
       self._testRemainder(dtype)
 
-  @test_util.disable_mlir_bridge(
-      "F16 type is not supported in CreateDenseElementsAttrFromLiteral")
   def testFloatRemainder(self):
     for dtype in self.float_types:
       self._testRemainder(dtype)
@@ -1082,7 +1118,7 @@ class BinaryOpsTest(xla_test.XLATestCase):
           math_ops.matmul,
           np.array([], dtype=dtype).reshape((0, 2, 4)),
           np.array([], dtype=dtype).reshape((0, 4, 3)),
-          expected=np.array([], dtype=dtype).reshape(0, 2, 3))
+          expected=np.array([], dtype=dtype).reshape(0, 2, 3))  # pylint: disable=too-many-function-args
 
       # Regression test for b/31472796.
       if dtype != np.float16 and hasattr(np, "matmul"):
@@ -1096,6 +1132,15 @@ class BinaryOpsTest(xla_test.XLATestCase):
             x,
             x,
             expected=np.matmul(x, x.transpose([0, 1, 3, 2])))
+
+  def testBatchMatMulMixedPrecision(self):
+    # Verify that accumulation happens in the specified output type int32 by
+    # using a result (16 * 16 * 16) that doesn't fit in int8.
+    self._testBinary(
+        lambda x, y: math_ops.matmul(x, y, output_type=np.int32),
+        np.tile(np.array([[[16]]], dtype=np.int8), (1, 1, 16)),
+        np.tile(np.array([[[16]]], dtype=np.int8), (1, 16, 1)),
+        expected=np.array([[[16 * 16 * 16]]], dtype=np.int32))
 
   def testExpandDims(self):
     for dtype in self.numeric_types:
@@ -1329,6 +1374,40 @@ class BinaryOpsTest(xla_test.XLATestCase):
                   ]
               ],
               dtype=dtype))
+
+  def testSymmetricMirrorPadGrad(self):
+    mirror_pad_grad = lambda t, paddings: gen_array_ops.mirror_pad_grad(
+        t, paddings, "SYMMETRIC")
+    for dtype in self.numeric_types:
+      self._testBinary(
+          mirror_pad_grad,
+          np.broadcast_to(np.arange(0, 7, dtype=dtype), (3, 2, 1, 7)),
+          np.array([
+              [1, 1],
+              [0, 0],
+              [0, 0],
+              [2, 2],
+          ], dtype=np.int32),
+          expected=np.broadcast_to(
+              np.array([9, 27, 27], dtype=dtype), (1, 2, 1, 3)))
+
+  def testReflectMirrorPadGrad(self):
+    mirror_pad_grad = lambda t, paddings: gen_array_ops.mirror_pad_grad(
+        t, paddings, "REFLECT")
+    for dtype in self.numeric_types:
+      self._testBinary(
+          mirror_pad_grad,
+          np.broadcast_to(
+              np.reshape(np.arange(0, 7, dtype=dtype), (7, 1)), (1, 4, 7, 1)),
+          np.array([
+              [0, 0],
+              [1, 1],
+              [2, 2],
+              [0, 0],
+          ], dtype=np.int32),
+          expected=np.broadcast_to(
+              np.reshape(np.array([16, 18, 8], dtype=dtype), (3, 1)),
+              (1, 2, 3, 1)))
 
   def testReshape(self):
     for dtype in self.numeric_types:
@@ -1568,8 +1647,7 @@ class BinaryOpsTest(xla_test.XLATestCase):
 
   @test_util.disable_mlir_bridge("Error handling")
   def testBroadcastArgsError(self):
-    with self.assertRaisesWithPredicateMatch(errors.InvalidArgumentError,
-                                             "Incompatible shapes"):
+    with self.assertRaisesIncompatibleShapesError():
       self._testBinary(array_ops.broadcast_dynamic_shape,
                        np.array([1, 2, 3], dtype=np.int32),
                        np.array([4, 5, 6], dtype=np.int32),

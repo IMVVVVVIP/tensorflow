@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tpu/kernels/tpu_compile_op_support.h"
 
+#include <string>
+
 #include "tensorflow/compiler/xla/debug_options_flags.h"
 #include "tensorflow/compiler/xla/service/computation_layout.h"
 #include "tensorflow/compiler/xla/service/computation_placer.h"
@@ -160,11 +162,11 @@ ShapeTree<HloSharding> GetSubtree(
 }
 
 Shape GetPerDeviceShape(const Shape& shape, const HloSharding& sharding,
-                        int64 device) {
+                        int64_t device) {
   if (shape.IsTuple()) {
     ShapeTree<HloSharding> tuple_shape_tree = sharding.GetAsShapeTree(shape);
     std::vector<Shape> arg_shapes;
-    for (int64 i = 0; i < xla::ShapeUtil::TupleElementCount(shape); ++i) {
+    for (int64_t i = 0; i < xla::ShapeUtil::TupleElementCount(shape); ++i) {
       Shape element_shape = xla::ShapeUtil::GetTupleElementShape(shape, i);
       HloSharding element_sharding = tuple_shape_tree.element({i});
       if (element_shape.IsTuple()) {
@@ -186,7 +188,7 @@ Shape GetPerDeviceShape(const Shape& shape, const HloSharding& sharding,
   std::vector<int64> offset = sharding.TileOffsetForDevice(shape, device);
   std::vector<int64> limit = sharding.TileLimitForDevice(shape, device);
   dimensions.resize(limit.size());
-  for (int64 i = 0; i < limit.size(); ++i) {
+  for (int64_t i = 0; i < limit.size(); ++i) {
     dimensions[i] = limit[i] - offset[i];
   }
   if (shape.has_layout()) {
@@ -219,7 +221,8 @@ Status AddVariableUpdatesToCores(
           int pos = compilation_result.outputs.size() + resource_update_pos;
           xla::Shape shape = xla::ShapeUtil::GetTupleElementShape(
               compilation_result.xla_output_shape, pos);
-          auto add_to_core = [&](int64 core, const xla::Shape& per_core_shape) {
+          auto add_to_core = [&](int64_t core,
+                                 const xla::Shape& per_core_shape) {
             (*per_core_output_shapes)[core].push_back(per_core_shape);
             (*may_modify_variables)[core] =
                 (*may_modify_variables)[core] || update.modified;
@@ -230,14 +233,15 @@ Status AddVariableUpdatesToCores(
             auto sharding_or =
                 xla::HloSharding::FromProto(proto_arg.sharding());
             TF_RET_CHECK(sharding_or.ok());
-            for (int64 core : proto_arg.sharding().tile_assignment_devices()) {
+            for (int64_t core :
+                 proto_arg.sharding().tile_assignment_devices()) {
               xla::Shape per_core_shape =
                   GetPerDeviceShape(shape, sharding_or.ValueOrDie(), core);
               add_to_core(core, per_core_shape);
             }
           } else {
             TF_RET_CHECK(sharding.type() == xla::OpSharding::REPLICATED);
-            for (int64 core = 0; core < metadata.num_cores_per_replica();
+            for (int64_t core = 0; core < metadata.num_cores_per_replica();
                  ++core) {
               add_to_core(core, shape);
             }
@@ -256,7 +260,8 @@ Status AddVariableUpdatesToCores(
         }
       } else {
         TF_RET_CHECK(sharding.type() == xla::OpSharding::REPLICATED);
-        for (int64 core = 0; core < metadata.num_cores_per_replica(); ++core) {
+        for (int64_t core = 0; core < metadata.num_cores_per_replica();
+             ++core) {
           (*per_core_variable_indices)[core].push_back(
               std::pair<int, bool>(arg_core_mapping[i].indices[core], updated));
         }
@@ -288,7 +293,7 @@ Status ComputeOutputShapesForEachCore(
     } else if (retval.sharding().type() == xla::OpSharding::OTHER) {
       auto sharding_or = xla::HloSharding::FromProto(retval.sharding());
       TF_RET_CHECK(sharding_or.ok());
-      for (int64 core : retval.sharding().tile_assignment_devices()) {
+      for (int64_t core : retval.sharding().tile_assignment_devices()) {
         xla::Shape per_core_shape =
             GetPerDeviceShape(shape, sharding_or.ValueOrDie(), core);
         add_shape_to_core(core, std::move(per_core_shape));
@@ -334,109 +339,6 @@ Status CreateHloModules(
   return Status::OK();
 }
 
-XlaCompilationResultProto SerializeCompilationResult(
-    const XlaCompiler::CompilationResult& compilation_result) {
-  XlaCompilationResultProto compilation_result_proto;
-  for (int input_mapping : compilation_result.input_mapping) {
-    compilation_result_proto.add_input_mappings(input_mapping);
-  }
-
-  for (const Shape& input_shape : compilation_result.xla_input_shapes) {
-    *(compilation_result_proto.add_xla_input_shapes()) = input_shape.ToProto();
-  }
-  *(compilation_result_proto.mutable_xla_output_shape()) =
-      compilation_result.xla_output_shape.ToProto();
-
-  for (const XlaCompiler::OutputDescription& output_description :
-       compilation_result.outputs) {
-    auto* new_output = compilation_result_proto.add_outputs();
-    new_output->set_type(output_description.type);
-    output_description.shape.AsProto(new_output->mutable_shape());
-    new_output->set_is_constant(output_description.is_constant);
-    output_description.constant_value.AsProtoField(
-        new_output->mutable_constant_value());
-    new_output->set_input_index(output_description.input_index);
-    new_output->set_is_tensor_list(output_description.is_tensor_list);
-  }
-
-  *compilation_result_proto.mutable_host_compute_metadata() =
-      compilation_result.host_compute_metadata;
-
-  for (const XlaCompiler::ResourceUpdate& resource_update :
-       compilation_result.resource_updates) {
-    auto* new_resource_update = compilation_result_proto.add_resource_updates();
-    new_resource_update->set_input_index(resource_update.input_index);
-    new_resource_update->set_type(resource_update.type);
-    resource_update.shape.AsProto(new_resource_update->mutable_shape());
-    new_resource_update->set_modified(resource_update.modified);
-    for (const std::string& gradient_access :
-         resource_update.tensor_array_gradients_accessed) {
-      new_resource_update->mutable_tensor_array_gradients_accessed()->insert(
-          {gradient_access, true});
-    }
-  }
-
-  if (compilation_result.computation != nullptr) {
-    *compilation_result_proto.mutable_computation() =
-        compilation_result.computation->proto();
-  }
-
-  return compilation_result_proto;
-}
-
-StatusOr<TpuAotCompilationRequestProto> CreateTpuAotCompilationRequest(
-    const xla::HloModuleGroup& module_group,
-    const XlaCompiler::CompilationResult& compilation_result,
-    const TPUCompileMetadataProto& metadata,
-    const std::vector<std::vector<xla::Shape>>& per_core_arg_shapes,
-    const std::vector<std::vector<xla::Shape>>& per_core_output_shapes,
-    const std::vector<std::vector<std::pair<int, bool>>>&
-        per_core_variable_indices,
-    const absl::optional<xla::DeviceAssignment>& device_assignment) {
-  VLOG(1) << "CreateTpuAotCompilationRequest.";
-  TpuAotCompilationRequestProto aot_request;
-  *(aot_request.mutable_hlo_module_group()) = module_group.ToProto();
-  *(aot_request.mutable_metadata()) = metadata;
-  if (device_assignment.has_value()) {
-    xla::DeviceAssignmentProto device_assignment_proto;
-    Status status = device_assignment->Serialize(&device_assignment_proto);
-    if (!status.ok()) {
-      return status;
-    }
-    *(aot_request.mutable_device_assignment()) = device_assignment_proto;
-  }
-
-  for (const auto& arg_shapes : per_core_arg_shapes) {
-    auto* new_shape_list = aot_request.add_per_core_arg_shapes();
-    for (const auto& arg_shape : arg_shapes) {
-      *new_shape_list->add_shapes() = arg_shape.ToProto();
-    }
-  }
-
-  for (const auto& output_shapes : per_core_output_shapes) {
-    auto* new_shape_list = aot_request.add_per_core_output_shapes();
-    for (const auto& output_shape : output_shapes) {
-      *new_shape_list->add_shapes() = output_shape.ToProto();
-    }
-  }
-
-  for (const auto& variable_indices : per_core_variable_indices) {
-    auto* new_list = aot_request.add_per_core_variable_indices();
-    for (const auto& variable_index : variable_indices) {
-      auto* core_index = new_list->add_variable_indices();
-      core_index->set_index(variable_index.first);
-      core_index->set_updated(variable_index.second);
-    }
-  }
-
-  XlaCompilationResultProto compilation_result_proto =
-      SerializeCompilationResult(compilation_result);
-  *aot_request.mutable_compilation_result() = compilation_result_proto;
-
-  VLOG(1) << "TpuAotCompilationRequest:\n" << aot_request.DebugString();
-  return aot_request;
-}
-
 StatusOr<TpuCompilationRequestProto> CreateTpuCompilationRequest(
     const absl::variant<MlirToHloArgs, FunctionToHloArgs>& computation,
     const TPUCompileMetadataProto& metadata,
@@ -448,7 +350,8 @@ StatusOr<TpuCompilationRequestProto> CreateTpuCompilationRequest(
   if (use_mlir) {
     VLOG(1) << "Serializing MlirModule";
     const MlirToHloArgs& mlir_computation = absl::get<0>(computation);
-    *compilation_request.mutable_mlir_module() = mlir_computation.mlir_module;
+    *compilation_request.mutable_mlir_module() =
+        string(mlir_computation.mlir_module);
   } else {
     VLOG(1) << "Serializing FunctionDefinitionLibrary";
     const FunctionToHloArgs& function_computation = absl::get<1>(computation);

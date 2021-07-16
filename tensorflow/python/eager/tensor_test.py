@@ -281,8 +281,7 @@ class TFETensorTest(test_util.TensorFlowTestCase):
   def testStringTensorOnGPU(self):
     with ops.device("/device:GPU:0"):
       t = _create_tensor("test string")
-      self.assertIn("CPU", t.device)
-      self.assertIn("CPU", t.backing_device)
+      self.assertIn("GPU", t.device)
 
   def testInvalidUTF8ProducesReasonableError(self):
     if sys.version_info[0] < 3:
@@ -378,9 +377,10 @@ class TFETensorTest(test_util.TensorFlowTestCase):
           constant_op.constant(t.min, dtype=t).numpy(), t.min)
 
   def test_numpyIsView(self):
-    t = constant_op.constant([0.0])
-    t._numpy()[0] = 42.0
-    self.assertAllClose(t, constant_op.constant([42.0]))
+    with ops.device("CPU"):
+      t = constant_op.constant([0.0])
+      t._numpy()[0] = 42.0
+      self.assertAllClose(t, constant_op.constant([42.0]))
 
   def test_numpyFailsForResource(self):
     v = variables.Variable(42)
@@ -416,6 +416,8 @@ class TFETensorTest(test_util.TensorFlowTestCase):
     self.assertAllEqual(
         np.array(memoryview(t)), np.array([0.0], dtype=np.float32))
 
+  @test_util.disable_tfrt("b/169877776: ResourceVariable is not initialized "
+                          "properly in TFRT")
   def testResourceTensorCopy(self):
     if not test_util.is_gpu_available():
       self.skipTest("GPU only")
@@ -433,6 +435,10 @@ class TFETensorTest(test_util.TensorFlowTestCase):
 
 
 class TFETensorUtilTest(test_util.TensorFlowTestCase):
+
+  def setUp(self):
+    super(TFETensorUtilTest, self).setUp()
+    context.ensure_initialized()
 
   def testListOfThree(self):
     t1 = _create_tensor([[1, 2], [3, 4], [5, 6]], dtype=dtypes.int32)
@@ -482,9 +488,9 @@ class TFETensorUtilTest(test_util.TensorFlowTestCase):
     self.assertEqual(constant_op.constant(u"asdf").numpy(), b"asdf")
 
   def testFloatTensor(self):
-    self.assertEqual(dtypes.float64, _create_tensor(np.float64()).dtype)
-    self.assertEqual(dtypes.float32, _create_tensor(np.float32()).dtype)
-    self.assertEqual(dtypes.float16, _create_tensor(np.float16()).dtype)
+    self.assertEqual(dtypes.float64, _create_tensor(np.float64()).dtype)  # pylint: disable=no-value-for-parameter
+    self.assertEqual(dtypes.float32, _create_tensor(np.float32()).dtype)  # pylint: disable=no-value-for-parameter
+    self.assertEqual(dtypes.float16, _create_tensor(np.float16()).dtype)  # pylint: disable=no-value-for-parameter
     self.assertEqual(dtypes.float32, _create_tensor(0.0).dtype)
 
   def testSliceDimOutOfRange(self):

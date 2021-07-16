@@ -19,7 +19,28 @@ limitations under the License.
 
 namespace tensorflow {
 
-Status BuildXlaCompilationCache(OpKernelContext* ctx,
+xla::StatusOr<absl::optional<std::set<int>>> ParseVisibleDeviceList(
+    absl::string_view visible_device_list) {
+  std::set<int> gpu_ids;
+  if (visible_device_list.empty()) {
+    return {{absl::nullopt}};
+  }
+  const std::vector<string> visible_devices =
+      absl::StrSplit(visible_device_list, ',');
+  for (const string& platform_device_id_str : visible_devices) {
+    int32 platform_device_id;
+    if (!absl::SimpleAtoi(platform_device_id_str, &platform_device_id)) {
+      return errors::InvalidArgument(
+          "Could not parse entry in 'visible_device_list': '",
+          platform_device_id_str,
+          "'. visible_device_list = ", visible_device_list);
+    }
+    gpu_ids.insert(platform_device_id);
+  }
+  return {{gpu_ids}};
+}
+
+Status BuildXlaCompilationCache(DeviceBase* device, FunctionLibraryRuntime* flr,
                                 const XlaPlatformInfo& platform_info,
                                 XlaCompilationCache** cache) {
   if (platform_info.xla_device_metadata()) {
@@ -35,7 +56,7 @@ Status BuildXlaCompilationCache(OpKernelContext* ctx,
     return platform.status();
   }
 
-  xla::StatusOr<xla::Compiler*> compiler_for_platform =
+  StatusOr<xla::Compiler*> compiler_for_platform =
       xla::Compiler::GetForPlatform(platform.ValueOrDie());
   if (!compiler_for_platform.ok()) {
     // In some rare cases (usually in unit tests with very small clusters) we
@@ -59,7 +80,14 @@ Status BuildXlaCompilationCache(OpKernelContext* ctx,
   xla::LocalClientOptions client_options;
   client_options.set_platform(platform.ValueOrDie());
   client_options.set_intra_op_parallelism_threads(
-      ctx->device()->tensorflow_cpu_worker_threads()->num_threads);
+      device->tensorflow_cpu_worker_threads()->num_threads);
+
+  string allowed_gpus =
+      flr->config_proto()->gpu_options().visible_device_list();
+  TF_ASSIGN_OR_RETURN(absl::optional<std::set<int>> gpu_ids,
+                      ParseVisibleDeviceList(allowed_gpus));
+  client_options.set_allowed_devices(gpu_ids);
+
   auto client = xla::ClientLibrary::GetOrCreateLocalClient(client_options);
   if (!client.ok()) {
     return client.status();
@@ -75,21 +103,21 @@ Status BuildXlaCompilationCache(OpKernelContext* ctx,
   return Status::OK();
 }
 
-XlaPlatformInfo XlaPlatformInfoFromContext(OpKernelConstruction* ctx) {
-  DeviceType device_type = ctx->device_type();
+XlaPlatformInfo XlaPlatformInfoFromDevice(DeviceBase* device_base) {
+  auto device = static_cast<Device*>(device_base);
   se::Platform::Id platform_id = nullptr;
   const XlaDevice::Metadata* xla_device_metadata = nullptr;
-  se::DeviceMemoryAllocator* custom_allocator = nullptr;
+  std::shared_ptr<se::DeviceMemoryAllocator> custom_allocator;
 
-  if (ctx->device_type() == DeviceType(DEVICE_CPU)) {
+  if (device->device_type() == DEVICE_CPU) {
     platform_id = se::host::kHostPlatformId;
-  } else if (ctx->device_type() == DeviceType(DEVICE_GPU)) {
-    platform_id = ctx->device()
-                      ->tensorflow_gpu_device_info()
+  } else if (device->device_type() == DEVICE_GPU) {
+    platform_id = device->tensorflow_gpu_device_info()
                       ->stream->parent()
                       ->platform()
                       ->id();
-  } else if (XlaDevice::GetMetadata(ctx, &xla_device_metadata).ok()) {
+  } else if (XlaDevice::GetMetadataFromDevice(device, &xla_device_metadata)
+                 .ok()) {
     // If we are on an XlaDevice, use the underlying XLA platform's allocator
     // directly. We could use the StreamExecutor's allocator which may
     // theoretically be more correct, but XLA returns a nice OOM message in a
@@ -101,50 +129,46 @@ XlaPlatformInfo XlaPlatformInfoFromContext(OpKernelConstruction* ctx) {
     // allocator to allocate real buffers.
     platform_id = xla_device_metadata->platform()->id();
     custom_allocator =
-        xla_device_metadata->client()->backend().memory_allocator();
+        xla_device_metadata->client()->backend().shared_memory_allocator();
   }
 
-  return XlaPlatformInfo(device_type, platform_id, xla_device_metadata,
-                         custom_allocator);
+  return XlaPlatformInfo(DeviceType(device->device_type()), platform_id,
+                         xla_device_metadata, custom_allocator);
 }
 
-se::DeviceMemoryAllocator* GetAllocator(
-    absl::optional<se::TfAllocatorAdapter>* tf_allocator_adapter,
-    OpKernelContext* ctx, const XlaPlatformInfo& platform_info) {
+std::shared_ptr<se::DeviceMemoryAllocator> GetAllocator(
+    DeviceBase* device, se::Stream* stream,
+    const XlaPlatformInfo& platform_info) {
   if (platform_info.custom_allocator()) {
     return platform_info.custom_allocator();
   }
-  if (!ctx->op_device_context()) {
+  auto* alloc = device->GetAllocator({});
+  if (!stream) {
     // Stream is not set for the host platform.
     se::Platform* platform =
         se::MultiPlatformManager::PlatformWithId(platform_info.platform_id())
             .ValueOrDie();
-    tf_allocator_adapter->emplace(ctx->device()->GetAllocator({}), platform);
-    return &tf_allocator_adapter->value();
+    return std::make_shared<se::TfAllocatorAdapter>(alloc, platform);
   }
-  tf_allocator_adapter->emplace(ctx->device()->GetAllocator({}),
-                                ctx->op_device_context()->stream());
-  return &tf_allocator_adapter->value();
+  return std::make_shared<se::TfAllocatorAdapter>(alloc, stream);
 }
 
 XlaCompiler::Options GenerateCompilerOptions(
-    const XlaCompilationCache& cache, OpKernelContext* ctx,
-    const XlaPlatformInfo& platform_info, bool has_ref_vars,
-    absl::optional<se::TfAllocatorAdapter>* tf_allocator_adapter) {
-  CHECK(ctx->function_library());
+    const XlaCompilationCache& cache,
+    const FunctionLibraryRuntime& function_library, DeviceBase* device,
+    se::Stream* stream, const XlaPlatformInfo& platform_info,
+    bool has_ref_vars) {
   XlaCompiler::Options options;
   options.client = static_cast<xla::LocalClient*>(cache.client());
-  if (ctx->op_device_context() != nullptr) {
-    options.device_ordinal =
-        ctx->op_device_context()->stream()->parent()->device_ordinal();
+  if (stream != nullptr) {
+    options.device_ordinal = stream->parent()->device_ordinal();
   }
   options.device_type = cache.device_type();
-  options.flib_def = ctx->function_library()->GetFunctionLibraryDefinition();
-  options.graph_def_version = ctx->function_library()->graph_def_version();
+  options.flib_def = function_library.GetFunctionLibraryDefinition();
+  options.graph_def_version = function_library.graph_def_version();
   options.allow_cpu_custom_calls =
       (platform_info.platform_id() == se::host::kHostPlatformId);
-  options.device_allocator =
-      GetAllocator(tf_allocator_adapter, ctx, platform_info);
+  options.device_allocator = GetAllocator(device, stream, platform_info);
   if (platform_info.xla_device_metadata()) {
     options.shape_representation_fn =
         platform_info.xla_device_metadata()->shape_representation_fn();

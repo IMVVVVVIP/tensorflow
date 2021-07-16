@@ -17,12 +17,13 @@ limitations under the License.
 
 #include "llvm/ADT/StringSwitch.h"
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
+#include "mlir-hlo/Dialect/mhlo/transforms/PassDetail.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/passes.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
-#include "mlir/IR/Function.h"
-#include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 namespace {
@@ -117,7 +118,7 @@ class ConvertIotaOp : public OpRewritePattern<mhlo::IotaOp> {
                                 PatternRewriter &rewriter) const override {
     auto output_type = op.getType().cast<ShapedType>();
     auto output_size = output_type.getNumElements();
-    auto dimension = op.iota_dimension().getSExtValue();
+    auto dimension = op.iota_dimension();
     auto max_dim_size = output_type.getDimSize(dimension);
 
     auto element_type = output_type.getElementType();
@@ -145,7 +146,7 @@ class ConvertIotaOp : public OpRewritePattern<mhlo::IotaOp> {
 
     auto int_shape_type = RankedTensorType::get(
         output_type.getShape(),
-        IntegerType::get(bitwidth, rewriter.getContext()));
+        IntegerType::get(rewriter.getContext(), bitwidth));
     auto loc = op.getLoc();
     auto integer_const = rewriter.create<mlir::ConstantOp>(
         loc, DenseIntElementsAttr::get(int_shape_type, values));
@@ -177,7 +178,11 @@ class ConvertIotaOp : public OpRewritePattern<mhlo::IotaOp> {
 
 namespace {
 struct LegalizeToStandardPass
-    : public PassWrapper<LegalizeToStandardPass, FunctionPass> {
+    : public LegalizeToStandardPassBase<LegalizeToStandardPass> {
+  void getDependentDialects(DialectRegistry &registry) const override {
+    registry.insert<StandardOpsDialect>();
+  }
+
   /// Perform the lowering to Standard dialect.
   void runOnFunction() override;
 };
@@ -189,15 +194,15 @@ std::unique_ptr<mlir::OperationPass<mlir::FuncOp>> createLegalizeToStdPass() {
 
 void PopulateMhloToStdPatterns(OwningRewritePatternList *patterns,
                                mlir::MLIRContext *ctx) {
-  mlir::populateWithGenerated(ctx, patterns);
+  mlir::populateWithGenerated(*patterns);
   patterns->insert<CompareFConvert, CompareIConvert, ConvertIotaOp>(ctx);
 }
 
 /// Perform the lowering to standard dialect.
 void LegalizeToStandardPass::runOnFunction() {
-  OwningRewritePatternList patterns;
+  OwningRewritePatternList patterns(&getContext());
   mlir::mhlo::PopulateMhloToStdPatterns(&patterns, &getContext());
-  applyPatternsAndFoldGreedily(getFunction(), patterns);
+  (void)applyPatternsAndFoldGreedily(getFunction(), std::move(patterns));
 }
 
 }  // end namespace mhlo

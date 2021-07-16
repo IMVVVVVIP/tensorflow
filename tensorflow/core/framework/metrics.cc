@@ -14,7 +14,10 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/framework/metrics.h"
+
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/lib/monitoring/counter.h"
+#include "tensorflow/core/lib/monitoring/gauge.h"
 #include "tensorflow/core/lib/monitoring/sampler.h"
 
 namespace tensorflow {
@@ -41,6 +44,12 @@ auto* graph_run_time_usecs_histogram = monitoring::Sampler<0>::New(
      "The wall-clock time spent on executing graphs in microseconds."},
     // Power of 2 with bucket count 20 (> 17 minutes)
     {monitoring::Buckets::Exponential(1000, 2, 20)});
+
+auto* graph_pending_queue_length_histogram = monitoring::Sampler<0>::New(
+    {"/tensorflow/core/graph_pending_queue_length_histogram",
+     "The number of pending (ready but not running) tasks in graph executor."},
+    // Power of 1.5 with bucket count 30 (> 191k)
+    {monitoring::Buckets::Exponential(1, 1.5, 30)});
 
 auto* graph_run_input_tensor_bytes = monitoring::Sampler<0>::New(
     {"/tensorflow/core/graph_run_input_tensor_bytes",
@@ -88,28 +97,38 @@ auto* tf_data_experiment_counter = monitoring::Counter<1>::New(
 auto* tf_data_fingerprint_counter = monitoring::Counter<1>::New(
     "/tensorflow/data/fingerprint", "tf.data fingerprint", "name");
 
-auto* tf_data_getnext_duration_usecs_histogram = monitoring::Sampler<0>::New(
+auto* tf_data_get_next_duration_usecs_histogram = monitoring::Sampler<0>::New(
     {"/tensorflow/data/getnext_duration",
-     "Microseconds spent fetching an element from tf.data Dataset iterator."},
+     "Microseconds spent fetching an element from tf.data iterator."},
     // Power of 2 with bucket count 10 (1024 microseconds) and 1 second.
     {monitoring::Buckets::Explicit(
         {2., 4., 8., 16., 32., 64., 128., 256., 512., 1024., 1e6})});
 
-auto* tf_data_getnext_time_between_msecs_histogram =
-    monitoring::Sampler<0>::New(
-        {"/tensorflow/data/getnext_time_between",
-         "Milliseconds spent in between calls to tf.data Dataset iterator."},
-        // A typical training step is in the 200ms to 1 second range.
-        // Elapsed time less than 25ms are likely due to multiple devices
-        // calling the iterator's getNext() during the same step. Bucket density
-        // is highest for small time intervals to more accurately measure fast
-        // ingest rates. Buckets from 25ms to 10 seconds.
-        {monitoring::Buckets::Explicit({25., 50., 75., 100., 125., 150., 175.,
-                                        200., 225., 250., 300., 350., 400.,
-                                        450., 500., 1000., 10000.})});
+auto* tf_data_iterator_busy_counter =
+    monitoring::Counter<0>::New("/tensorflow/data/iterator_busy",
+                                "The time (in microseconds) during which a "
+                                "tf.data iterator was busy processing at "
+                                "least one `GetNext()` request.");
+
+auto* tf_data_iterator_lifetime_counter = monitoring::Counter<0>::New(
+    "/tensorflow/data/iterator_lifetime",
+    "The time (in microseconds) between a tf.data iterator receiving the first "
+    "`GetNext()` request and responding to the last `GetNext()` request.");
 
 auto* tf_data_optimization_counter = monitoring::Counter<1>::New(
     "/tensorflow/data/optimization", "tf.data optimization", "name");
+
+auto* tf_data_service_workers_created_counter =
+    monitoring::Counter<0>::New("/tensorflow/data/service/workers_created",
+                                "Number of tf.data service workers created");
+
+auto* tf_data_filename_counter = monitoring::Counter<2>::New(
+    "/tensorflow/data/filename", "The file name read by a tf.data Dataset.",
+    "name", "filename");
+
+auto* tf_data_model_gauge =
+    monitoring::Gauge<std::function<std::string()>, 1>::New(
+        "/tensorflow/data/model", "tf.data autotuning model proto.", "id");
 
 auto* parse_dense_feature_counter = monitoring::Counter<0>::New(
     "/tensorflow/data/dense_feature",
@@ -149,14 +168,20 @@ auto* xla_compilation_time_usecs = monitoring::Counter<0>::New(
     "/tensorflow/core/xla_compilation_time_usecs",
     "The total time spent on compiling XLA graphs in microseconds.");
 
-auto* mlir_import_failure_count = monitoring::Counter<0>::New(
-    "/tensorflow/mlir/import_failure_count",
-    "The number of jobs that failed during mlir import or verification.");
+auto* xla_tpu_spmd_cores_per_replica = monitoring::Counter<1>::New(
+    "/tensorflow/tpu/xla_spmd_cores_per_replica",
+    "The number of cores used by XLA SPMD-replicated models.", "cores");
 
 auto* bfc_allocator_delay =
     monitoring::Counter<0>::New("/tensorflow/core/bfc_allocator_delay",
                                 "The total time spent running each graph "
                                 "optimization pass in microseconds.");
+
+auto* tpu_variable_distribution_time_usecs = monitoring::Counter<0>::New(
+    "/tensorflow/tpu/variable_distribution_time",
+    "Time spent sending variables from primary task to other worker tasks "
+    "at the start of a call to TPUExecute.  Timer starts at RunGraph "
+    "invocation and ends when TPUExecute args are ready on the current task.");
 
 }  // namespace
 
@@ -180,6 +205,11 @@ monitoring::CounterCell* GetTFDataElementsCounter(const string& name) {
   return tf_data_elements_counter->GetCell(name);
 }
 
+monitoring::GaugeCell<std::function<std::string()>>* GetTFDataModelGauge(
+    const string& id) {
+  return tf_data_model_gauge->GetCell(id);
+}
+
 void RecordTFDataBytesFetched(int64 num_bytes) {
   tf_data_bytes_fetched_counter->GetCell()->IncrementBy(num_bytes);
 }
@@ -193,21 +223,33 @@ void RecordTFDataFingerprint(const string& name) {
 }
 
 void RecordTFDataGetNextDuration(uint64 duration_us) {
-  static auto* tfdata_getnext_duration_cell =
-      tf_data_getnext_duration_usecs_histogram->GetCell();
-  tfdata_getnext_duration_cell->Add(duration_us);
+  static auto* tf_data_get_next_duration_cell =
+      tf_data_get_next_duration_usecs_histogram->GetCell();
+  tf_data_get_next_duration_cell->Add(duration_us);
 }
 
-void RecordTFDataGetNextTimeBetween(uint64 duration_us) {
-  static auto* tfdata_getnext_time_between_cell =
-      tf_data_getnext_time_between_msecs_histogram->GetCell();
-  // Convert to milliseconds for histogram
-  const auto duration_ms = duration_us / 1000;
-  tfdata_getnext_time_between_cell->Add(duration_ms);
+void RecordTFDataIteratorBusy(uint64 duration_us) {
+  static auto* tf_data_iterator_busy_cell =
+      tf_data_iterator_busy_counter->GetCell();
+  tf_data_iterator_busy_cell->IncrementBy(duration_us);
+}
+
+void RecordTFDataIteratorLifetime(uint64 duration_us) {
+  static auto* tf_data_iterator_lifetime_cell =
+      tf_data_iterator_lifetime_counter->GetCell();
+  tf_data_iterator_lifetime_cell->IncrementBy(duration_us);
 }
 
 void RecordTFDataOptimization(const string& name, int64 num_changes) {
   tf_data_optimization_counter->GetCell(name)->IncrementBy(num_changes);
+}
+
+void RecordTFDataServiceWorkerCreated() {
+  tf_data_service_workers_created_counter->GetCell()->IncrementBy(1);
+}
+
+void RecordTFDataFilename(const string& name, const string& filename) {
+  tf_data_filename_counter->GetCell(name, filename)->IncrementBy(1);
 }
 
 void RecordParseDenseFeature(int64 num_features) {
@@ -240,6 +282,11 @@ void RecordGraphOutputTensors(const size_t size) {
   graph_run_output_tensor_bytes_cell->Add(size);
 }
 
+void RecordTPUXlaSpmdCoresPerReplica(int64 cores_per_replica) {
+  xla_tpu_spmd_cores_per_replica->GetCell(absl::StrCat(cores_per_replica))
+      ->IncrementBy(1);
+}
+
 void UpdateGraphExecTime(const uint64 running_time_usecs) {
   if (running_time_usecs > 0) {
     static auto* graph_runs_cell = graph_runs->GetCell();
@@ -250,6 +297,12 @@ void UpdateGraphExecTime(const uint64 running_time_usecs) {
     graph_run_time_usecs_cell->IncrementBy(running_time_usecs);
     graph_run_time_usecs_histogram_cell->Add(running_time_usecs);
   }
+}
+
+void UpdateGraphPendingQueueLength(uint64 len) {
+  static auto* graph_pending_queue_length_cell =
+      graph_pending_queue_length_histogram->GetCell();
+  graph_pending_queue_length_cell->Add(len);
 }
 
 void UpdateGraphOptimizationPassTime(const string& pass_name,
@@ -278,6 +331,13 @@ void UpdateGraphBuildTime(const uint64 running_time_usecs) {
   }
 }
 
+void UpdateTpuVariableDistributionTime(const uint64 distribution_time_usecs) {
+  if (distribution_time_usecs > 0) {
+    tpu_variable_distribution_time_usecs->GetCell()->IncrementBy(
+        distribution_time_usecs);
+  }
+}
+
 void UpdateXlaCompilationTime(const uint64 compilation_time_usecs) {
   if (compilation_time_usecs > 0) {
     static auto* xla_compilations_cell = xla_compilations->GetCell();
@@ -293,12 +353,6 @@ void UpdateBfcAllocatorDelayTime(const uint64 delay_usecs) {
   if (delay_usecs > 0) {
     bfc_allocator_delay_cell->IncrementBy(delay_usecs);
   }
-}
-
-void IncrementMLIRImportFailureCount() {
-  static auto* mlir_import_failure_count_cell =
-      mlir_import_failure_count->GetCell();
-  mlir_import_failure_count_cell->IncrementBy(1);
 }
 
 void RecordUnusedOutput(const string& op_name) {

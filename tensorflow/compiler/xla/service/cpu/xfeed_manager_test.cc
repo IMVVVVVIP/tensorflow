@@ -114,9 +114,9 @@ TEST_F(InfeedManagerTest, MultiThreaded) {
 
   pool.Schedule([length, &xfeed]() {
     // Spin for 100 milliseconds
-    int64 start_micros = tensorflow::Env::Default()->NowMicros();
+    int64_t start_micros = tensorflow::Env::Default()->NowMicros();
     while (true) {
-      int64 end_micros = tensorflow::Env::Default()->NowMicros();
+      int64_t end_micros = tensorflow::Env::Default()->NowMicros();
       if ((end_micros - start_micros) >= 100000) {  // 100 ms
         break;
       }
@@ -126,6 +126,22 @@ TEST_F(InfeedManagerTest, MultiThreaded) {
   });
 
   ProcessNextBuffer(length);
+}
+
+TEST_F(InfeedManagerTest, OutfeedBasic) {
+  TestInfeedBuffer* b = new TestInfeedBuffer(32, /*expect_shape_match=*/true);
+  cpu::runtime::XfeedManager* xfeed = cpu::runtime::GetXfeedManager(0);
+  xfeed->outfeed()->EnqueueBuffersAtomically({b});
+
+  ProcessNextOutfeedBuffer(32, ShapeUtil::MakeShape(U8, {32}));
+}
+
+TEST_F(InfeedManagerTest, OutfeedEmpty) {
+  TestInfeedBuffer* b = new TestInfeedBuffer(0, /*expect_shape_match=*/true);
+  cpu::runtime::XfeedManager* xfeed = cpu::runtime::GetXfeedManager(0);
+  xfeed->outfeed()->EnqueueBuffersAtomically({b});
+
+  ProcessNextOutfeedBuffer(0, ShapeUtil::MakeShape(U8, {0}));
 }
 
 TEST_F(InfeedManagerTest, OutfeedWrongShape) {

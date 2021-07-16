@@ -59,6 +59,11 @@ class ArrayTest(PForTestCase):
         outputs.append(array_ops.gather(y, [i, 1, 2], axis=2, batch_dims=1))
         outputs.append(array_ops.gather(y, [[2, i], [i, 1], [2, 1]],
                                         axis=-1, batch_dims=1))
+        outputs.append(
+            array_ops.gather(y, [[0, 1, 2]] * 3, axis=2, batch_dims=2))
+        outputs.append(array_ops.gather(y, [0, 1, 2], axis=1, batch_dims=-1))
+        outputs.append(
+            array_ops.gather(y, [[0, 1, 2]] * 3, axis=2, batch_dims=-2))
 
       return outputs
 
@@ -193,6 +198,17 @@ class ArrayTest(PForTestCase):
     def loop_fn(i):
       x1 = array_ops.gather(x, i)
       return array_ops.slice(x1, begin=(0, 1), size=(2, 1))
+
+    self._test_loop_fn(loop_fn, 3)
+
+  def test_slice_loop_variant_begin(self):
+    self.skipTest("TODO(b/191880259): re-enable once XLA compile times are "
+                  "addressed.")
+    x = random_ops.random_uniform([3, 2, 5, 3])
+
+    def loop_fn(i):
+      x1 = array_ops.gather(x, i)
+      return array_ops.slice(x1, begin=(0, 2 - i, i), size=(-1, 2, 1))
 
     self._test_loop_fn(loop_fn, 3)
 

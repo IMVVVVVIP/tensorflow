@@ -88,7 +88,6 @@ ProcessFunctionLibraryRuntime::ProcessFunctionLibraryRuntime(
     const OptimizerOptions& optimizer_options,
     thread::ThreadPool* default_thread_pool,
     DistributedFunctionLibraryRuntime* parent,
-    const CustomKernelCreator* custom_kernel_creator,
     const SessionMetadata* session_metadata,
     Rendezvous::Factory rendezvous_factory)
     : parent_(parent),
@@ -101,28 +100,23 @@ ProcessFunctionLibraryRuntime::ProcessFunctionLibraryRuntime(
                                       std::unique_ptr<FunctionLibraryRuntime>>),
       next_handle_(0),
       session_metadata_(session_metadata),
-      rendezvous_factory_(std::move(rendezvous_factory)) {
+      rendezvous_factory_(std::move(rendezvous_factory)),
+      optimizer_options_(optimizer_options),
+      graph_def_version_(graph_def_version) {
   if (device_mgr == nullptr) {
     (*flr_map_)[nullptr] = NewFunctionLibraryRuntime(
         nullptr, env, config_ ? &(*config_) : nullptr, nullptr,
         graph_def_version, lib_def_, default_thread_pool, optimizer_options,
-        custom_kernel_creator, session_metadata_, this);
+        session_metadata_, this);
     return;
   }
-  for (Device* d : device_mgr->ListDevices()) {
-    (*flr_map_)[d] = NewFunctionLibraryRuntime(
-        device_mgr, env, config_ ? &(*config_) : nullptr, d, graph_def_version,
-        lib_def_, default_thread_pool, optimizer_options, custom_kernel_creator,
-        session_metadata_, this);
-  }
-
-  InitializeDeviceSet();
+  InitializeDeviceAndFlr();
 }
 
 /* static */
 Status ProcessFunctionLibraryRuntime::SendTensors(
     const string& source_device, const string& target_device,
-    const string& key_prefix, int64 src_incarnation,
+    const string& key_prefix, int64_t src_incarnation,
     gtl::ArraySlice<Tensor> tensors_to_send, DeviceContext* device_context,
     const std::vector<AllocatorAttributes>& alloc_attrs,
     RendezvousInterface* rendezvous) {
@@ -141,13 +135,13 @@ Status ProcessFunctionLibraryRuntime::SendTensors(
 /* static */
 void ProcessFunctionLibraryRuntime::ReceiveTensorsAsync(
     const string& source_device, const string& target_device,
-    const string& key_prefix, int64 src_incarnation, int64 num_tensors,
+    const string& key_prefix, int64_t src_incarnation, int64_t num_tensors,
     DeviceContext* device_context,
     const std::vector<AllocatorAttributes>& alloc_attrs,
     RendezvousInterface* rendezvous, std::vector<Tensor>* received_tensors,
     StatusCallback done) {
   std::vector<string> keys;
-  for (int64 i = 0; i < num_tensors; ++i) {
+  for (int64_t i = 0; i < num_tensors; ++i) {
     string name = strings::StrCat(key_prefix, i);
     string key = Rendezvous::CreateKey(source_device, src_incarnation,
                                        target_device, name, FrameAndIter(0, 0));
@@ -201,19 +195,21 @@ Status ProcessFunctionLibraryRuntime::GetDeviceContext(
     // "TPU_SYSTEM" indicates that `device` is a CPU.
     return Status::OK();
   }
-  if (device_type == "GPU" || device_type == "TPU") {
+
+  if (device->IsRemoteCallAllowed()) {
     auto* dev_info = flr->device()->tensorflow_gpu_device_info();
     if (dev_info) {
       *device_context = dev_info->default_context;
       return Status::OK();
     }
   }
+
   return errors::Internal("Device type: ", device_type,
                           " is currently unsupported for remote ",
                           "function executions");
 }
 
-void ProcessFunctionLibraryRuntime::InitializeDeviceSet() {
+void ProcessFunctionLibraryRuntime::InitializeDeviceAndFlr() {
   DeviceMgr const* all_devices = device_mgr_;
   if (parent_ != nullptr && parent_->remote_device_mgr() != nullptr) {
     all_devices = parent_->remote_device_mgr();
@@ -223,6 +219,14 @@ void ProcessFunctionLibraryRuntime::InitializeDeviceSet() {
   device_set_ = std::make_shared<DeviceSet>();
   for (auto d : all_devices->ListDevices()) {
     device_set_->AddDevice(d);
+  }
+  for (Device* d : device_mgr_->ListDevices()) {
+    if ((*flr_map_)[d] == nullptr) {
+      (*flr_map_)[d] = NewFunctionLibraryRuntime(
+          device_mgr_, env_, config_ ? &(*config_) : nullptr, d,
+          graph_def_version_, lib_def_, default_thread_pool_,
+          optimizer_options_, session_metadata_, this);
+    }
   }
 }
 
@@ -419,7 +423,7 @@ Status ProcessFunctionLibraryRuntime::PinArgsAndRets(
     const std::vector<string>& input_devices,
     const std::vector<string>& output_devices, const DeviceSet& device_set,
     const std::vector<Node*>& arg_nodes, const std::vector<Node*>& ret_nodes,
-    Device* default_device) const {
+    const FunctionLibraryDefinition* lib_def, Device* default_device) {
   // If output_devices are not specified, we want to set the output device
   // based on the device of the output producing node. The output producing
   // node can be an arg node because functions can simply return their
@@ -428,7 +432,7 @@ Status ProcessFunctionLibraryRuntime::PinArgsAndRets(
   for (Node* node : arg_nodes) {
     const AttrValue* attr_value;
     TF_RETURN_IF_ERROR(node->attrs().Find("index", &attr_value));
-    int64 index = attr_value->i();
+    int64_t index = attr_value->i();
     node->set_assigned_device_name(input_devices[index]);
   }
 
@@ -466,18 +470,6 @@ Status ProcessFunctionLibraryRuntime::PinArgsAndRets(
                   << " src_device: " << *src_device
                   << " colo group: " << colocation_group;
         }
-        // If colocation_group is not set and output producing node is assigned
-        // to a remote device, colocate the retval node with its input node.
-        // TODO(yujingzhang): Remove this when we support outputting tensors on
-        // remote devices.
-        const bool remote_src_device =
-            !src_device->empty() && GetFLR(*src_device) == nullptr;
-        if (colocation_group.empty() && remote_src_device) {
-          colocation_group =
-              absl::StrCat(kColocationGroupPrefix, it->src()->name());
-          VLOG(3) << "Considering src: " << src_node->name()
-                  << " colo group: " << colocation_group;
-        }
 
         // If resource is produced by a function call node, we can't trust
         // source node device assignment, because multi-device functions can
@@ -485,7 +477,7 @@ Status ProcessFunctionLibraryRuntime::PinArgsAndRets(
         // retval device assignment empty, and rely on placer to infer correct
         // assignment based on actual output device.
         const bool can_use_src_node_device =
-            !(dtype == DT_RESOURCE && IsFunctionCall(*lib_def_, *src_node));
+            !(dtype == DT_RESOURCE && IsFunctionCall(*lib_def, *src_node));
 
         if (!colocation_group.empty()) {
           AttrValue::ListValue colo_attr;
@@ -510,6 +502,36 @@ Status ProcessFunctionLibraryRuntime::PinArgsAndRets(
                   "Unable to find any devices for spec ", *src_device);
             }
           } else if (matching_devices.size() != 1) {
+            bool on_same_task = true;
+            for (int i = 1; i < matching_devices.size(); ++i) {
+              if (!DeviceNameUtils::IsSameAddressSpace(
+                      matching_devices.at(0)->parsed_name(),
+                      matching_devices.at(i)->parsed_name())) {
+                on_same_task = false;
+                break;
+              }
+            }
+            // If the src node of an output is assigned to a address space (e.g.
+            // py_func), rely on placer to assign a device to the output.
+            if (on_same_task) {
+              continue;
+            }
+            // Compare with default_device if it has a narrower scope matching
+            // requested device.
+            int colocated_on_default_device = 0;
+            for (int i = 0; i < matching_devices.size(); ++i) {
+              if (DeviceNameUtils::IsSameAddressSpace(
+                      default_device->parsed_name(),
+                      matching_devices.at(i)->parsed_name())) {
+                colocated_on_default_device++;
+              }
+            }
+            // Continue to raise error if multiple colocated devices are
+            // found.
+            if (colocated_on_default_device == 1) {
+              continue;
+            }
+
             // Convert a vector of devices to a string.
             // Using absl::StrJoin did not work in Android builds.
             string devices = "[";
@@ -523,6 +545,7 @@ Status ProcessFunctionLibraryRuntime::PinArgsAndRets(
             devices.append("]");
 
             return errors::InvalidArgument(
+                *src_device,
                 "When FunctionLibraryRuntime::Options.output_devices are "
                 "not specified for a multi-device function, the device "
                 "specification on the output node must match exactly one "
@@ -540,7 +563,7 @@ Status ProcessFunctionLibraryRuntime::PinArgsAndRets(
     } else {
       const AttrValue* attr_value;
       TF_RETURN_IF_ERROR(node->attrs().Find("index", &attr_value));
-      int64 index = attr_value->i();
+      int64_t index = attr_value->i();
       // output_devices size is checked in InstantiateMultiDevice
       DCHECK_GT(output_devices.size(), index);
       VLOG(3) << "Setting output device to " << output_devices[index]
@@ -604,6 +627,8 @@ Status ValidateMultiDeviceOptions(
   return Status::OK();
 }
 
+}  // anonymous namespace
+
 Status GetGraphAndArgRets(
     const string& function_name, AttrSlice attrs, const FunctionDef* fdef,
     const FunctionLibraryDefinition* lib_def, std::unique_ptr<Graph>* graph,
@@ -639,8 +664,6 @@ Status GetGraphAndArgRets(
   }
   return Status::OK();
 }
-
-}  // anonymous namespace
 
 Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
     const string& function_name, AttrSlice attrs,
@@ -695,11 +718,13 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
       function_name, attrs, fdef, lib_def, &graph, &arg_nodes, &ret_nodes,
       &ret_node_names, &ret_types, &control_ret_node_names));
 
+  GraphDef graph_def;
+  graph->ToGraphDef(&graph_def);
+  FunctionLibraryDefinition reachable_lib_def =
+      lib_def->ReachableDefinitions(graph_def);
+  *graph_def.mutable_library() = reachable_lib_def.ToProto();
   if (options.graph_collector != nullptr) {
-    GraphDef def;
-    graph->ToGraphDef(&def);
-    *def.mutable_library() = lib_def->ReachableDefinitions(def).ToProto();
-    options.graph_collector->CollectRawGraph(def);
+    options.graph_collector->CollectRawGraph(graph_def);
   }
 
   Device* default_device = nullptr;
@@ -721,20 +746,38 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
       SetArgShape(options.input_resource_dtypes_and_shapes, arg_nodes));
   TF_RETURN_IF_ERROR(PinArgsAndRets(
       options.input_devices, options.output_devices, *dev_set, arg_nodes,
-      ret_nodes,
+      ret_nodes, lib_def_,
       options.config_proto.allow_soft_placement() ? default_device : nullptr));
 
   auto data = absl::make_unique<MultiDeviceFunctionData>(
       function_name, function_key, ret_node_names.size(),
-      lib_def->ReachableDefinitions(*fdef), std::move(ret_types));
+      std::move(reachable_lib_def), std::move(ret_types));
+
+  // The runtime shouldn't depend on duplication between the function library
+  // owned by the graph and the one owned by the runtime. To ensure this, for
+  // now we ensure that the graph function library is empty and the runtime
+  // library receives the query from LookUps on the graph function library.
+  graph->mutable_flib_def()->set_default_registry(&data->lib_def_);
+  graph->mutable_flib_def()->Clear();
+
+  // Do not run function/graph optimization passes for component functions,
+  // since they have already processed the main function.
+  const bool should_run_optimization_passes = !options.is_component_function;
+  if (!should_run_optimization_passes) {
+    VLOG(1) << "Skipping function/graph optimization passes when instantiating "
+               "component function "
+            << function_name;
+  }
 
   // Mapping from a function body node name to the control output name.
   std::unordered_map<string, string> node_name_to_control_ret;
 
   bool control_rets_updated = false;
-  TF_RETURN_IF_ERROR(FunctionOptimizationPassRegistry::Global().Run(
-      *dev_set, options.config_proto, &graph, &data->lib_def_,
-      &control_ret_node_names, &control_rets_updated));
+  if (should_run_optimization_passes) {
+    TF_RETURN_IF_ERROR(FunctionOptimizationPassRegistry::Global().Run(
+        *dev_set, options.config_proto, &graph, &data->lib_def_,
+        &control_ret_node_names, &control_rets_updated));
+  }
 
   if (control_rets_updated) {
     // Function graph pass may have resulted in different nodes/node names for
@@ -758,18 +801,17 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
   optimization_options.flib_def = &data->lib_def_;
   optimization_options.device_set = dev_set.get();
   optimization_options.is_function_graph = true;
-
-  // Do not run graph optimization passes for component functions, since they
-  // have already processed the main function.
-  bool should_run_graph_passes = !options.is_component_function;
-  if (!should_run_graph_passes) {
-    VLOG(1) << "Skipping graph optimization passes when instantiating "
-               "component function "
-            << function_name;
+  std::vector<CompositeDevice*> composite_devices;
+  {
+    tf_shared_lock l(mu_);
+    for (auto* d : composite_devices_) composite_devices.push_back(d);
   }
+  optimization_options.composite_devices = &composite_devices;
+  optimization_options.default_function_device = default_device;
+  optimization_options.function_def = fdef;
 
   DumpGraph("Before running PRE_PLACEMENT passes", graph.get());
-  if (should_run_graph_passes) {
+  if (should_run_optimization_passes) {
     TF_RETURN_IF_ERROR(OptimizationPassRegistry::Global()->RunGrouping(
         OptimizationPassRegistry::PRE_PLACEMENT, optimization_options));
   }
@@ -784,7 +826,7 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
   TF_RETURN_IF_ERROR(placer.Run());
 
   DumpGraph("Before running POST_PLACEMENT passes", graph.get());
-  if (should_run_graph_passes) {
+  if (should_run_optimization_passes) {
     TF_RETURN_IF_ERROR(OptimizationPassRegistry::Global()->RunGrouping(
         OptimizationPassRegistry::POST_PLACEMENT, optimization_options));
   }
@@ -805,7 +847,7 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
   }
 
   DumpGraph("Before running POST_REWRITE_FOR_EXEC passes", graph.get());
-  if (should_run_graph_passes) {
+  if (should_run_optimization_passes) {
     TF_RETURN_IF_ERROR(OptimizationPassRegistry::Global()->RunGrouping(
         OptimizationPassRegistry::POST_REWRITE_FOR_EXEC, optimization_options));
   }
@@ -843,7 +885,7 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
   // Normally POST_PARTITIONING passes are run by distributed workers.
   // Distributed workers are currently not supported in this code path, so we
   // run the passes here.
-  if (should_run_graph_passes) {
+  if (should_run_optimization_passes) {
     TF_RETURN_IF_ERROR(OptimizationPassRegistry::Global()->RunGrouping(
         OptimizationPassRegistry::POST_PARTITIONING, optimization_options));
   }
@@ -968,6 +1010,7 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
         Status s = flr->Instantiate(unique_name, attrs, opts, component_handle);
         done(s);
       } else {
+        opts.ret_indices = comp_data->ret_indices;
         // Initialize remote function asynchronously.
         InstantiateRemote(unique_name, attrs, opts, component_handle, done);
       }
@@ -990,7 +1033,7 @@ Status ProcessFunctionLibraryRuntime::InstantiateMultiDevice(
 Status ProcessFunctionLibraryRuntime::GetOutputDevices(
     FunctionLibraryRuntime::Handle handle,
     std::vector<Device*>* output_devices) const {
-  const MultiDeviceFunctionData* data = IsMultiDevice(handle);
+  MultiDeviceFunctionData* data = IsMultiDevice(handle);
   if (data == nullptr) {
     return errors::InvalidArgument(
         "Failed for find multi-device function handle ", handle);
@@ -1008,6 +1051,9 @@ Status ProcessFunctionLibraryRuntime::GetOutputDevices(
     Device* target_device = nullptr;
     Device* host = nullptr;
     if (target_flr == nullptr) {
+      if (!data->has_remote_outputs) {
+        data->has_remote_outputs = true;
+      }
       target_device = device_set()->FindDeviceByName(target);
       string remote_host;
       TF_RETURN_IF_ERROR(
@@ -1113,10 +1159,11 @@ void ProcessFunctionLibraryRuntime::RunMultiDevice(
     rets->resize(data->num_outputs_);
 
     auto component_fn_callback = [comp_rets, rets, comp_data, refcounted_done,
-                                  cm, local_cm, data,
+                                  cm, local_cm, data, handle,
                                   target](const Status& status) {
       if (!status.ok()) {
         VLOG(2) << "Component function execution on target " << target
+                << " from " << data->function_name_ << " with handle " << handle
                 << " failed: " << status;
         const string function_and_msg = strings::StrCat(
             errors::FormatFunctionForError(data->function_name_), " ",
@@ -1126,6 +1173,7 @@ void ProcessFunctionLibraryRuntime::RunMultiDevice(
         cm->StartCancel();
       } else {
         VLOG(2) << "Component function execution on target " << target
+                << " from " << data->function_name_ << " with handle " << handle
                 << " succeeded.";
         for (int i = 0; i < comp_rets->size(); ++i) {
           (*rets)[comp_data.ret_indices[i]] = (*comp_rets)[i];
@@ -1144,8 +1192,8 @@ void ProcessFunctionLibraryRuntime::RunMultiDevice(
       thread::ThreadPool* pool = flr->device()->tensorflow_device_thread_pool();
       opts_copy.runner = (pool == nullptr) ? opts_copy.runner : flr->runner();
 
-      VLOG(1) << "Running component function on device " << target
-              << " with handle " << handle;
+      VLOG(1) << "Running component function on device " << target << " from "
+              << data->function_name_ << " with handle " << handle;
       VLOG(4) << "    with " << opts_copy.DebugString();
 
       std::vector<Tensor>* comp_tensor_rets = new std::vector<Tensor>;
@@ -1156,8 +1204,8 @@ void ProcessFunctionLibraryRuntime::RunMultiDevice(
     } else {
       opts_copy.remote_execution = true;
 
-      VLOG(1) << "Running component function on device " << target
-              << " with handle " << handle;
+      VLOG(1) << "Running component function on device " << target << " from "
+              << data->function_name_ << " with handle " << handle;
       VLOG(4) << "    with " << opts_copy.DebugString();
 
       RunInternal(opts_copy, handle, comp_args.args, comp_rets, cleanup_items,
@@ -1321,7 +1369,7 @@ Status ProcessFunctionLibraryRuntime::ReleaseHandle(
 FunctionLibraryRuntime::DoneCallback
 ProcessFunctionLibraryRuntime::ApplyCleanUpToDoneCallback(
     std::vector<std::unique_ptr<CleanUpItem>>* items,
-    FunctionLibraryRuntime::DoneCallback done, const int64 step_id,
+    FunctionLibraryRuntime::DoneCallback done, const int64_t step_id,
     const Rendezvous* created_rendezvous) const {
   return
       [this, items, done = std::move(done), step_id,
@@ -1404,6 +1452,10 @@ void ProcessFunctionLibraryRuntime::Run(
                                       InternalArgs* comp_args) -> Status {
       // "Index"s of _Arg nodes are unique when all arguments are local Tensors.
       for (const auto& it : comp_data.arg_indices) {
+        if (it.index >= args.size()) {
+          return errors::InvalidArgument(
+              "index ", it.index, " is out of range [0, ", args.size(), ")");
+        }
         if (it.sub_index >= 0) {
           const Tensor& t = args[it.index];
           if (t.dtype() != DT_RESOURCE) {
@@ -1474,7 +1526,7 @@ void ProcessFunctionLibraryRuntime::RunInternal(
       done(s);
       return;
     }
-    int64 src_incarnation, target_incarnation;
+    int64_t src_incarnation, target_incarnation;
     s = GetDeviceIncarnation(source_device, &src_incarnation);
     s.Update(GetDeviceIncarnation(target_device, &target_incarnation));
     if (!s.ok()) {
@@ -1504,7 +1556,7 @@ void ProcessFunctionLibraryRuntime::RunInternal(
                  done(status);
                  return;
                }
-               int64 num_returns = remote_rets->size();
+               int64_t num_returns = remote_rets->size();
                delete remote_rets;
                // Now receive the return values from the target.
                std::vector<Tensor>* recv_tensors = new std::vector<Tensor>;
@@ -1607,7 +1659,12 @@ void ProcessFunctionLibraryRuntime::Run(
     FunctionLibraryRuntime::Handle handle, const FunctionArgsInterface& args,
     std::vector<FunctionRet>* rets,
     FunctionLibraryRuntime::DoneCallback done) const {
-  if (!args.HasRemoteOrPackedInputs()) {
+  bool has_remote_outputs = false;
+  const MultiDeviceFunctionData* data = IsMultiDevice(handle);
+  if (data != nullptr) {
+    has_remote_outputs = data->has_remote_outputs;
+  }
+  if (!args.HasRemoteOrPackedInputs() && !has_remote_outputs) {
     const std::vector<Tensor> local_inputs = args.GetLocalTensors();
     std::vector<Tensor>* tensor_rets = new std::vector<Tensor>;
     return Run(
@@ -1691,7 +1748,6 @@ void ProcessFunctionLibraryRuntime::CleanUp(
 
 Status ProcessFunctionLibraryRuntime::Clone(
     Env* env, int graph_def_version, const OptimizerOptions& optimizer_options,
-    const CustomKernelCreator* custom_kernel_creator,
     std::unique_ptr<FunctionLibraryDefinition>* out_lib_def,
     std::unique_ptr<ProcessFunctionLibraryRuntime>* out_pflr,
     bool skip_flib_def) const {
@@ -1704,7 +1760,7 @@ Status ProcessFunctionLibraryRuntime::Clone(
   *out_pflr = absl::make_unique<ProcessFunctionLibraryRuntime>(
       device_mgr_, env, config_ ? &(*config_) : nullptr, graph_def_version,
       out_lib_def->get(), optimizer_options, default_thread_pool_, parent_,
-      custom_kernel_creator, session_metadata_, rendezvous_factory_);
+      session_metadata_, rendezvous_factory_);
   {
     tf_shared_lock l(mu_);
     for (auto* d : composite_devices_) (*out_pflr)->AddCompositeDevice(d);

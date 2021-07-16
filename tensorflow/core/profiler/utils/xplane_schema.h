@@ -21,29 +21,39 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "absl/types/optional.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace profiler {
 
 // Name of XPlane that contains TraceMe events.
-ABSL_CONST_INIT extern const absl::string_view kHostThreadsPlaneName;
+TF_CONST_INIT extern const absl::string_view kHostThreadsPlaneName;
 // Name prefix of XPlane that contains GPU events.
-ABSL_CONST_INIT extern const absl::string_view kGpuPlanePrefix;
+TF_CONST_INIT extern const absl::string_view kGpuPlanePrefix;
+// Name prefix of XPlane that contains TPU events.
+TF_CONST_INIT extern const absl::string_view kTpuPlanePrefix;
+// Name prefix of XPlane that contains TPU runtime events.
+TF_CONST_INIT extern const absl::string_view kTpuRuntimePlaneName;
 // Name of XPlane that contains CUPTI driver API generated events.
-ABSL_CONST_INIT extern const absl::string_view kCuptiDriverApiPlaneName;
+TF_CONST_INIT extern const absl::string_view kCuptiDriverApiPlaneName;
+// Name of XPlane that contains Roctracer API generated events.
+TF_CONST_INIT extern const absl::string_view kRoctracerApiPlaneName;
 // Name of XPlane that contains profile metadata such as XLA debug info.
-ABSL_CONST_INIT extern const absl::string_view kMetadataPlaneName;
+TF_CONST_INIT extern const absl::string_view kMetadataPlaneName;
 // Name of XPlane that contains kpi related metrics.
-ABSL_CONST_INIT extern const absl::string_view kTFStreamzPlaneName;
+TF_CONST_INIT extern const absl::string_view kTFStreamzPlaneName;
+// Name of XPlane that contains events from python tracer.
+TF_CONST_INIT extern const absl::string_view kPythonTracerPlaneName;
 
 // Names of XLines that contain ML-level events.
-ABSL_CONST_INIT extern const absl::string_view kStepLineName;
-ABSL_CONST_INIT extern const absl::string_view kTensorFlowNameScopeLineName;
-ABSL_CONST_INIT extern const absl::string_view kTensorFlowOpLineName;
-ABSL_CONST_INIT extern const absl::string_view kXlaModuleLineName;
-ABSL_CONST_INIT extern const absl::string_view kXlaOpLineName;
-ABSL_CONST_INIT extern const absl::string_view kKernelLaunchLineName;
+TF_CONST_INIT extern const absl::string_view kStepLineName;
+TF_CONST_INIT extern const absl::string_view kTensorFlowNameScopeLineName;
+TF_CONST_INIT extern const absl::string_view kTensorFlowOpLineName;
+TF_CONST_INIT extern const absl::string_view kXlaModuleLineName;
+TF_CONST_INIT extern const absl::string_view kXlaOpLineName;
+TF_CONST_INIT extern const absl::string_view kKernelLaunchLineName;
+TF_CONST_INIT extern const absl::string_view kSourceLineName;
 
 // Interesting event types (i.e., TraceMe names).
 enum HostEventType {
@@ -97,6 +107,18 @@ enum HostEventType {
   kMapAndBatchConsume,
   kParseExampleProduce,
   kParseExampleConsume,
+  kParallelBatchProduce,
+  kParallelBatchConsume,
+  // Batching related.
+  kBatchingSessionRun,
+  kProcessBatch,
+  kConcatInputTensors,
+  kMergeInputTensors,
+  kScheduleWithoutSplit,
+  kScheduleWithSplit,
+  kASBSQueueSchedule,
+  // TFRT related.
+  kTfrtModelRun,
   // JAX related.
   kExecuteOnLocalDevices,
   // GPU related.
@@ -135,6 +157,7 @@ enum StatType {
   kRegionType,
   kDataType,
   kTensorShapes,
+  kTensorLayout,
   kKpiName,
   kKpiValue,
   kElementId,
@@ -150,9 +173,15 @@ enum StatType {
   kDeviceId,
   kContextId,
   kCorrelationId,
+  // TODO(b/176137043): These "details" should differentiate between activity
+  // and API event sources.
   kMemcpyDetails,
   kMemallocDetails,
+  kMemFreeDetails,
+  kMemsetDetails,
+  kMemoryResidencyDetails,
   kKernelAnnotation,
+  kNVTXRange,
   kKernelDetails,
   kStream,
   // Stats added when processing traces.
@@ -169,6 +198,10 @@ enum StatType {
   kTfFunctionTracingCount,
   kFlops,
   kBytesAccessed,
+  kSelectedGroupIds,
+  kSourceInfo,
+  kModelName,
+  kModelVersion,
   // Performance counter related.
   kRawValue,
   kScaledValue,
@@ -184,15 +217,19 @@ enum StatType {
   kDevCapMemorySize,
   kDevCapComputeCapMajor,
   kDevCapComputeCapMinor,
-  kLastStatType = kDevCapComputeCapMinor,
+  // Batching related.
+  kBatchSizeAfterPadding,
+  kPaddingAmount,
+  kBatchingInputTaskSize,
+  // GPU occupancy metrics
+  kTheoreticalOccupancyPct,
+  kOccupancyMinGridSize,
+  kOccupancySuggestedBlockSize,
+  kLastStatType = kOccupancySuggestedBlockSize,
 };
 
 inline std::string GpuPlaneName(int32 device_ordinal) {
   return absl::StrCat(kGpuPlanePrefix, device_ordinal);
-}
-
-inline bool IsGpuPlaneName(absl::string_view plane_name) {
-  return absl::StartsWith(plane_name, kGpuPlanePrefix);
 }
 
 absl::string_view GetHostEventTypeStr(HostEventType event_type);
@@ -205,6 +242,8 @@ inline bool IsHostEventType(HostEventType event_type,
 }
 
 absl::optional<int64> FindHostEventType(absl::string_view event_name);
+
+absl::optional<int64> FindTfOpEventType(absl::string_view event_name);
 
 absl::string_view GetStatTypeStr(StatType stat_type);
 

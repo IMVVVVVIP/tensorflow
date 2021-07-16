@@ -72,9 +72,9 @@ Status GetComputationCacheEntry(
   TF_RETURN_IF_ERROR(context->input("key", &key));
   profiler::TraceMe trace_me("TpuExecuteOp::LookupProto", /*level=*/2);
   if (!TensorShapeUtils::IsVector(key->shape()) ||
-      key->shape().dim_size(0) != 2) {
+      key->shape().dim_size(0) != 3) {
     return errors::InvalidArgument(
-        "Key argument to TPUExecute must be a 2-element vector");
+        "Key argument to TPUExecute must be a 3-element vector");
   }
 
   ResourceMgr* rmgr = GetTPUConfigResourceMgr();
@@ -107,7 +107,7 @@ xla::StatusOr<VariableUpdateMap> BuildVariableUpdateMap(
         compiled_variable_updates,
     absl::Span<int const> fused_device_var_reads_in_computation_inputs,
     const std::vector<int>& fused_device_var_updates_in_computation_outputs,
-    int64 computation_output_count) {
+    int64_t computation_output_count) {
   VariableUpdateMap map;
   auto add_pair = [&](int input, int output, bool from_compilation) -> Status {
     TF_RET_CHECK(map.input_to_output.emplace(input, output).second)
@@ -132,7 +132,7 @@ xla::StatusOr<VariableUpdateMap> BuildVariableUpdateMap(
   }
   TF_RET_CHECK(num_updated_variables <= computation_output_count)
       << num_updated_variables << " <= " << computation_output_count;
-  int64 compiled_variable_output_index =
+  int64_t compiled_variable_output_index =
       computation_output_count - num_updated_variables;
   for (auto update : compiled_variable_updates) {
     map.input_in_compiled_update_order.push_back(update->index());
@@ -148,7 +148,7 @@ xla::StatusOr<VariableUpdateMap> BuildVariableUpdateMap(
   // Now add the updates from the attributes.
   TF_RET_CHECK(fused_device_var_reads_in_computation_inputs.size() ==
                fused_device_var_updates_in_computation_outputs.size());
-  for (int64 i = 0; i < fused_device_var_reads_in_computation_inputs.size();
+  for (int64_t i = 0; i < fused_device_var_reads_in_computation_inputs.size();
        ++i) {
     TF_RETURN_IF_ERROR(
         add_pair(fused_device_var_reads_in_computation_inputs[i],
@@ -172,7 +172,7 @@ struct InputBuffers {
                                    int device_ordinal) {
     CHECK_NE(allocator, nullptr);
     xla::ShapedBuffer shaped_buffer(std::move(host_shape), buffers.shape(),
-                                    allocator->platform(), device_ordinal);
+                                    device_ordinal);
     shaped_buffer.set_buffers(buffers.Map<se::DeviceMemoryBase>(
         [](xla::MaybeOwningDeviceMemory* buffer) {
           CHECK(buffer);
@@ -220,7 +220,11 @@ xla::StatusOr<std::unique_ptr<InputBuffers>> BuildComputationInputs(
         return errors::InvalidArgument(
             "Run-time shape mismatch for TPUExecute argument[", i, "] (",
             context->op_kernel().requested_input(i), "). Expected ",
-            expected.DebugString(), "; got empty tensor");
+            expected.DebugString(),
+            "; got empty tensor. If you are running "
+            "with TF2 TPU, make sure you set `drop_remainder=False` when "
+            "calling `dataset.batch` on the `tf.data.Dataset` so dynamic batch "
+            "size can be handled");
       }
     } else {
       // Compare host shapes, easier than getting the expected device shape.
@@ -291,7 +295,7 @@ xla::StatusOr<std::unique_ptr<InputBuffers>> BuildComputationInputs(
     buffers->buffers().ForEachMutableElement([&](const xla::ShapeIndex& index,
                                                  se::DeviceMemoryBase* buffer) {
       xla::ShapeIndex in_index = {arg_index};
-      for (int64 j : index) {
+      for (int64_t j : index) {
         in_index.push_back(j);
       }
       auto* in_buffer = input_buffers->buffers.mutable_element(in_index);
@@ -410,7 +414,7 @@ xla::StatusOr<std::unique_ptr<OutputBuffers>> AllocateOutputTensors(
 
   std::vector<TensorShape> output_tensor_shapes;
   output_tensor_shapes.reserve(sub_elements);
-  for (int64 i = 0; i < sub_elements; ++i) {
+  for (int64_t i = 0; i < sub_elements; ++i) {
     TF_RETURN_IF_ERROR(
         TensorShape::IsValidShape(*output_tensor_shape_protos[i]));
     TensorShape shape(*output_tensor_shape_protos[i]);
@@ -435,16 +439,14 @@ xla::StatusOr<std::unique_ptr<OutputBuffers>> AllocateOutputTensors(
   auto output_buffers =
       absl::make_unique<OutputBuffers>(std::move(scoped_buffers), allocator);
 
-  xla::Shape output_host_shape = output_buffers->buffers.on_host_shape();
   xla::Shape output_device_shape = output_buffers->buffers.on_device_shape();
 
-  if (!output_host_shape.is_static()) {
+  if (!output_device_shape.is_static()) {
     TF_RETURN_IF_ERROR(transfer_manager->ReadDynamicShapes(
-        stream, &output_buffers->buffers, &output_host_shape,
-        &output_device_shape));
-    for (int64 i = 0; i < sub_elements; ++i) {
+        stream, &output_buffers->buffers, &output_device_shape));
+    for (int64_t i = 0; i < sub_elements; ++i) {
       const xla::Shape& subshape =
-          xla::ShapeUtil::GetSubshape(output_host_shape, {i});
+          xla::ShapeUtil::GetSubshape(output_device_shape, {i});
       TensorShape shape;
       TF_RETURN_IF_ERROR(XLAShapeToTensorShape(subshape, &shape));
       output_tensor_shapes[i] = shape;
@@ -454,8 +456,6 @@ xla::StatusOr<std::unique_ptr<OutputBuffers>> AllocateOutputTensors(
   // Transfers ownership of the buffers that back XLA computation output 'i'
   // to 'output_tensor'.
   auto transfer_buffers = [&](int i, Tensor* output_tensor) {
-    const xla::Shape& host_shape =
-        xla::ShapeUtil::GetTupleElementShape(output_host_shape, i);
     const xla::Shape& device_shape =
         xla::ShapeUtil::GetTupleElementShape(output_device_shape, i);
 
@@ -464,12 +464,12 @@ xla::StatusOr<std::unique_ptr<OutputBuffers>> AllocateOutputTensors(
     // backing XlaTensor, so we let retain 'output_buffers' ownership of any
     // buffers in that case.
     if (output_tensor->NumElements() > 0) {
-      xla::ScopedShapedBuffer shaped_buffer(host_shape, device_shape, allocator,
+      xla::ScopedShapedBuffer shaped_buffer(device_shape, allocator,
                                             device_ordinal);
       shaped_buffer.buffers().ForEachMutableElement(
           [&](const xla::ShapeIndex& index, se::DeviceMemoryBase* buffer) {
             xla::ShapeIndex out_index = {i};
-            for (int64 j : index) {
+            for (int64_t j : index) {
               out_index.push_back(j);
             }
             *buffer = output_buffers->buffers.buffers().element(out_index);
@@ -547,19 +547,14 @@ xla::StatusOr<std::unique_ptr<OutputBuffers>> AllocateOutputTensors(
     }
     ++compiled_update_index;
     const int variable_index = input_buffers->variable_index.at(input_index);
-    PersistentTensor unused;
-    Tensor* output_tensor;
     if (variable_index >= 0) {
       // This output corresponds to a DT_RESOURCE input to the TPUExecute
       // operator. Update the corresponding variable.
       VariableInfo& var = input_buffers->variables[variable_index];
-      // TODO(b/35625933): the correct thing to do would be to transfer
-      // ownership of the PersistentTensor into the Var object. However, Var
-      // contains a Tensor so we can't.
-      TF_RETURN_IF_ERROR(context->allocate_persistent(
-          var.var()->tensor()->dtype(), output_tensor_shapes[i], &unused,
-          &output_tensor));
-      *var.var()->tensor() = *output_tensor;
+      TF_RETURN_IF_ERROR(context->allocate_temp(var.var()->tensor()->dtype(),
+                                                output_tensor_shapes[i],
+                                                var.var()->tensor()));
+      transfer_buffers(i, var.var()->tensor());
     } else {
       // This output corresponds to a non-resource input to the TPUExecute
       // operator. This case occurs for the distributed TPU rewrite which
@@ -569,11 +564,12 @@ xla::StatusOr<std::unique_ptr<OutputBuffers>> AllocateOutputTensors(
       // TODO(phawkins): remove this case when placement of variables on TPU
       // devices is well supported and we no longer need to place "remote"
       // variables on CPU devices.
+      Tensor* output_tensor;
       TF_RETURN_IF_ERROR(context->allocate_output(
           op_output_index, output_tensor_shapes[i], &output_tensor));
       ++op_output_index;
+      transfer_buffers(i, output_tensor);
     }
-    transfer_buffers(i, output_tensor);
   }
 
   // Process any remaining non-updated variables.

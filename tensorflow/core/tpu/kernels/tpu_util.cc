@@ -14,8 +14,10 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tpu/kernels/tpu_util.h"
 
+#include "absl/strings/str_format.h"
 #include "absl/strings/str_split.h"
 #include "tensorflow/core/platform/random.h"
+#include "tensorflow/core/tpu/tpu_api.h"
 
 namespace tensorflow {
 namespace tpu {
@@ -68,7 +70,7 @@ Status ShapeTensorToTensorShape(const Tensor& tensor, TensorShape* shape) {
   const int64 rank = tensor.NumElements();
   auto tensor_dims = tensor.flat<int64>();
   std::vector<int64> dims(rank);
-  for (int64 i = 0; i < rank; ++i) {
+  for (int64_t i = 0; i < rank; ++i) {
     dims[i] = tensor_dims(i);
   }
   return TensorShapeUtils::MakeShape(dims, shape);
@@ -94,6 +96,15 @@ Status DynamicShapesToTensorShapes(const InputList& dynamic_shapes,
     ++i;
   }
   return Status::OK();
+}
+
+xla::StatusOr<std::unique_ptr<::grpc::ServerBuilder>> CreateServerBuilder(
+    int serving_port) {
+  auto server_builder = absl::make_unique<::grpc::ServerBuilder>();
+  server_builder->AddListeningPort(
+      absl::StrFormat("[::]:%d", serving_port),
+      ::grpc::InsecureServerCredentials());  // NOLINT
+  return std::move(server_builder);
 }
 }  // namespace tpu
 }  // namespace tensorflow

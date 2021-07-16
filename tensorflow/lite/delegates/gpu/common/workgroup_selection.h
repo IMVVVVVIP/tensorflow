@@ -18,9 +18,6 @@ limitations under the License.
 
 #include <vector>
 
-#include "tensorflow/lite/delegates/gpu/common/status.h"
-#include "tensorflow/lite/delegates/gpu/common/types.h"
-
 namespace tflite {
 namespace gpu {
 
@@ -44,7 +41,7 @@ std::vector<T> GenerateWorkGroupSizes(
 template <typename T>
 void GenerateWorkGroupSizesAlignedToGrid(const T& grid,
                                          const T& max_work_group_size,
-                                         const int max_work_group_invocations,
+                                         const int max_work_group_total_size,
                                          std::vector<T>* work_groups);
 
 }  // namespace gpu

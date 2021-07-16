@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/optimizers/remapper.h"
 
+#include "tensorflow/cc/ops/nn_ops_internal.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/types.h"
@@ -389,6 +390,74 @@ TEST_F(RemapperTest, FuseConv2DWithBias) {
   test::ExpectTensorNear<float>(tensors[0], tensors_expected[0], 1e-6);
 }
 
+class RemapperTensorToHashBucketTest : public RemapperTest {
+ public:
+  template <DataType DTYPE>
+  void RunTest() {
+    using ::tensorflow::ops::Placeholder;
+
+    tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+
+    auto input_shape = ops::Placeholder::Shape({8, 32, 32, 3});
+    auto input = Placeholder(s.WithOpName("input"), DTYPE, input_shape);
+
+    int num_buckets = 100;
+    auto to_string = ops::AsString(s.WithOpName("to_string"), input);
+    auto to_bucket = ops::StringToHashBucketFast(s.WithOpName("to_bucket"),
+                                                 to_string, num_buckets);
+    auto fetch = ops::Identity(s.WithOpName("fetch"), to_bucket);
+
+    auto input_t = GenerateRandomTensor<DTYPE>({8, 32, 32, 3});
+
+    GrapplerItem item;
+    item.fetch = {"fetch"};
+    item.feed = {{"input", input_t}};
+    TF_ASSERT_OK(s.ToGraphDef(&item.graph));
+
+    // For CPU tests, we place all nodes on CPU. For GPU tests, we place the
+    // "input" node on GPU to determine the fused op to be on GPU.
+    const string input_device =
+        GetNumAvailableGPUs() > 0 ? "/device:GPU:0" : "/device:CPU:0";
+    for (int i = 0; i < item.graph.node_size(); ++i) {
+      if (item.graph.node(i).name() == "input") {
+        item.graph.mutable_node(i)->set_device(input_device);
+      } else {
+        item.graph.mutable_node(i)->set_device("/device:CPU:0");
+      }
+    }
+
+    Remapper optimizer(RewriterConfig::ON);
+    GraphDef output;
+    TF_ASSERT_OK(optimizer.Optimize(nullptr, item, &output));
+
+    int found = 0;
+    for (const NodeDef& node : output.node()) {
+      if (node.name() == "to_bucket") {
+        EXPECT_EQ(node.op(), "_TensorToHashBucketFast");
+        ASSERT_GE(node.input_size(), 1);
+        EXPECT_EQ(node.input(0), "input");
+        EXPECT_EQ(node.attr().at("num_buckets").i(), num_buckets);
+        found++;
+      }
+    }
+    EXPECT_EQ(found, 1);
+
+    auto tensors_expected = EvaluateNodes(item.graph, item.fetch, item.feed);
+    ASSERT_EQ(tensors_expected.size(), 1);
+    auto tensors = EvaluateNodes(output, item.fetch, item.feed);
+    ASSERT_EQ(tensors.size(), 1);
+    test::ExpectTensorEqual<int64>(tensors[0], tensors_expected[0]);
+  }
+};
+
+TEST_F(RemapperTensorToHashBucketTest, I8) { RunTest<DT_INT8>(); }
+
+TEST_F(RemapperTensorToHashBucketTest, I16) { RunTest<DT_INT16>(); }
+
+TEST_F(RemapperTensorToHashBucketTest, I32) { RunTest<DT_INT32>(); }
+
+TEST_F(RemapperTensorToHashBucketTest, I64) { RunTest<DT_INT64>(); }
+
 class RemapperFuseMatMulWithBiasTest : public RemapperTest {
  public:
   template <DataType DTYPE>
@@ -450,18 +519,20 @@ class RemapperFuseMatMulWithBiasTest : public RemapperTest {
     ASSERT_EQ(tensors_expected.size(), 1);
     auto tensors = EvaluateNodes(output, item.fetch, item.feed);
     ASSERT_EQ(tensors.size(), 1);
-    typedef typename EnumToDataType<DTYPE>::Type T;
-    test::ExpectTensorNear<T>(tensors[0], tensors_expected[0], 1e-6);
+    if (DTYPE == DT_BFLOAT16)
+      test::ExpectClose(tensors[0], tensors_expected[0], 1e-2, 1e-2);
+    else
+      test::ExpectClose(tensors[0], tensors_expected[0], 1e-6);
   }
 };
 
 TEST_F(RemapperFuseMatMulWithBiasTest, F32) { RunTest<DT_FLOAT>(); }
 
 TEST_F(RemapperFuseMatMulWithBiasTest, Bf16) {
-#if !defined(INTEL_MKL) || !defined(ENABLE_INTEL_MKL_BFLOAT16)
+#if !defined(ENABLE_MKL)
   GTEST_SKIP() << "Intel MKL with bfloat16 support is not enabled, skipping "
                   "FuseMatMulWithBias with bfloat16.";
-#endif  // !defined(INTEL_MKL) || !defined(ENABLE_INTEL_MKL_BFLOAT16)
+#endif
   RunTest<DT_BFLOAT16>();  // NOLINT
 }
 
@@ -541,7 +612,7 @@ TEST_F(RemapperTest, DISABLED_FuseConv2DWithBiasAndActivationOnGPU) {
 TEST_F(RemapperTest, FuseConv2DWithBiasAndActivation) {
   using ::tensorflow::ops::Placeholder;
 
-  for (const string& activation : {"Relu", "Relu6", "Elu"}) {
+  for (const string& activation : {"Relu", "Relu6", "Elu", "LeakyRelu"}) {
     tensorflow::Scope s = tensorflow::Scope::NewRootScope();
 
     auto input_shape = Placeholder::Shape({8, 32, 32, 3});
@@ -551,6 +622,8 @@ TEST_F(RemapperTest, FuseConv2DWithBiasAndActivation) {
     auto input = Placeholder(s.WithOpName("input"), DT_FLOAT, input_shape);
     auto filter = Placeholder(s.WithOpName("filter"), DT_FLOAT, filter_shape);
     auto bias = Placeholder(s.WithOpName("bias"), DT_FLOAT, bias_shape);
+
+    float leakyrelu_alpha = 0.5;
 
     std::vector<int> strides = {1, 1, 1, 1};
     auto conv =
@@ -567,6 +640,10 @@ TEST_F(RemapperTest, FuseConv2DWithBiasAndActivation) {
         return ops::Identity(fetch, ops::Relu6(activate, bias_add));
       } else if (activation == "Elu") {
         return ops::Identity(fetch, ops::Elu(activate, bias_add));
+      } else if (activation == "LeakyRelu") {
+        auto attr = ops::internal::LeakyRelu::Alpha(leakyrelu_alpha);
+        return ops::Identity(
+            fetch, ops::internal::LeakyRelu(activate, bias_add, attr));
       }
 
       return ops::Identity(fetch, bias);
@@ -605,6 +682,10 @@ TEST_F(RemapperTest, FuseConv2DWithBiasAndActivation) {
         ASSERT_EQ(fused_ops.size(), 2);
         EXPECT_EQ(fused_ops[0], "BiasAdd");
         EXPECT_EQ(fused_ops[1], activation);
+
+        if (activation == "LeakyRelu") {
+          EXPECT_EQ(node.attr().at("leakyrelu_alpha").f(), leakyrelu_alpha);
+        }
         found++;
       }
     }
@@ -624,7 +705,14 @@ class RemapperFuseMatMulWithBiasAndActivationTest : public RemapperTest {
   void RunTest() {
     using ::tensorflow::ops::Placeholder;
 
-    for (const string& activation : {"Relu", "Relu6", "Elu"}) {
+#if defined(INTEL_MKL) && defined(ENABLE_MKL)
+    std::vector<string> activations = {"Relu", "Relu6", "Elu", "Tanh",
+                                       "LeakyRelu"};
+#else
+    std::vector<string> activations = {"Relu", "Relu6", "Elu", "LeakyRelu"};
+#endif
+
+    for (const string& activation : activations) {
       tensorflow::Scope s = tensorflow::Scope::NewRootScope();
 
       auto lhs_shape = ops::Placeholder::Shape({8, 32});
@@ -638,6 +726,8 @@ class RemapperFuseMatMulWithBiasAndActivationTest : public RemapperTest {
       auto matmul = ops::MatMul(s.WithOpName("matmul"), lhs, rhs);
       auto bias_add = ops::BiasAdd(s.WithOpName("bias_add"), matmul, bias);
 
+      float leakyrelu_alpha = 0.5;
+
       ops::Identity fetch = [&]() -> ops::Identity {
         auto activate = s.WithOpName("activation");
         auto fetch = s.WithOpName("fetch");
@@ -648,6 +738,14 @@ class RemapperFuseMatMulWithBiasAndActivationTest : public RemapperTest {
           return ops::Identity(fetch, ops::Relu6(activate, bias_add));
         } else if (activation == "Elu") {
           return ops::Identity(fetch, ops::Elu(activate, bias_add));
+#if defined(INTEL_MKL) && defined(ENABLE_MKL)
+        } else if (activation == "Tanh") {
+          return ops::Identity(fetch, ops::Tanh(activate, bias_add));
+#endif
+        } else if (activation == "LeakyRelu") {
+          auto attr = ops::internal::LeakyRelu::Alpha(leakyrelu_alpha);
+          return ops::Identity(
+              fetch, ops::internal::LeakyRelu(activate, bias_add, attr));
         }
 
         return ops::Identity(fetch, bias);
@@ -686,6 +784,10 @@ class RemapperFuseMatMulWithBiasAndActivationTest : public RemapperTest {
           ASSERT_EQ(fused_ops.size(), 2);
           EXPECT_EQ(fused_ops[0], "BiasAdd");
           EXPECT_EQ(fused_ops[1], activation);
+
+          if (activation == "LeakyRelu") {
+            EXPECT_EQ(node.attr().at("leakyrelu_alpha").f(), leakyrelu_alpha);
+          }
           found++;
         }
       }
@@ -695,8 +797,10 @@ class RemapperFuseMatMulWithBiasAndActivationTest : public RemapperTest {
       ASSERT_EQ(tensors_expected.size(), 1);
       auto tensors = EvaluateNodes(output, item.fetch, item.feed);
       ASSERT_EQ(tensors.size(), 1);
-      typedef typename EnumToDataType<DTYPE>::Type T;
-      test::ExpectTensorNear<T>(tensors[0], tensors_expected[0], 1e-6);
+      if (DTYPE == DT_BFLOAT16)
+        test::ExpectClose(tensors[0], tensors_expected[0], 1e-2, 1e-2);
+      else
+        test::ExpectClose(tensors[0], tensors_expected[0], 1e-6);
     }
   }
 };
@@ -706,14 +810,13 @@ TEST_F(RemapperFuseMatMulWithBiasAndActivationTest, F32) {
 }
 
 TEST_F(RemapperFuseMatMulWithBiasAndActivationTest, Bf16) {
-#if !defined(INTEL_MKL) || !defined(ENABLE_INTEL_MKL_BFLOAT16)
+#if !defined(ENABLE_MKL)
   GTEST_SKIP() << "Intel MKL with bfloat16 support is not enabled, skipping "
                   "FuseMatMulWithBiasAndActivation with bfloat16.";
-#endif  // !defined(INTEL_MKL) || !defined(ENABLE_INTEL_MKL_BFLOAT16)
+#endif
   RunTest<DT_BFLOAT16>();  // NOLINT
 }
 
-#ifndef INTEL_MKL
 TEST_F(RemapperTest, FuseConv2DWithBatchNorm) {
   using ops::Placeholder;
 
@@ -789,13 +892,13 @@ TEST_F(RemapperTest, FuseConv2DWithBatchNorm) {
   ASSERT_EQ(tensors_expected.size(), 1);
   auto tensors = EvaluateNodes(output, item.fetch, item.feed);
   ASSERT_EQ(tensors.size(), 1);
-  test::ExpectTensorNear<float>(tensors[0], tensors_expected[0], 1e-6);
+  test::ExpectClose(tensors[0], tensors_expected[0], 1e-6, 1e-4);
 }
 
 TEST_F(RemapperTest, FuseConv2DWithBatchNormAndActivation) {
   using ops::Placeholder;
 
-  for (const string& activation : {"Relu", "Relu6", "Elu"}) {
+  for (const string& activation : {"Relu", "Relu6", "Elu", "LeakyRelu"}) {
     tensorflow::Scope s = tensorflow::Scope::NewRootScope();
 
     auto input_shape = ops::Placeholder::Shape({8, 32, 32, 3});
@@ -818,6 +921,8 @@ TEST_F(RemapperTest, FuseConv2DWithBatchNormAndActivation) {
     auto batch_norm = ops::FusedBatchNorm(s.WithOpName("batch_norm"), conv,
                                           scale, offset, mean, variance, attrs);
 
+    float leakyrelu_alpha = 0.5;
+
     ops::Identity fetch = [&]() -> ops::Identity {
       auto activate = s.WithOpName("activation");
       auto fetch = s.WithOpName("fetch");
@@ -828,6 +933,10 @@ TEST_F(RemapperTest, FuseConv2DWithBatchNormAndActivation) {
         return ops::Identity(fetch, ops::Relu6(activate, batch_norm.y));
       } else if (activation == "Elu") {
         return ops::Identity(fetch, ops::Elu(activate, batch_norm.y));
+      } else if (activation == "LeakyRelu") {
+        auto attr = ops::internal::LeakyRelu::Alpha(leakyrelu_alpha);
+        return ops::Identity(
+            fetch, ops::internal::LeakyRelu(activate, batch_norm.y, attr));
       }
 
       return ops::Identity(fetch, batch_norm.y);
@@ -874,6 +983,10 @@ TEST_F(RemapperTest, FuseConv2DWithBatchNormAndActivation) {
         ASSERT_EQ(fused_ops.size(), 2);
         EXPECT_EQ(fused_ops[0], "FusedBatchNorm");
         EXPECT_EQ(fused_ops[1], activation);
+
+        if (activation == "LeakyRelu") {
+          EXPECT_EQ(node.attr().at("leakyrelu_alpha").f(), leakyrelu_alpha);
+        }
         found++;
       }
     }
@@ -883,7 +996,7 @@ TEST_F(RemapperTest, FuseConv2DWithBatchNormAndActivation) {
     ASSERT_EQ(tensors_expected.size(), 1);
     auto tensors = EvaluateNodes(output, item.fetch, item.feed);
     ASSERT_EQ(tensors.size(), 1);
-    test::ExpectTensorNear<float>(tensors[0], tensors_expected[0], 1e-6);
+    test::ExpectClose(tensors[0], tensors_expected[0], 1e-6, 1e-4);
   }
 }
 
@@ -957,7 +1070,6 @@ TEST_F(RemapperTest, FuseConv2DWithSqueezeAndBias) {
   ASSERT_EQ(tensors.size(), 1);
   test::ExpectTensorNear<float>(tensors[0], tensors_expected[0], 1e-6);
 }
-#endif
 
 }  // namespace grappler
 }  // namespace tensorflow

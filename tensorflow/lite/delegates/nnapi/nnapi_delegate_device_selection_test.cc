@@ -114,7 +114,7 @@ struct NnApiDeviceSelectionTest
   FloatAddOpModel m;
 };
 
-TEST_F(NnApiDeviceSelectionTest, DoesntSetDevicesWithoutFlags) {
+TEST_F(NnApiDeviceSelectionTest, DoesntSetDevicesWhenCpuAllowed) {
   nnapi_mock_->StubCompilationCreateForDevicesWith(
       [](ANeuralNetworksModel* model,
          const ANeuralNetworksDevice* const* devices, uint32_t numDevices,
@@ -124,6 +124,7 @@ TEST_F(NnApiDeviceSelectionTest, DoesntSetDevicesWithoutFlags) {
       });
 
   tflite::StatefulNnApiDelegate::Options options;
+  options.disallow_nnapi_cpu = false;
   InitWithOptions(options);
   m.Invoke();
   EXPECT_EQ(m.GetCompilationStatus(), kTfLiteOk);
@@ -1080,9 +1081,3 @@ TEST_F(DelegatePartitionLimitTest,
 
 }  // namespace
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::tflite::LogToStderr();
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

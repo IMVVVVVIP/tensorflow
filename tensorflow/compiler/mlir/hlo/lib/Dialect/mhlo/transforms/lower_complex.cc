@@ -24,56 +24,48 @@ limitations under the License.
 
 #include "llvm/ADT/STLExtras.h"
 #include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
+#include "mlir-hlo/Dialect/mhlo/transforms/PassDetail.h"
 #include "mlir-hlo/Dialect/mhlo/transforms/passes.h"
+#include "mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
 #include "mlir-hlo/utils/hlo_utils.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/MLIRContext.h"
 #include "mlir/IR/Operation.h"
-#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassRegistry.h"
-
-using mlir::FunctionPass;
-using mlir::OwningRewritePatternList;
-using mlir::PassRegistration;
-using mlir::PassWrapper;
-
-namespace {
-class LowerComplexPass : public PassWrapper<LowerComplexPass, FunctionPass> {
- public:
-  explicit LowerComplexPass() : PassWrapper<LowerComplexPass, FunctionPass>() {}
-
-  /// Performs the lowering to MHLO dialect.
-  void runOnFunction() override;
-};
-}  // end anonymous namespace
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 namespace mlir {
 namespace mhlo {
 namespace {
+class LowerComplexPass : public LowerComplexPassBase<LowerComplexPass> {
+ public:
+  /// Performs the lowering to MHLO dialect.
+  void runOnFunction() override;
+};
 
 #include "generated_lower_complex.inc"
-
-}  // end anonymous namespace
-
-void PopulateComplexLoweringPatterns(MLIRContext* context,
-                                     OwningRewritePatternList* patterns) {
-  populateWithGenerated(context, patterns);
-}
-}  // end namespace mhlo
-}  // end namespace mlir
 
 // Lowers the complex operations that can be represented using other operations.
 void LowerComplexPass::runOnFunction() {
   // Add lowering patterns to the list.
-  OwningRewritePatternList patterns;
+  OwningRewritePatternList patterns(&getContext());
   mlir::mhlo::PopulateComplexLoweringPatterns(&getContext(), &patterns);
 
-  applyPatternsAndFoldGreedily(getFunction(), patterns);
+  (void)applyPatternsAndFoldGreedily(getFunction(), std::move(patterns));
 }
 
-std::unique_ptr<FunctionPass> mlir::mhlo::createLowerComplexPass() {
-  return std::make_unique<LowerComplexPass>();
+}  // end anonymous namespace
+}  // end namespace mhlo
+}  // end namespace mlir
+
+void mlir::mhlo::PopulateComplexLoweringPatterns(
+    MLIRContext* context, OwningRewritePatternList* patterns) {
+  populateWithGenerated(*patterns);
+}
+
+std::unique_ptr<mlir::FunctionPass> mlir::mhlo::createLowerComplexPass() {
+  return std::make_unique<mlir::mhlo::LowerComplexPass>();
 }

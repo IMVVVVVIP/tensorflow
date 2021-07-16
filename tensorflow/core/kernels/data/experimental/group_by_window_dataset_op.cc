@@ -16,11 +16,11 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
 #include "tensorflow/core/kernels/data/window_dataset.h"
 #include "tensorflow/core/lib/random/random.h"
 
@@ -105,6 +105,20 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
 
     string DebugString() const override {
       return "GroupByWindowDatasetOp::Dataset";
+    }
+
+    int64 Cardinality() const override {
+      int64 n = input_->Cardinality();
+      if (n == kInfiniteCardinality) {
+        return n;
+      }
+      return kUnknownCardinality;
+    }
+
+    Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      inputs->push_back(input_);
+      return Status::OK();
     }
 
     Status CheckExternalState() const override {
@@ -225,7 +239,7 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
               // group.
               std::vector<Tensor> key_func_output;
               TF_RETURN_IF_ERROR(instantiated_key_func_->RunWithBorrowedArgs(
-                  ctx, next_input_element, &key_func_output));
+                  ctx, next_input_element, &key_func_output, model_node()));
 
               if (key_func_output.size() != 1 ||
                   key_func_output[0].dtype() != DT_INT64 ||
@@ -241,7 +255,8 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
                 // window size.
                 std::vector<Tensor> window_size_func_output;
                 TF_RETURN_IF_ERROR(instantiated_window_size_func_->Run(
-                    ctx, std::move(key_func_output), &window_size_func_output));
+                    ctx, std::move(key_func_output), &window_size_func_output,
+                    model_node()));
 
                 if (window_size_func_output.size() != 1 ||
                     window_size_func_output[0].dtype() != DT_INT64 ||
@@ -376,7 +391,7 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
                 full_name(strings::StrCat("groups_[", idx, "]->key")), &key));
             std::vector<std::vector<Tensor>> group;
             TF_RETURN_IF_ERROR(RestoreGroup(
-                reader, full_name(strings::StrCat("groups_[", idx, "]")),
+                ctx, reader, full_name(strings::StrCat("groups_[", idx, "]")),
                 &group));
             groups_[key] = group;
           }
@@ -435,7 +450,8 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
         return Status::OK();
       }
 
-      Status RestoreGroup(IteratorStateReader* reader, const string& name,
+      Status RestoreGroup(IteratorContext* ctx, IteratorStateReader* reader,
+                          const string& name,
                           std::vector<std::vector<Tensor>>* group)
           TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
         int64 group_size;
@@ -449,7 +465,8 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
           group->at(i).resize(vector_size);
           for (int j = 0; j < vector_size; j++) {
             TF_RETURN_IF_ERROR(reader->ReadTensor(
-                strings::StrCat(name, "[", i, "][", j, "]"), &group->at(i)[j]));
+                ctx->flr(), strings::StrCat(name, "[", i, "][", j, "]"),
+                &group->at(i)[j]));
           }
         }
         return Status::OK();
@@ -458,9 +475,9 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
       Status StartFlushingGroup(IteratorContext* ctx, int64 key)
           TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
         DatasetBase* group_dataset;
-        TF_RETURN_IF_ERROR(NewWindowDataset(
-            groups_[key], dataset()->input_->output_dtypes(),
-            dataset()->input_->output_shapes(), &group_dataset));
+        TF_RETURN_IF_ERROR(
+            NewWindow(groups_[key], dataset()->input_->output_dtypes(),
+                      dataset()->input_->output_shapes(), &group_dataset));
 
         Tensor key_arg(DT_INT64, TensorShape({}));
         key_arg.scalar<int64>()() = key;
@@ -472,8 +489,8 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
         std::vector<Tensor> args(
             {std::move(key_arg), std::move(group_dataset_arg)});
         std::vector<Tensor> return_values;
-        TF_RETURN_IF_ERROR(instantiated_reduce_func_->Run(ctx, std::move(args),
-                                                          &return_values));
+        TF_RETURN_IF_ERROR(instantiated_reduce_func_->Run(
+            ctx, std::move(args), &return_values, model_node()));
 
         if (!(return_values.size() == 1 &&
               return_values[0].dtype() == DT_VARIANT &&

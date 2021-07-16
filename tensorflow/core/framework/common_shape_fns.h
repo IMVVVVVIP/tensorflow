@@ -144,8 +144,14 @@ Status DepthwiseConv2DNativeShape(shape_inference::InferenceContext* c);
 // Shape function for Conv2DBackpropInput.
 Status Conv2DBackpropInputShape(shape_inference::InferenceContext* c);
 
+// Shape function for Conv2DBackpropFilterWithBias.
+Status Conv2DBackpropFilterWithBiasShape(shape_inference::InferenceContext* c);
+
 // Shape function for AvgPool-like operations.
 Status AvgPoolShape(shape_inference::InferenceContext* c);
+
+// Shape function for AvgPoolGrad-like operations.
+Status AvgPoolGradShape(shape_inference::InferenceContext* c);
 
 // Shape function for FusedBatchNorm and FusedBatchNormV2 operations.
 Status FusedBatchNormShape(shape_inference::InferenceContext* c);
@@ -168,14 +174,27 @@ Status MatrixDiagV2Shape(shape_inference::InferenceContext* c);
 // Shape function for MatrixSetDiagV2 and MatrixSetDiagV3 operations.
 Status MatrixSetDiagV2Shape(shape_inference::InferenceContext* c);
 
-// Shape function for MaxPool-like operations.
+// Shape function for MaxPool-like operations that support explicit padding.
+Status MaxPoolShapeWithExplicitPadding(shape_inference::InferenceContext* c);
+
+// Shape function for MaxPool-like operations that do not support explicit
+// padding.
 Status MaxPoolShape(shape_inference::InferenceContext* c);
 
 // Shape function for MaxPoolV2-like operations.
 Status MaxPoolV2Shape(shape_inference::InferenceContext* c, int num_inputs);
 
+// Shape function for MaxPoolGrad-like operations.
+Status MaxPoolGradShape(shape_inference::InferenceContext* c);
+
 // Shape function for 3D Pooling operations.
 Status Pool3DShape(shape_inference::InferenceContext* c);
+
+// Shape function for MaxPool3DGrad-like operations.
+Status MaxPool3DGradShape(shape_inference::InferenceContext* c);
+
+// Shape function for AvgPool3DGrad-like operations.
+Status AvgPool3DGradShape(shape_inference::InferenceContext* c);
 
 // Shape function for use with ops whose output shapes are unknown.
 Status UnknownShape(shape_inference::InferenceContext* c);
@@ -253,6 +272,15 @@ Status ExplicitShapes(InferenceContext* c);
 
 // Shape function for SparseReduceMax and SparseReduceSum.
 Status SparseReduceShapeFn(InferenceContext* c);
+
+// Shape function for QuantizedConv2D op.
+Status QuantizedConv2DShape(InferenceContext* c);
+
+// Shape function for QuantizedAvgPool op
+Status QuantizedAvgPoolShape(InferenceContext* c);
+
+// Shape function for QuantizeV2 op
+Status QuantizeV2Shape(InferenceContext* c);
 
 }  // namespace shape_inference
 

@@ -1,18 +1,18 @@
-// RUN: mlir-hlo-opt -mhlo-test-infer-shaped-type-methods -allow-unregistered-dialect -split-input-file -verify-diagnostics %s -o - | FileCheck %s
+// RUN: mlir-hlo-opt --mhlo-test-infer-shaped-type-methods --allow-unregistered-dialect --split-input-file %s | FileCheck %s
 
 // CHECK-LABEL: @broadcast_add
 // Note that all broadcast_ops are expanded from the same template, so
 // only test reification on an examplar op.
 // CHECK-SAME: %[[ARG0:.+]]: tensor<?xf32>,
 // CHECK-SAME: %[[ARG1:.+]]: tensor<?xf32>
-func @broadcast_add(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> !shape.shape {
+func @broadcast_add(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> tensor<1xindex> {
   // CHECK-DAG: %[[ARG0_S:.+]] = shape.shape_of %[[ARG0]]
   // CHECK-DAG: %[[ARG1_S:.+]] = shape.shape_of %[[ARG1]]
-  // CHECK-DAG: %[[BCAST_S:.+]] = shape.broadcast %[[ARG0_S]], %[[ARG1_S]] : tensor<?xindex>, tensor<?xindex> -> !shape.shape
-  // CHECK: return %[[BCAST_S]] : !shape.shape
+  // CHECK-DAG: %[[BCAST_S:.+]] = shape.broadcast %[[ARG0_S]], %[[ARG1_S]] : tensor<1xindex>, tensor<1xindex> -> tensor<1xindex>
+  // CHECK: return %[[BCAST_S]] : tensor<1xindex>
   %0 = chlo.broadcast_add %arg0, %arg1 : (tensor<?xf32>, tensor<?xf32>) -> tensor<?xf32>
-  %1 = "mhlo_test.reify_return_type_shapes"(%0) : (tensor<?xf32>) -> !shape.shape
-  return %1 : !shape.shape
+  %1 = "mhlo_test.reify_return_type_shapes"(%0) : (tensor<?xf32>) -> tensor<1xindex>
+  return %1 : tensor<1xindex>
 }
 
 // -----

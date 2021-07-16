@@ -71,7 +71,10 @@ HloComputation::HloComputation(
     : name_(NameUniquer::GetSanitizedName(name)),
       unique_id_(-1),
       root_instruction_(root_instruction),
-      fusion_instruction_(fusion_instruction) {
+      fusion_instruction_(fusion_instruction),
+      is_fusion_computation_(fusion_instruction != nullptr),
+      custom_call_instruction_(nullptr),
+      is_custom_call_computation_(false) {
   param_instructions_.resize(parameter_count, nullptr);
   bool root_found = false;
   for (auto& instruction : *instructions) {
@@ -92,11 +95,22 @@ HloComputation::HloComputation(
       << "\nERROR: root instruction is not present in computation.";
 }
 
+HloComputation::~HloComputation() {
+  if (fusion_instruction_ != nullptr) {
+    CHECK(fusion_instruction_->fused_instructions_computation() == this);
+    fusion_instruction_->ClearCalledComputations();
+    fusion_instruction_ = nullptr;
+  }
+}
+
 HloInstruction* HloComputation::AddInstruction(
-    std::unique_ptr<HloInstruction> instruction) {
+    std::unique_ptr<HloInstruction> instruction, const std::string& new_name) {
   CHECK(instruction->opcode() != HloOpcode::kParameter)
       << "Parameter instructions cannot be added to a computation after "
       << "it has been built";
+  if (!new_name.empty()) {
+    instruction->SetAndSanitizeName(new_name);
+  }
   return AddInstructionInternal(std::move(instruction));
 }
 
@@ -184,6 +198,25 @@ Status HloComputation::RemoveParameter(int64 param_no) {
   }
 
   return Status::OK();
+}
+
+HloInstruction* HloComputation::ReplaceParameter(
+    int64 param_no, std::unique_ptr<HloInstruction> instruction) {
+  CHECK_GE(param_no, 0);
+  CHECK_LT(param_no, param_instructions_.size());
+  CHECK(instruction->opcode() == HloOpcode::kParameter);
+  CHECK(IsFusionComputation());
+  CHECK_EQ(fusion_instruction_->operand_count(), param_instructions_.size());
+
+  instruction->set_parent(this);
+  HloInstruction* new_instruction =
+      AddInstructionInternal(std::move(instruction));
+  HloInstruction* old_instruction = param_instructions_[param_no];
+  CHECK(
+      old_instruction->ReplaceAllUsesWithDifferentShape(new_instruction).ok());
+  param_instructions_[param_no] = new_instruction;
+  CHECK(RemoveInstruction(old_instruction).ok());
+  return new_instruction;
 }
 
 Status HloComputation::RemoveUnusedParametersFromFusedComputation() {
@@ -315,6 +348,9 @@ Status HloComputation::RemoveInstructionImpl(HloInstruction* instruction,
   (*inst_it->second)->set_parent(nullptr);
   to_be_deleted_.emplace_back(inst_it->second->release());
   to_be_deleted_.back()->DetachFromOperandsAndUsers();
+  // Clear all operands to avoid Null operands.
+  to_be_deleted_.back()->RemoveAllOperands();
+  to_be_deleted_.back()->ClearCalledComputations();
   to_be_deleted_.back()->MarkAsDead();
   instructions_.erase(inst_it->second);
   instruction_iterators_.erase(inst_it);
@@ -380,6 +416,9 @@ void HloComputation::ComputeInstructionPostOrder(
   dfs_stack.push_back(root);
   while (!dfs_stack.empty()) {
     const auto current = dfs_stack.back();
+    CHECK_EQ(current->parent(), this)
+        << "Instruction " << current->name()
+        << " is not in the current computation (" << name() << ").";
     auto it = visited->find(current);
     if (it != visited->end()) {
       if (it->second == kVisited) {
@@ -401,8 +440,10 @@ void HloComputation::ComputeInstructionPostOrder(
         [](HloInstruction* inst) -> absl::optional<int64> {
       switch (inst->opcode()) {
         case HloOpcode::kRecvDone:
-          return inst->channel_id();
         case HloOpcode::kAllReduce:
+        case HloOpcode::kAllGather:
+        case HloOpcode::kAllToAll:
+        case HloOpcode::kReduceScatter:
           return inst->channel_id();
         default:
           return absl::nullopt;
@@ -458,7 +499,10 @@ HloComputation::ComputeChannelDependencies() const {
     switch (instruction->opcode()) {
       case HloOpcode::kSend:
       case HloOpcode::kRecvDone:
-      case HloOpcode::kAllReduce: {
+      case HloOpcode::kAllReduce:
+      case HloOpcode::kAllGather:
+      case HloOpcode::kAllToAll:
+      case HloOpcode::kReduceScatter: {
         auto channel_id = instruction->channel_id();
         if (channel_id) {
           channel_dependency_group[channel_id.value()].push_back(
@@ -545,7 +589,7 @@ string HloComputation::ToString(
     if (options.print_percent()) {
       s << "%";
     }
-    if (options.print_ids() || !IsEntryComputation()) {
+    if (options.print_ids()) {
       // Exclude entry computation's name because it includes and leads to
       // non-deterministic fingerprint.
       s << PrintName(name(), options.print_ids()) << " ";
@@ -836,8 +880,9 @@ ProgramShape HloComputation::ComputeProgramShape(bool include_ids) const {
   return program_shape;
 }
 
-bool HloComputation::Equal(const HloComputation& other,
-                           bool is_layout_sensitive) const {
+bool HloComputation::EqualInternal(const HloComputation& other,
+                                   bool is_layout_sensitive,
+                                   bool ignore_channel_id_values) const {
   if (this == &other) {
     return true;
   }
@@ -855,15 +900,21 @@ bool HloComputation::Equal(const HloComputation& other,
       continue;
     }
     visited.emplace(pair);
-    // TODO(b/123082518): Avoid recursively invoking == because it may
+    // TODO(b/123082518): Avoid recursively invoking Equal because it may
     // cause a stack overflow with deeply nested subcomputations.
-    bool identical_ignoring_operands = pair.first->Identical(
-        *pair.second,
-        [](const HloInstruction*, const HloInstruction*) { return true; },
-        [](const HloComputation* a, const HloComputation* b) {
-          return *a == *b;
-        },
-        is_layout_sensitive);
+    auto operands_eq = [](const HloInstruction*, const HloInstruction*) {
+      return true;
+    };
+    auto comp_eq = [&](const HloComputation* a, const HloComputation* b) {
+      return a->EqualInternal(*b, is_layout_sensitive,
+                              ignore_channel_id_values);
+    };
+    bool identical_ignoring_operands =
+        ignore_channel_id_values
+            ? pair.first->IdenticalIgnoringChannelIdValues(
+                  *pair.second, operands_eq, comp_eq, is_layout_sensitive)
+            : pair.first->Identical(*pair.second, operands_eq, comp_eq,
+                                    is_layout_sensitive);
     if (!identical_ignoring_operands) {
       return false;
     }
@@ -894,7 +945,11 @@ Status HloComputation::ReplaceInstruction(HloInstruction* old_instruction,
       ShapeUtil::Compatible(old_instruction->shape(), new_instruction->shape()))
       << ShapeUtil::HumanString(old_instruction->shape()) << " vs "
       << ShapeUtil::HumanString(new_instruction->shape());
+  return ReplaceInstructionWithDifferentShape(old_instruction, new_instruction);
+}
 
+Status HloComputation::ReplaceInstructionWithDifferentShape(
+    HloInstruction* old_instruction, HloInstruction* new_instruction) {
   VLOG(10) << "transformed " << old_instruction->ToString() << " to "
            << new_instruction->ToString();
   // Try to add metadata for HLO instructions that are created to replace
@@ -903,7 +958,13 @@ Status HloComputation::ReplaceInstruction(HloInstruction* old_instruction,
   // function, and that they would be correlated to the same TF op. This might
   // not always be correct since HLO optimizations can cross TF op boundaries.
   // But still this seems to be better than nothing.
-  if (new_instruction->metadata().op_name().empty()) {
+  bool overwrite_op_name = new_instruction->metadata().op_name().empty() &&
+                           !old_instruction->metadata().op_name().empty();
+  bool overwrite_pass_id =
+      new_instruction->metadata().op_name().empty() &&
+      new_instruction->metadata().logical_creation_pass_id() == 0 &&
+      old_instruction->metadata().logical_creation_pass_id() != 0;
+  if (overwrite_op_name || overwrite_pass_id) {
     new_instruction->set_metadata(old_instruction->metadata());
   }
   if (new_instruction->frontend_attributes().map().empty()) {
@@ -918,7 +979,8 @@ Status HloComputation::ReplaceInstruction(HloInstruction* old_instruction,
     new_instruction->set_sharding(old_instruction->sharding_ptr());
   }
 
-  TF_RETURN_IF_ERROR(old_instruction->ReplaceAllUsesWith(new_instruction));
+  TF_RETURN_IF_ERROR(
+      old_instruction->ReplaceAllUsesWithDifferentShape(new_instruction));
   return RemoveInstructionAndUnusedOperands(old_instruction);
 }
 

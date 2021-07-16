@@ -47,17 +47,6 @@ limitations under the License.
 // EMSCRIPTEN builds are considered "mobile" for the sake of portability.
 #define IS_MOBILE_PLATFORM
 
-#elif defined(__arm__) || defined(__aarch64__)
-// If no platform specified, use:
-#define PLATFORM_POSIX
-
-// Require an outside macro to tell us if we're building for Raspberry Pi or
-// another ARM device that's not a mobile platform.
-#if !defined(RASPBERRY_PI) && !defined(ARM_NON_MOBILE) && \
-    !defined(PLATFORM_GOOGLE)
-#define IS_MOBILE_PLATFORM
-#endif
-
 #else
 // If no platform specified, use:
 #define PLATFORM_POSIX
@@ -70,6 +59,16 @@ limitations under the License.
 #if defined(__x86_64__) || defined(__amd64__) || defined(_M_IX86) || \
     defined(_M_X64)
 #define PLATFORM_IS_X86
+#endif
+
+// Check if we are compmiling for an arm device.
+#if defined(__arm__) || defined(__aarch64__)
+#define PLATFORM_IS_ARM
+#if defined(__aarch64__)
+#define PLATFORM_IS_ARM64
+#else
+#define PLATFORM_IS_ARM32
+#endif
 #endif
 
 #endif  // TENSORFLOW_PLATFORM_PLATFORM_DEFINE_H_

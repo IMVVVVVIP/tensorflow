@@ -115,7 +115,7 @@ Status ConvertGraphToXla(std::unique_ptr<Graph> graph,
     for (const XlaCompiler::ResourceUpdate& update : result.resource_updates) {
       updated_inputs[update.input_index] = true;
     }
-    int64 input_index = xla_args.size() - config.variable_size();
+    int64_t input_index = xla_args.size() - config.variable_size();
     for (const tf2xla::Variable& variable : config.variable()) {
       if (variable.readonly() == updated_inputs[input_index]) {
         return errors::InvalidArgument(
@@ -137,7 +137,6 @@ Status ConvertVarHandlesToAotVarHandles(GraphDef* graph_def) {
       const auto& it = node.attr().find("allowed_devices");
       if (it != node.attr().end()) {
         if (!it->second.list().s().empty()) {
-          // TODO(b/149512838): Support non-empty allowed devices.
           return errors::InvalidArgument(
               "VarHandleOp with non-empty allowed devices is not supported.");
         }

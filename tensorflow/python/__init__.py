@@ -38,19 +38,21 @@ import traceback
 # pylint: disable=wildcard-import,g-bad-import-order,g-import-not-at-top
 
 from tensorflow.python.eager import context
+from tensorflow.python import pywrap_tensorflow as _pywrap_tensorflow
 
 # pylint: enable=wildcard-import
 
 # Bring in subpackages.
 from tensorflow.python import data
 from tensorflow.python import distribute
-from tensorflow.python import keras
+# from tensorflow.python import keras
 from tensorflow.python.feature_column import feature_column_lib as feature_column
-from tensorflow.python.layers import layers
+# from tensorflow.python.layers import layers
 from tensorflow.python.module import module
 from tensorflow.python.ops import bincount_ops
 from tensorflow.python.ops import bitwise_ops as bitwise
 from tensorflow.python.ops import cond_v2
+from tensorflow.python.ops import composite_tensor_ops
 from tensorflow.python.ops import gradient_checker_v2
 from tensorflow.python.ops import image_ops as image
 from tensorflow.python.ops import manip_ops as manip
@@ -67,6 +69,7 @@ from tensorflow.python.ops.linalg.sparse import sparse
 from tensorflow.python.ops.losses import losses
 from tensorflow.python.ops.ragged import ragged_ops as _ragged_ops
 from tensorflow.python.ops.signal import signal
+from tensorflow.python.ops.structured import structured_ops as _structured_ops
 from tensorflow.python.profiler import profiler
 from tensorflow.python.profiler import profiler_client
 from tensorflow.python.profiler import profiler_v2
@@ -101,7 +104,7 @@ from tensorflow.python.platform import flags
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.platform import resource_loader
-from tensorflow.python.platform import sysconfig
+from tensorflow.python.platform import sysconfig as sysconfig_lib
 from tensorflow.python.platform import test
 
 from tensorflow.python.compat import v2_compat
@@ -142,6 +145,9 @@ from tensorflow.python.compiler.xla import xla
 
 # MLIR APIs.
 from tensorflow.python.compiler.mlir import mlir
+
+# Structs (aka extension types)
+from tensorflow.python.framework import extension_type as _extension_type
 
 # Required due to `rnn` and `rnn_cell` not being imported in `nn` directly
 # (due to a circular dependency issue: rnn depends on layers).

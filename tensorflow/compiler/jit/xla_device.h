@@ -94,6 +94,11 @@ class XlaDevice : public LocalDevice {
   static Status GetMetadata(OpKernelConstruction* ctx,
                             const Metadata** metadata);
 
+  // Sets `*metadata` to the XlaDevice Metadata in the XLA device used by
+  // `device`.
+  static Status GetMetadataFromDevice(DeviceBase* device,
+                                      const XlaDevice::Metadata** metadata);
+
   struct Options {
     // The StreamExecutor platform. Not owned. Must be non-null.
     se::Platform* platform = nullptr;
@@ -113,6 +118,11 @@ class XlaDevice : public LocalDevice {
     // If 'use_multiple_streams' is true, we create separate streams for
     // compute, host-to-device, and device-to-host communication.
     bool use_multiple_streams = false;
+
+    // If true, the XLA devices with the same device ordinal will share the same
+    // compute stream. Otherwise each XLA device will having their own compute
+    // streams.
+    bool use_global_compute_stream = false;
 
     // A function that describes how the on-host shapes of
     // a) argument and return value, for entry computations
@@ -184,7 +194,7 @@ class XlaDevice : public LocalDevice {
   Status RefreshStatus() override TF_LOCKS_EXCLUDED(mu_);
 
  private:
-  xla::StatusOr<xla::LocalClient*> GetOrCreateClient() const;
+  StatusOr<xla::LocalClient*> GetOrCreateClient() const;
   Allocator* GetAllocatorLocked(AllocatorAttributes attr)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
   Status EnsureStreamOkLocked(xla::Backend* backend, const string& name,
@@ -193,11 +203,8 @@ class XlaDevice : public LocalDevice {
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Return a pair of device context, the second one is fast_mem device context.
-  xla::StatusOr<std::pair<XlaDeviceContext*, XlaDeviceContext*>>
+  StatusOr<std::pair<XlaDeviceContext*, XlaDeviceContext*>>
   GetDeviceContextLocked() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
-
-  static Status GetMetadataFromDevice(DeviceBase* device,
-                                      const XlaDevice::Metadata** metadata);
 
   Status MakeTensorFromProto(XlaDeviceContext* device_context,
                              const TensorProto& tensor_proto,
@@ -268,6 +275,15 @@ class XlaDevice : public LocalDevice {
   // platform will have resources allocated. For GPUs this will be
   // filled from visible_gpu_devices list from session configuration.
   absl::optional<std::set<int>> allowed_devices_;
+
+  const bool use_global_compute_stream_;
+
+  // A static vector with device_ordinal as its index, describing the global
+  // compute streams used in each XLA device. It is only used if
+  // `use_global_compute_stream` in `XlaDevice::Options` is set to true.
+  static mutex global_mu_;
+  static std::vector<std::shared_ptr<se::Stream>>* global_compute_streams_
+      TF_GUARDED_BY(global_mu_);
 };
 
 // Builds OpKernel registrations on 'device' for the JIT operators

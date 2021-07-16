@@ -33,10 +33,6 @@ from tensorflow.python.autograph.pyct.static_analysis import annos
 from tensorflow.python.autograph.pyct.static_analysis import liveness
 from tensorflow.python.autograph.pyct.static_analysis import reaching_definitions
 from tensorflow.python.autograph.pyct.static_analysis import reaching_fndefs
-from tensorflow.python.autograph.utils import compat_util
-
-
-# TODO(mdan): Refactor functions to make them smaller.
 
 
 class _Function(object):
@@ -180,6 +176,7 @@ class ControlFlowTransformer(converter.Base):
     defined_in = anno.getanno(node, anno.Static.DEFINED_VARS_IN)
     live_in = anno.getanno(node, anno.Static.LIVE_VARS_IN)
     live_out = anno.getanno(node, anno.Static.LIVE_VARS_OUT)
+    fn_scope = self.state[_Function].scope
 
     basic_scope_vars = self._get_block_basic_vars(
         modified,
@@ -191,15 +188,16 @@ class ControlFlowTransformer(converter.Base):
     # Variables that are modified inside the scope, but not defined
     # before entering it. Only simple variables must be defined. The
     # composite ones will be implicitly checked at runtime.
-    # This covers loop variables as well as variables that
-    undefined = tuple(v for v in modified - defined_in if not v.is_composite())
+    possibly_undefined = (
+        modified - defined_in - fn_scope.globals - fn_scope.nonlocals)
+    undefined = tuple(v for v in possibly_undefined if not v.is_composite())
 
     # Variables that are modified inside the scope, and depend on values outside
     # it.
     input_only = basic_scope_vars & live_in - live_out
 
-    # Place the outputs first.
-    scope_vars = sorted(scope_vars, key=lambda v: v in input_only)
+    # Place the outputs first, then sort lexicographically.
+    scope_vars = sorted(scope_vars, key=lambda v: (v in input_only, v))
     nouts = len(scope_vars) - len(input_only)
 
     return scope_vars, undefined, nouts
@@ -210,7 +208,7 @@ class ControlFlowTransformer(converter.Base):
     orelse_scope = anno.getanno(node, annos.NodeAnno.ORELSE_SCOPE)
 
     cond_vars, undefined, nouts = self._get_block_vars(
-        node, body_scope.modified | orelse_scope.modified)
+        node, body_scope.bound | orelse_scope.bound)
 
     undefined_assigns = self._create_undefined_assigns(undefined)
 
@@ -265,7 +263,7 @@ class ControlFlowTransformer(converter.Base):
     node = self.generic_visit(node)
     body_scope = anno.getanno(node, annos.NodeAnno.BODY_SCOPE)
 
-    loop_vars, undefined, _ = self._get_block_vars(node, body_scope.modified)
+    loop_vars, undefined, _ = self._get_block_vars(node, body_scope.bound)
 
     undefined_assigns = self._create_undefined_assigns(undefined)
 
@@ -317,7 +315,7 @@ class ControlFlowTransformer(converter.Base):
     iter_scope = anno.getanno(node, annos.NodeAnno.ITERATE_SCOPE)
 
     loop_vars, undefined, _ = self._get_block_vars(
-        node, body_scope.modified | iter_scope.modified)
+        node, body_scope.bound | iter_scope.bound)
 
     undefined_assigns = self._create_undefined_assigns(undefined)
 
@@ -417,6 +415,3 @@ def transform(node, ctx):
 
   node = ControlFlowTransformer(ctx).visit(node)
   return node
-
-
-compat_util.deprecated_py2_support(__name__)

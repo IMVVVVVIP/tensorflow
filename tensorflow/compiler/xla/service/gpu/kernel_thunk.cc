@@ -40,6 +40,10 @@ KernelThunk::KernelThunk(ThunkInfo thunk_info,
       args_(args.begin(), args.end()),
       kernel_name_(kernel_name) {}
 
+std::string KernelThunk::ToStringExtra(int indent) const {
+  return " ,kernel = " + kernel_name_;
+}
+
 Status KernelThunk::Initialize(const GpuExecutable& executable,
                                se::StreamExecutor* executor) {
   tensorflow::mutex_lock lock(mutex_);
@@ -115,9 +119,8 @@ Status KernelThunk::ExecuteOnStream(const ExecuteParams& params) {
 
   auto op_profiler =
       params.profiler->MakeScopedInstructionProfiler(profile_index());
-  return ExecuteKernelOnStream(*kernel, buffer_args,
-                               launch_dimensions.threads_per_block(),
-                               launch_dimensions.block_count(), params.stream);
+  return ExecuteKernelOnStream(*kernel, buffer_args, launch_dimensions,
+                               params.stream);
 }
 
 }  // namespace gpu

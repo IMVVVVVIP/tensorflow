@@ -36,6 +36,7 @@ __all__ = ["LinearOperatorPermutation",]
 
 
 @tf_export("linalg.LinearOperatorPermutation")
+@linear_operator.make_composite_tensor
 class LinearOperatorPermutation(linear_operator.LinearOperator):
   """`LinearOperator` acting like a [batch] of permutation matrices.
 
@@ -140,6 +141,15 @@ class LinearOperatorPermutation(linear_operator.LinearOperator):
       ValueError:  `is_self_adjoint` is not `True`, `is_positive_definite` is
         not `False` or `is_square` is not `True`.
     """
+    parameters = dict(
+        perm=perm,
+        dtype=dtype,
+        is_non_singular=is_non_singular,
+        is_self_adjoint=is_self_adjoint,
+        is_positive_definite=is_positive_definite,
+        is_square=is_square,
+        name=name
+    )
 
     with ops.name_scope(name, values=[perm]):
       self._perm = linear_operator_util.convert_nonref_to_tensor(
@@ -160,6 +170,7 @@ class LinearOperatorPermutation(linear_operator.LinearOperator):
           is_self_adjoint=is_self_adjoint,
           is_positive_definite=is_positive_definite,
           is_square=is_square,
+          parameters=parameters,
           name=name)
 
   def _check_perm(self, perm):
@@ -250,3 +261,7 @@ class LinearOperatorPermutation(linear_operator.LinearOperator):
   @property
   def perm(self):
     return self._perm
+
+  @property
+  def _composite_tensor_fields(self):
+    return ("perm", "dtype")

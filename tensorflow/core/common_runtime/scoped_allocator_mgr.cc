@@ -100,11 +100,10 @@ ScopedAllocatorContainer::~ScopedAllocatorContainer() {
   VLOG(2) << "~ScopedAllocatorContainer " << this << " step " << step_id_
           << " on " << mgr_->device_name();
   mutex_lock l(mu_);
-  // In normal execution the table should be empty and all of its
-  // contents deleted via Drop.  When when a step ends early
-  // (e.g. through abnormal termination) we need to clean up
-  // explicitly.  So long as graph execution of the associated step has
-  // completely terminated this should be safe.
+  // In normal execution the table should be empty and all of its contents
+  // deleted via Drop.  When a step ends early (e.g. through abnormal
+  // termination) we need to clean up explicitly.  So long as graph execution
+  // of the associated step has completely terminated this should be safe.
   for (auto& it : allocators_) {
     if (it.second.field_index == ScopedAllocator::kBackingIndex) {
       delete it.second.scoped_allocator;
@@ -127,7 +126,7 @@ ScopedAllocatorMgr::~ScopedAllocatorMgr() {
   }
 }
 
-void ScopedAllocatorMgr::Cleanup(int64 step_id) {
+void ScopedAllocatorMgr::Cleanup(int64_t step_id) {
   mutex_lock l(mu_);
   auto it = per_step_map_.find(step_id);
   if (it != per_step_map_.end()) {
@@ -136,7 +135,7 @@ void ScopedAllocatorMgr::Cleanup(int64 step_id) {
   }
 }
 
-ScopedAllocatorContainer* ScopedAllocatorMgr::GetContainer(int64 step_id) {
+ScopedAllocatorContainer* ScopedAllocatorMgr::GetContainer(int64_t step_id) {
   VLOG(2) << "GetContainer " << step_id << " on " << device_name();
   ScopedAllocatorContainer* sac = nullptr;
   mutex_lock l(mu_);
@@ -151,7 +150,7 @@ ScopedAllocatorContainer* ScopedAllocatorMgr::GetContainer(int64 step_id) {
 }
 
 Status ScopedAllocatorMgr::AddScopedAllocator(
-    const Tensor& backing_tensor, int64 step_id, int32 scope_id,
+    const Tensor& backing_tensor, int64_t step_id, int32 scope_id,
     const string& scope_name,
     const gtl::ArraySlice<ScopedAllocator::Field>& fields,
     int32 expected_call_count) {

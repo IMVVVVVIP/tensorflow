@@ -115,15 +115,18 @@ class CPUAllocator : public Allocator {
   }
 
   absl::optional<AllocatorStats> GetStats() override {
+    if (!cpu_allocator_collect_stats) return absl::nullopt;
     mutex_lock l(mu_);
     return stats_;
   }
 
-  void ClearStats() override {
+  bool ClearStats() override {
+    if (!cpu_allocator_collect_stats) return false;
     mutex_lock l(mu_);
     stats_.num_allocs = 0;
     stats_.peak_bytes_in_use = stats_.bytes_in_use;
     stats_.largest_alloc_size = 0;
+    return true;
   }
 
   size_t AllocatedSizeSlow(const void* ptr) const override {
@@ -156,13 +159,17 @@ class CPUAllocatorFactory : public AllocatorFactory {
     explicit CPUSubAllocator(CPUAllocator* cpu_allocator)
         : SubAllocator({}, {}), cpu_allocator_(cpu_allocator) {}
 
-    void* Alloc(size_t alignment, size_t num_bytes) override {
+    void* Alloc(size_t alignment, size_t num_bytes,
+                size_t* bytes_received) override {
+      *bytes_received = num_bytes;
       return cpu_allocator_->AllocateRaw(alignment, num_bytes);
     }
 
     void Free(void* ptr, size_t num_bytes) override {
       cpu_allocator_->DeallocateRaw(ptr);
     }
+
+    bool SupportsCoalescing() const override { return false; }
 
    private:
     CPUAllocator* cpu_allocator_;

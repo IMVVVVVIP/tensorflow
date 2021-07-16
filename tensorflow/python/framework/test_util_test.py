@@ -32,16 +32,20 @@ from google.protobuf import text_format
 
 from tensorflow.core.framework import graph_pb2
 from tensorflow.core.protobuf import meta_graph_pb2
+from tensorflow.python import pywrap_sanitizers
 from tensorflow.python.compat import compat
 from tensorflow.python.eager import context
+from tensorflow.python.eager import def_function
 from tensorflow.python.framework import combinations
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import random_seed
 from tensorflow.python.framework import test_ops  # pylint: disable=unused-import
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import lookup_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import resource_variable_ops
@@ -107,6 +111,27 @@ class TestUtilTest(test_util.TensorFlowTestCase, parameterized.TestCase):
                                 r"^Found unexpected node '{{node seven}}"):
       test_util.assert_equal_graph_def(def_57, def_empty)
 
+  def test_assert_equal_graph_def_hash_table(self):
+    def get_graph_def():
+      with ops.Graph().as_default() as g:
+        x = constant_op.constant([2, 9], name="x")
+        keys = constant_op.constant([1, 2], name="keys")
+        values = constant_op.constant([3, 4], name="values")
+        default = constant_op.constant(-1, name="default")
+        table = lookup_ops.StaticHashTable(
+            lookup_ops.KeyValueTensorInitializer(keys, values), default)
+        _ = table.lookup(x)
+      return g.as_graph_def()
+    def_1 = get_graph_def()
+    def_2 = get_graph_def()
+    # The unique shared_name of each table makes the graph unequal.
+    with self.assertRaisesRegex(AssertionError, "hash_table_"):
+      test_util.assert_equal_graph_def(def_1, def_2,
+                                       hash_table_shared_name=False)
+    # That can be ignored. (NOTE: modifies GraphDefs in-place.)
+    test_util.assert_equal_graph_def(def_1, def_2,
+                                     hash_table_shared_name=True)
+
   def testIsGoogleCudaEnabled(self):
     # The test doesn't assert anything. It ensures the py wrapper
     # function is generated correctly.
@@ -122,6 +147,22 @@ class TestUtilTest(test_util.TensorFlowTestCase, parameterized.TestCase):
       print("MKL is enabled")
     else:
       print("MKL is disabled")
+
+  @test_util.disable_asan("Skip test if ASAN is enabled.")
+  def testDisableAsan(self):
+    self.assertFalse(pywrap_sanitizers.is_asan_enabled())
+
+  @test_util.disable_msan("Skip test if MSAN is enabled.")
+  def testDisableMsan(self):
+    self.assertFalse(pywrap_sanitizers.is_msan_enabled())
+
+  @test_util.disable_tsan("Skip test if TSAN is enabled.")
+  def testDisableTsan(self):
+    self.assertFalse(pywrap_sanitizers.is_tsan_enabled())
+
+  @test_util.disable_ubsan("Skip test if UBSAN is enabled.")
+  def testDisableUbsan(self):
+    self.assertFalse(pywrap_sanitizers.is_ubsan_enabled())
 
   @test_util.run_in_graph_and_eager_modes
   def testAssertProtoEqualsStr(self):
@@ -596,6 +637,19 @@ class TestUtilTest(test_util.TensorFlowTestCase, parameterized.TestCase):
           x, 10, 15, open_lower_bound=True, open_upper_bound=True)
 
   @test_util.run_in_graph_and_eager_modes
+  def testAssertAllInRangeScalar(self):
+    x = constant_op.constant(10.0, name="x")
+    nan = constant_op.constant(np.nan, name="nan")
+    self.assertAllInRange(x, 5, 15)
+    with self.assertRaises(AssertionError):
+      self.assertAllInRange(nan, 5, 15)
+
+    with self.assertRaises(AssertionError):
+      self.assertAllInRange(x, 10, 15, open_lower_bound=True)
+    with self.assertRaises(AssertionError):
+      self.assertAllInRange(x, 1, 2)
+
+  @test_util.run_in_graph_and_eager_modes
   def testAssertAllInRangeErrorMessageEllipses(self):
     x_init = np.array([[10.0, 15.0]] * 12)
     x = constant_op.constant(x_init, name="x")
@@ -680,7 +734,7 @@ class TestUtilTest(test_util.TensorFlowTestCase, parameterized.TestCase):
 
     f = test_util.run_in_graph_and_eager_modes(inc)
     f(self, with_brackets=False)
-    f = test_util.run_in_graph_and_eager_modes()(inc)
+    f = test_util.run_in_graph_and_eager_modes()(inc)  # pylint: disable=assignment-from-no-return
     f(self, with_brackets=True)
 
     self.assertEqual(len(l), 4)
@@ -785,6 +839,13 @@ class TestUtilTest(test_util.TensorFlowTestCase, parameterized.TestCase):
     test_object.test_modes_function()
     self.assertTrue(test_object.graph_mode_tested)
     self.assertTrue(test_object.inside_function_tested)
+
+  @test_util.run_in_graph_and_eager_modes
+  def test_consistent_random_seed_in_assert_all_equal(self):
+    random_seed.set_seed(1066)
+    index = random_ops.random_shuffle([0, 1, 2, 3, 4], seed=2021)
+    # This failed when `a` and `b` were evaluated in separate sessions.
+    self.assertAllEqual(index, index)
 
   def test_with_forward_compatibility_horizons(self):
 
@@ -926,12 +987,13 @@ class GarbageCollectionTest(test_util.TensorFlowTestCase):
 
   def test_no_new_objects_decorator(self):
 
-    class LeakedObjectTest(object):
+    class LeakedObjectTest(unittest.TestCase):
 
-      def __init__(inner_self):  # pylint: disable=no-self-argument
-        inner_self.assertEqual = self.assertEqual  # pylint: disable=invalid-name
-        inner_self.accumulation = []
+      def __init__(self, *args, **kwargs):
+        super(LeakedObjectTest, self).__init__(*args, **kwargs)
+        self.accumulation = []
 
+      @unittest.expectedFailure
       @test_util.assert_no_new_pyobjects_executing_eagerly
       def test_has_leak(self):
         self.accumulation.append([1.])
@@ -940,10 +1002,33 @@ class GarbageCollectionTest(test_util.TensorFlowTestCase):
       def test_has_no_leak(self):
         self.not_accumulating = [1.]
 
-    with self.assertRaises(AssertionError):
-      LeakedObjectTest().test_has_leak()
+    self.assertTrue(LeakedObjectTest("test_has_leak").run().wasSuccessful())
+    self.assertTrue(LeakedObjectTest("test_has_no_leak").run().wasSuccessful())
 
-    LeakedObjectTest().test_has_no_leak()
+
+class RunFunctionsEagerlyInV2Test(test_util.TensorFlowTestCase,
+                                  parameterized.TestCase):
+  @parameterized.named_parameters(
+      [("_RunEagerly", True), ("_RunGraph", False)])
+  def test_run_functions_eagerly(self, run_eagerly):  # pylint: disable=g-wrong-blank-lines
+    results = []
+
+    @def_function.function
+    def add_two(x):
+      for _ in range(5):
+        x += 2
+        results.append(x)
+      return x
+
+    with test_util.run_functions_eagerly(run_eagerly):
+      add_two(constant_op.constant(2.))
+      if context.executing_eagerly():
+        if run_eagerly:
+          self.assertTrue(isinstance(t, ops.EagerTensor) for t in results)
+        else:
+          self.assertTrue(isinstance(t, ops.Tensor) for t in results)
+      else:
+        self.assertTrue(isinstance(t, ops.Tensor) for t in results)
 
 
 if __name__ == "__main__":

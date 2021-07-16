@@ -116,18 +116,6 @@ struct ReluOpData : public OpData {
 };
 
 namespace {
-TfLiteStatus CheckOutputQuantParams(TfLiteContext* context,
-                                    const TfLiteTensor* input,
-                                    const TfLiteTensor* output) {
-  TF_LITE_ENSURE(context, output->params.scale == 1. / 256);
-  if (input->type == kTfLiteUInt8) {
-    TF_LITE_ENSURE_EQ(context, output->params.zero_point, 0);
-  } else {
-    TF_LITE_ENSURE_EQ(context, output->params.zero_point, -128);
-  }
-  return kTfLiteOk;
-}
-
 template <typename T>
 void PopulateLookupTable(struct OpData* data, const TfLiteTensor* input,
                          TfLiteTensor* output,
@@ -252,8 +240,10 @@ void* HardSwishInit(TfLiteContext* context, const char* buffer, size_t length) {
 TfLiteStatus GenericPrepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
 
   return context->ResizeTensor(context, output,
@@ -272,14 +262,22 @@ TfLiteStatus ReluPrepare(TfLiteContext* context, TfLiteNode* node) {
   ReluOpData* data = reinterpret_cast<ReluOpData*>(node->user_data);
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
 
-  if (input->type == kTfLiteInt8 || input->type == kTfLiteUInt8) {
+  if (input->type == kTfLiteInt8 || input->type == kTfLiteUInt8 ||
+      input->type == kTfLiteInt16) {
     double real_multiplier = input->params.scale / output->params.scale;
     QuantizeMultiplier(real_multiplier, &data->output_multiplier,
                        &data->output_shift);
+  }
+
+  if (input->type == kTfLiteInt16) {
+    TF_LITE_ENSURE_EQ(context, input->params.zero_point, 0);
+    TF_LITE_ENSURE_EQ(context, output->params.zero_point, 0);
   }
 
   return context->ResizeTensor(context, output,
@@ -298,15 +296,16 @@ void HardSwishFree(TfLiteContext* context, void* buffer) {
   delete static_cast<HardSwishData*>(buffer);
 }
 
-
 TfLiteStatus HardSwishPrepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_STATUS(GenericPrepare(context, node));
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
 
   if (output->type == kTfLiteUInt8 || output->type == kTfLiteInt8) {
     HardSwishData* data = static_cast<HardSwishData*>(node->user_data);
     HardSwishParams* params = &data->params;
-    const TfLiteTensor* input = GetInput(context, node, 0);
+    const TfLiteTensor* input;
+    TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
     params->input_zero_point = input->params.zero_point;
     params->output_zero_point = output->params.zero_point;
     const float input_scale = input->params.scale;
@@ -338,8 +337,10 @@ TfLiteStatus HardSwishPrepare(TfLiteContext* context, TfLiteNode* node) {
 TfLiteStatus LeakyReluPrepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
 
   LeakyReluOpData* data = reinterpret_cast<LeakyReluOpData*>(node->user_data);
@@ -357,6 +358,12 @@ TfLiteStatus LeakyReluPrepare(TfLiteContext* context, TfLiteNode* node) {
     QuantizeMultiplier(identity_multiplier, &data->output_multiplier_identity,
                        &data->output_shift_identity);
   }
+
+  if (input->type == kTfLiteInt16 && output->type == kTfLiteInt16) {
+    TF_LITE_ENSURE_EQ(context, input->params.zero_point, 0);
+    TF_LITE_ENSURE_EQ(context, output->params.zero_point, 0);
+  }
+
   return context->ResizeTensor(context, output,
                                TfLiteIntArrayCopy(input->dims));
 }
@@ -367,8 +374,10 @@ TfLiteStatus TanhPrepare(TfLiteContext* context, TfLiteNode* node) {
 
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
 
   if (kernel_type == kFixedPointOptimized) {
@@ -426,13 +435,21 @@ TfLiteStatus TanhPrepare(TfLiteContext* context, TfLiteNode* node) {
         (data->input_left_shift == 0 || data->input_left_shift == 1);
 
     if (!param_scale_pot) {
-      // In case of general scale parameter, we need to do a rescaling.
-      // Magic constant 4096:
-      // We need to scale down to (-2^3, 2^3) / 3 is kInputIntegerBits/ interval
-      // from 16-bit (-2^15, 2^15),
-      // so we need to multiply by
-      // 2^(15 - kInputIntegerBits) = 2^12 = 4096.
-      data->input_multiplier = static_cast<int32_t>(input->params.scale * 4096);
+      // Calculate multiplier to change input scale to 1/(3*4096)
+      // as required by the table lookup.
+      // The number 3.0 in the multiplier comes from here,
+      // because the interval is [-10.7, 10.7] instead of [-8, 8].
+      // So, in this scaling +/-2^17 represents +/-10.7.
+
+      double multiplier = input->params.scale * 4096.0 * 3.0;
+      data->input_left_shift = 0;
+
+      while (multiplier <= 32767.0 / 2.0 && data->input_left_shift <= 30) {
+        data->input_left_shift++;
+        multiplier = multiplier * 2.0;
+      }
+
+      data->input_multiplier = static_cast<int32_t>(multiplier);
     }
 
     int output_scale_log2_rounded;
@@ -452,8 +469,10 @@ TfLiteStatus SigmoidPrepare(TfLiteContext* context, TfLiteNode* node) {
 
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
 
   if (kernel_type == kFixedPointOptimized) {
@@ -521,13 +540,19 @@ TfLiteStatus SigmoidPrepare(TfLiteContext* context, TfLiteNode* node) {
     param_scale_pot &= (data->input_left_shift == 0);
 
     if (!param_scale_pot) {
-      // In case of general scale parameter, we need to do a rescaling.
-      // Magic constant 4096:
-      // We need to scale down to (-2^3, 2^3) / 3 is kInputIntegerBits/ interval
-      // from 16-bit (-2^15, 2^15),
-      // so we need to multiply by
-      // 2^(15 - kInputIntegerBits) = 2^12 = 4096.
-      data->input_multiplier = static_cast<int32_t>(input->params.scale * 4096);
+      // Calculate multiplier to change input scale to 1/(3*4096)
+      // as required by the table lookup.
+      // In this scaling +/-2^17 represents +/-10.7
+      double multiplier = input->params.scale * 4096.0 * 3.0;
+
+      data->input_left_shift = 0;
+
+      while (multiplier <= 32767.0 / 2.0 && data->input_left_shift <= 30) {
+        data->input_left_shift++;
+        multiplier = multiplier * 2.0;
+      }
+
+      data->input_multiplier = static_cast<int32_t>(multiplier);
     }
 
     int output_scale_log2_rounded;
@@ -541,50 +566,68 @@ TfLiteStatus SigmoidPrepare(TfLiteContext* context, TfLiteNode* node) {
                                TfLiteIntArrayCopy(input->dims));
 }
 
+template <KernelType kernel_type>
 TfLiteStatus SoftmaxPrepare(TfLiteContext* context, TfLiteNode* node) {
   auto* params = reinterpret_cast<TfLiteSoftmaxParams*>(node->builtin_data);
   SoftmaxOpData* data = reinterpret_cast<SoftmaxOpData*>(node->user_data);
 
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
-  if (output->type == kTfLiteInt16) {
-    TF_LITE_ENSURE(context, input->type == kTfLiteInt8 ||
-                                input->type == kTfLiteUInt8 ||
-                                input->type == kTfLiteInt16);
-  } else {
-    TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
-  }
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
 
   TF_LITE_ENSURE(context, NumDimensions(input) >= 1);
 
-  if (input->type == kTfLiteUInt8 || input->type == kTfLiteInt8) {
-    switch (output->type) {
-      case kTfLiteUInt8:
-      case kTfLiteInt8:
-#ifdef TFLITE_SOFTMAX_USE_UINT16_LUT
-        // Only apply when both input & output are uint8/int8 & build with clang
-        // on aarch64.
-        // TODO(b/143709993): Port to ARMv7 and other platforms.
-        data->params.uint8_table1 = data->uint8_table1;
-        data->params.uint8_table2 = data->uint8_table2;
-        optimized_ops::PopulateSoftmaxUInt8LookupTable(
-            &data->params, input->params.scale, params->beta);
-        break;
-#endif
-      case kTfLiteInt16:
-      default:
-        data->params.table = data->table;
-        optimized_ops::PopulateSoftmaxLookupTable(
-            &data->params, input->params.scale, params->beta);
-    }
-
-    data->params.zero_point = output->params.zero_point;
-    data->params.scale = output->params.scale;
+  if (input->type == kTfLiteInt8 && output->type == kTfLiteInt8) {
+    TF_LITE_ENSURE_EQ(context, output->params.zero_point, -128);
+    TF_LITE_ENSURE_NEAR(context, output->params.scale, 1.f / 256,
+                        (0.001f * 1.f / 256));
+  } else if (input->type == kTfLiteInt16 && output->type == kTfLiteInt16) {
+    TF_LITE_ENSURE_EQ(context, output->params.zero_point, 0);
+    TF_LITE_ENSURE_NEAR(context, output->params.scale, 1.f / 32768,
+                        (0.001f * 1.f / 32768));
   }
 
-  if (input->type == kTfLiteInt16) {
+  if (input->type == kTfLiteUInt8 || input->type == kTfLiteInt8) {
+    if (kernel_type == kReference) {
+      const int kScaledDiffIntegerBits = 5;
+      int input_left_shift;
+      tflite::PreprocessSoftmaxScaling(
+          static_cast<double>(params->beta),
+          static_cast<double>(input->params.scale), kScaledDiffIntegerBits,
+          &data->params.input_multiplier, &input_left_shift);
+      data->params.input_left_shift = input_left_shift;
+      data->params.diff_min =
+          -1.0 * tflite::CalculateInputRadius(kScaledDiffIntegerBits,
+                                              input_left_shift);
+    } else {
+      switch (output->type) {
+        case kTfLiteUInt8:
+        case kTfLiteInt8:
+#ifdef TFLITE_SOFTMAX_USE_UINT16_LUT
+          // Only apply when both input & output are uint8/int8 & build with
+          // clang on aarch64.
+          // TODO(b/143709993): Port to ARMv7 and other platforms.
+          data->params.uint8_table1 = data->uint8_table1;
+          data->params.uint8_table2 = data->uint8_table2;
+          optimized_ops::PopulateSoftmaxUInt8LookupTable(
+              &data->params, input->params.scale, params->beta);
+          break;
+#endif
+        case kTfLiteInt16:
+        default:
+          data->params.table = data->table;
+          optimized_ops::PopulateSoftmaxLookupTable(
+              &data->params, input->params.scale, params->beta);
+      }
+
+      data->params.zero_point = output->params.zero_point;
+      data->params.scale = output->params.scale;
+    }
+  } else if (input->type == kTfLiteInt16) {
+    TF_LITE_ENSURE_EQ(context, input->params.zero_point, 0);
     TF_LITE_ENSURE_EQ(context, output->params.zero_point, 0);
 
     data->params.exp_lut = data->exp_lut;
@@ -610,13 +653,16 @@ TfLiteStatus SoftmaxPrepare(TfLiteContext* context, TfLiteNode* node) {
                                TfLiteIntArrayCopy(input->dims));
 }
 
+template <KernelType kernel_type>
 TfLiteStatus LogSoftmaxPrepare(TfLiteContext* context, TfLiteNode* node) {
   LogSoftmaxOpData* data = reinterpret_cast<LogSoftmaxOpData*>(node->user_data);
 
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
 
   if (input->type == kTfLiteUInt8 || input->type == kTfLiteInt8) {
@@ -624,23 +670,31 @@ TfLiteStatus LogSoftmaxPrepare(TfLiteContext* context, TfLiteNode* node) {
     static const double kBeta = 1.0;
     if (input->type == kTfLiteUInt8) {
       TF_LITE_ENSURE_EQ(context, output->params.zero_point, 255);
+    }
+    if (input->type == kTfLiteInt8) {
+      TF_LITE_ENSURE_EQ(context, output->params.zero_point, 127);
+    }
+
+    if (kernel_type == kReference) {
+      const int kScaledDiffIntegerBits = 5;
+      int input_left_shift;
+      int reverse_scaling_right_shift;
+      tflite::PreprocessLogSoftmaxScalingExp(
+          kBeta, static_cast<double>(input->params.scale),
+          kScaledDiffIntegerBits, &data->params.input_multiplier,
+          &input_left_shift, &data->params.reverse_scaling_divisor,
+          &reverse_scaling_right_shift);
+      reverse_scaling_right_shift *= -1;
+      data->params.input_left_shift = input_left_shift;
+      data->params.reverse_scaling_right_shift = reverse_scaling_right_shift;
+      data->params.diff_min = -tflite::CalculateInputRadius(
+          kScaledDiffIntegerBits, input_left_shift);
+    } else {
       data->params.table = data->f_table;
       optimized_ops::PopulateSoftmaxLookupTable(&data->params,
                                                 input->params.scale, kBeta);
       data->params.zero_point = output->params.zero_point;
       data->params.scale = output->params.scale;
-    }
-    if (input->type == kTfLiteInt8) {
-      TF_LITE_ENSURE_EQ(context, output->params.zero_point, 127);
-      static const int kScaledDiffIntegerBits = 5;
-      tflite::PreprocessLogSoftmaxScalingExp(
-          kBeta, input->params.scale, kScaledDiffIntegerBits,
-          &data->input_multiplier, &data->input_left_shift,
-          &data->reverse_scaling_divisor, &data->reverse_scaling_right_shift);
-      data->reverse_scaling_right_shift *= -1;
-      data->diff_min =
-          -1.0 * tflite::CalculateInputRadius(kScaledDiffIntegerBits,
-                                              data->input_left_shift);
     }
   }
 
@@ -651,17 +705,19 @@ TfLiteStatus LogSoftmaxPrepare(TfLiteContext* context, TfLiteNode* node) {
 TfLiteStatus PreluPrepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
-  const TfLiteTensor* alpha = GetInput(context, node, 1);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
+  const TfLiteTensor* alpha;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 1, &alpha));
   PreluOpData* data = reinterpret_cast<PreluOpData*>(node->user_data);
 
   TF_LITE_ENSURE_TYPES_EQ(context, input->type, alpha->type);
 
   output->type = input->type;
 
-  if (output->type == kTfLiteUInt8 || output->type == kTfLiteInt8 ||
-      output->type == kTfLiteInt16) {
+  if (output->type == kTfLiteUInt8 || output->type == kTfLiteInt8) {
     // prelu(x) = x if x >= 0 else x * alpha.
     // So if we translate that for quantized computation:
     //
@@ -705,8 +761,10 @@ TfLiteStatus PreluPrepare(TfLiteContext* context, TfLiteNode* node) {
 }
 
 TfLiteStatus ReluEval(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   const ReluOpData* data = reinterpret_cast<ReluOpData*>(node->user_data);
   switch (input->type) {
     case kTfLiteFloat32: {
@@ -723,18 +781,25 @@ TfLiteStatus ReluEval(TfLiteContext* context, TfLiteNode* node) {
       QuantizedReluX<int8_t>(0.0f, std::numeric_limits<float>::infinity(),
                              input, output, data);
     } break;
+    case kTfLiteInt16: {
+      QuantizedReluX<int16_t>(0.0f, std::numeric_limits<float>::infinity(),
+                              input, output, data);
+    } break;
     default:
-      TF_LITE_KERNEL_LOG(
-          context, "Only float32 & int8/uint8 is supported currently, got %s.",
-          TfLiteTypeGetName(input->type));
+      TF_LITE_KERNEL_LOG(context,
+                         "Only float32, uint8, int8 and int16 are supported "
+                         "currently, got %s.",
+                         TfLiteTypeGetName(input->type));
       return kTfLiteError;
   }
   return kTfLiteOk;
 }
 
 TfLiteStatus Relu1Eval(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   const ReluOpData* data = reinterpret_cast<ReluOpData*>(node->user_data);
   switch (input->type) {
     case kTfLiteFloat32: {
@@ -742,15 +807,15 @@ TfLiteStatus Relu1Eval(TfLiteContext* context, TfLiteNode* node) {
                            GetTensorShape(output),
                            GetTensorData<float>(output));
       return kTfLiteOk;
-    } break;
+    }
     case kTfLiteUInt8: {
       QuantizedReluX<uint8_t>(-1.0f, 1.0f, input, output, data);
       return kTfLiteOk;
-    } break;
+    }
     case kTfLiteInt8: {
       QuantizedReluX<int8_t>(-1, 1, input, output, data);
       return kTfLiteOk;
-    } break;
+    }
     default:
       TF_LITE_KERNEL_LOG(context,
                          "Only float32, uint8, int8 supported "
@@ -764,8 +829,10 @@ template <KernelType kernel_type>
 TfLiteStatus HardSwishEval(TfLiteContext* context, TfLiteNode* node) {
   HardSwishData* data = static_cast<HardSwishData*>(node->user_data);
 
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   switch (input->type) {
     case kTfLiteFloat32: {
       if (kernel_type == kReference) {
@@ -815,8 +882,10 @@ TfLiteStatus HardSwishEval(TfLiteContext* context, TfLiteNode* node) {
 }
 
 TfLiteStatus Relu6Eval(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   ReluOpData* data = reinterpret_cast<ReluOpData*>(node->user_data);
   switch (input->type) {
     case kTfLiteFloat32: {
@@ -826,19 +895,23 @@ TfLiteStatus Relu6Eval(TfLiteContext* context, TfLiteNode* node) {
       float* out = GetTensorData<float>(output);
       for (; in < in_end; in++, out++) *out = std::min(std::max(0.f, *in), 6.f);
       return kTfLiteOk;
-    } break;
+    }
     case kTfLiteUInt8:
       QuantizedReluX<uint8_t>(0.0f, 6.0f, input, output, data);
       return kTfLiteOk;
     case kTfLiteInt8: {
       QuantizedReluX<int8_t>(0.0f, 6.0f, input, output, data);
       return kTfLiteOk;
-    } break;
+    }
+    case kTfLiteInt16: {
+      QuantizedReluX<int16_t>(0.0f, 6.0f, input, output, data);
+      return kTfLiteOk;
+    }
     default:
-      TF_LITE_KERNEL_LOG(
-          context,
-          "Only float32, uint8 and int8 are supported currently, got %s.",
-          TfLiteTypeGetName(input->type));
+      TF_LITE_KERNEL_LOG(context,
+                         "Only float32, uint8, int8 and int16 are supported "
+                         "currently, got %s.",
+                         TfLiteTypeGetName(input->type));
       return kTfLiteError;
   }
 }
@@ -846,8 +919,10 @@ TfLiteStatus Relu6Eval(TfLiteContext* context, TfLiteNode* node) {
 template <KernelType kernel_type>
 TfLiteStatus TanhEval(TfLiteContext* context, TfLiteNode* node) {
   OpData* data = reinterpret_cast<OpData*>(node->user_data);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   switch (input->type) {
     case kTfLiteFloat32: {
       if (kernel_type == kReference) {
@@ -865,12 +940,10 @@ TfLiteStatus TanhEval(TfLiteContext* context, TfLiteNode* node) {
       TanhParams params;
       params.input_left_shift = data->input_left_shift;
       if (kernel_type == kReference || (data->input_multiplier > 0)) {
-        const int size =
-            MatchingFlatSize(GetTensorShape(input), GetTensorShape(output));
-
         reference_integer_ops::Tanh(
-            data->input_multiplier, data->input_left_shift, size,
-            GetTensorData<int16_t>(input), GetTensorData<int16_t>(output));
+            data->input_multiplier, data->input_left_shift,
+            GetTensorShape(input), GetTensorData<int16_t>(input),
+            GetTensorShape(output), GetTensorData<int16_t>(output));
       } else {
         optimized_ops::Tanh(
             params, GetTensorShape(input), GetTensorData<int16_t>(input),
@@ -922,8 +995,10 @@ template <KernelType kernel_type>
 TfLiteStatus SigmoidEval(TfLiteContext* context, TfLiteNode* node) {
   OpData* data = reinterpret_cast<OpData*>(node->user_data);
 
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   switch (input->type) {
     case kTfLiteFloat32: {
       if (kernel_type == kReference) {
@@ -943,9 +1018,9 @@ TfLiteStatus SigmoidEval(TfLiteContext* context, TfLiteNode* node) {
         const int size =
             MatchingFlatSize(GetTensorShape(input), GetTensorShape(output));
 
-        reference_integer_ops::Logistic(data->input_multiplier, size,
-                                        GetTensorData<int16_t>(input),
-                                        GetTensorData<int16_t>(output));
+        reference_integer_ops::Logistic(
+            data->input_multiplier, data->input_left_shift, size,
+            GetTensorData<int16_t>(input), GetTensorData<int16_t>(output));
       } else {
         optimized_ops::Logistic(
             params, GetTensorShape(input), GetTensorData<int16_t>(input),
@@ -994,22 +1069,36 @@ TfLiteStatus SigmoidEval(TfLiteContext* context, TfLiteNode* node) {
 }
 
 TfLiteStatus SoftmaxFloat(TfLiteContext* context, const TfLiteTensor* input,
-                          TfLiteTensor* output, TfLiteSoftmaxParams* params) {
+                          TfLiteTensor* output, TfLiteSoftmaxParams* params,
+                          KernelType kernel_type = kGenericOptimized) {
   SoftmaxParams op_params;
   op_params.beta = params->beta;
-  optimized_ops::Softmax(op_params, GetTensorShape(input),
-                         GetTensorData<float>(input), GetTensorShape(output),
-                         GetTensorData<float>(output),
-                         CpuBackendContext::GetFromContext(context));
+  if (kernel_type == kReference) {
+    reference_ops::Softmax(op_params, GetTensorShape(input),
+                           GetTensorData<float>(input), GetTensorShape(output),
+                           GetTensorData<float>(output));
+  } else {
+    optimized_ops::Softmax(op_params, GetTensorShape(input),
+                           GetTensorData<float>(input), GetTensorShape(output),
+                           GetTensorData<float>(output),
+                           CpuBackendContext::GetFromContext(context));
+  }
   return kTfLiteOk;
 }
 
 template <typename In, typename Out>
 TfLiteStatus SoftmaxQuantized(TfLiteContext* context, const TfLiteTensor* input,
-                              TfLiteTensor* output, SoftmaxOpData* data) {
-  optimized_ops::Softmax(data->params, GetTensorShape(input),
-                         GetTensorData<In>(input), GetTensorShape(output),
-                         GetTensorData<Out>(output));
+                              TfLiteTensor* output, SoftmaxOpData* data,
+                              KernelType kernel_type = kGenericOptimized) {
+  if (kernel_type == kReference) {
+    reference_ops::Softmax(data->params, GetTensorShape(input),
+                           GetTensorData<In>(input), GetTensorShape(output),
+                           GetTensorData<Out>(output));
+  } else {
+    optimized_ops::Softmax(data->params, GetTensorShape(input),
+                           GetTensorData<In>(input), GetTensorShape(output),
+                           GetTensorData<Out>(output));
+  }
   return kTfLiteOk;
 }
 
@@ -1017,7 +1106,13 @@ template <>
 TfLiteStatus SoftmaxQuantized<int8_t, int8_t>(TfLiteContext* context,
                                               const TfLiteTensor* input,
                                               TfLiteTensor* output,
-                                              SoftmaxOpData* data) {
+                                              SoftmaxOpData* data,
+                                              KernelType kernel_type) {
+  if (kernel_type == kReference) {
+    reference_ops::Softmax(data->params, GetTensorShape(input),
+                           GetTensorData<int8_t>(input), GetTensorShape(output),
+                           GetTensorData<int8_t>(output));
+  } else {
 #ifdef TFLITE_SOFTMAX_USE_UINT16_LUT
   optimized_ops::SoftmaxInt8LUT(
       data->params, GetTensorShape(input), GetTensorData<int8_t>(input),
@@ -1027,6 +1122,7 @@ TfLiteStatus SoftmaxQuantized<int8_t, int8_t>(TfLiteContext* context,
                          GetTensorData<int8_t>(input), GetTensorShape(output),
                          GetTensorData<int8_t>(output));
 #endif
+  }
   return kTfLiteOk;
 }
 
@@ -1034,7 +1130,13 @@ template <>
 TfLiteStatus SoftmaxQuantized<uint8_t, uint8_t>(TfLiteContext* context,
                                                 const TfLiteTensor* input,
                                                 TfLiteTensor* output,
-                                                SoftmaxOpData* data) {
+                                                SoftmaxOpData* data,
+                                                KernelType kernel_type) {
+  if (kernel_type == kReference) {
+    reference_ops::Softmax(
+        data->params, GetTensorShape(input), GetTensorData<uint8_t>(input),
+        GetTensorShape(output), GetTensorData<uint8_t>(output));
+  } else {
 #ifdef TFLITE_SOFTMAX_USE_UINT16_LUT
   optimized_ops::SoftmaxInt8LUT(
       data->params, GetTensorShape(input), GetTensorData<uint8_t>(input),
@@ -1044,6 +1146,7 @@ TfLiteStatus SoftmaxQuantized<uint8_t, uint8_t>(TfLiteContext* context,
                          GetTensorData<uint8_t>(input), GetTensorShape(output),
                          GetTensorData<uint8_t>(output));
 #endif
+  }
   return kTfLiteOk;
 }
 
@@ -1051,7 +1154,8 @@ template <>
 TfLiteStatus SoftmaxQuantized<int16, int16>(TfLiteContext* context,
                                             const TfLiteTensor* input,
                                             TfLiteTensor* output,
-                                            SoftmaxOpData* data) {
+                                            SoftmaxOpData* data,
+                                            KernelType kernel_type) {
   if (NumDimensions(input) >= 1 && NumDimensions(input) <= 4) {
     reference_ops::SoftmaxInt16(
         data->params, GetTensorShape(input), GetTensorData<int16_t>(input),
@@ -1066,25 +1170,28 @@ TfLiteStatus SoftmaxQuantized<int16, int16>(TfLiteContext* context,
   }
 }
 
+template <KernelType kernel_type>
 TfLiteStatus SoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
   auto* params = reinterpret_cast<TfLiteSoftmaxParams*>(node->builtin_data);
   SoftmaxOpData* data = reinterpret_cast<SoftmaxOpData*>(node->user_data);
 
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
 
   switch (input->type) {
     case kTfLiteFloat32: {
-      return SoftmaxFloat(context, input, output, params);
+      return SoftmaxFloat(context, input, output, params, kernel_type);
     }
     case kTfLiteUInt8: {
       switch (output->type) {
         case kTfLiteUInt8:
           return SoftmaxQuantized<uint8_t, uint8_t>(context, input, output,
-                                                    data);
+                                                    data, kernel_type);
         case kTfLiteInt16:
           return SoftmaxQuantized<uint8_t, int16_t>(context, input, output,
-                                                    data);
+                                                    data, kernel_type);
         default:
           TF_LITE_KERNEL_LOG(context,
                              "Only uint8_t and int16_t outputs are supported "
@@ -1096,10 +1203,11 @@ TfLiteStatus SoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
     case kTfLiteInt8: {
       switch (output->type) {
         case kTfLiteInt8:
-          return SoftmaxQuantized<int8_t, int8_t>(context, input, output, data);
+          return SoftmaxQuantized<int8_t, int8_t>(context, input, output, data,
+                                                  kernel_type);
         case kTfLiteInt16:
-          return SoftmaxQuantized<int8_t, int16_t>(context, input, output,
-                                                   data);
+          return SoftmaxQuantized<int8_t, int16_t>(context, input, output, data,
+                                                   kernel_type);
         default:
           TF_LITE_KERNEL_LOG(context,
                              "Only int8_t and int16_t outputs are supported "
@@ -1109,7 +1217,8 @@ TfLiteStatus SoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
       }
     }
     case kTfLiteInt16: {
-      return SoftmaxQuantized<int16_t, int16_t>(context, input, output, data);
+      return SoftmaxQuantized<int16_t, int16_t>(context, input, output, data,
+                                                kernel_type);
     }
 
     default:
@@ -1125,8 +1234,10 @@ template <KernelType kernel_type>
 TfLiteStatus LogSoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
   const LogSoftmaxOpData* data =
       reinterpret_cast<LogSoftmaxOpData*>(node->user_data);
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   switch (input->type) {
     case kTfLiteFloat32: {
       SoftmaxParams op_params;
@@ -1142,7 +1253,7 @@ TfLiteStatus LogSoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
       return kTfLiteOk;
     }
     case kTfLiteUInt8: {
-      SoftmaxParams op_params = data->params;
+      const SoftmaxParams& op_params = data->params;
       if (kernel_type == kGenericOptimized) {
         optimized_ops::LogSoftmax(
             op_params, input->params.scale, GetTensorShape(input),
@@ -1156,18 +1267,27 @@ TfLiteStatus LogSoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
       return kTfLiteOk;
     }
     case kTfLiteInt8: {
-      const auto input_shape = GetTensorShape(input);
-      const auto output_shape = GetTensorShape(output);
-      const int trailing_dim = input_shape.DimensionsCount() - 1;
-      const int outer_size =
-          MatchingFlatSizeSkipDim(input_shape, trailing_dim, output_shape);
-      const int depth =
-          MatchingDim(input_shape, trailing_dim, output_shape, trailing_dim);
-      reference_integer_ops::LogSoftmax(
-          data->input_multiplier, data->input_left_shift,
-          data->reverse_scaling_divisor, data->reverse_scaling_right_shift,
-          data->diff_min, outer_size, depth, GetTensorData<int8_t>(input),
-          GetTensorData<int8_t>(output));
+      const SoftmaxParams& op_params = data->params;
+      if (kernel_type == kGenericOptimized) {
+        optimized_ops::LogSoftmax(
+            op_params, input->params.scale, GetTensorShape(input),
+            GetTensorData<int8_t>(input), GetTensorShape(output),
+            GetTensorData<int8_t>(output));
+      } else {
+        const auto input_shape = GetTensorShape(input);
+        const auto output_shape = GetTensorShape(output);
+        const int trailing_dim = input_shape.DimensionsCount() - 1;
+        const int outer_size =
+            MatchingFlatSizeSkipDim(input_shape, trailing_dim, output_shape);
+        const int depth =
+            MatchingDim(input_shape, trailing_dim, output_shape, trailing_dim);
+        reference_integer_ops::LogSoftmax(
+            op_params.input_multiplier, op_params.input_left_shift,
+            op_params.reverse_scaling_divisor,
+            op_params.reverse_scaling_right_shift, op_params.diff_min,
+            outer_size, depth, GetTensorData<int8_t>(input),
+            GetTensorData<int8_t>(output));
+      }
       return kTfLiteOk;
     }
     default:
@@ -1184,28 +1304,52 @@ T ApplyPrelu(T input, T alpha) {
   return input >= 0.0 ? input : input * alpha;
 }
 
+template <KernelType kernel_type>
 TfLiteStatus PreluEval(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  const TfLiteTensor* alpha = GetInput(context, node, 1);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  const TfLiteTensor* alpha;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 1, &alpha));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   const PreluOpData* data = reinterpret_cast<PreluOpData*>(node->user_data);
   switch (input->type) {
     case kTfLiteFloat32: {
-      if (data->requires_broadcast) {
-        reference_ops::BroadcastBinaryFunction4DSlow<float, float, float>(
-            GetTensorShape(input), GetTensorData<float>(input),
-            GetTensorShape(alpha), GetTensorData<float>(alpha),
-            GetTensorShape(output), GetTensorData<float>(output),
-            ApplyPrelu<float>);
+      if (kernel_type == kGenericOptimized) {
+        tflite::ArithmeticParams op_params;
+        bool need_broadcast = optimized_ops::ProcessBroadcastShapes(
+            GetTensorShape(input), GetTensorShape(alpha), &op_params);
+        if (need_broadcast) {
+          optimized_ops::BroadcastPReluDispatch(
+              op_params, GetTensorShape(input), GetTensorData<float>(input),
+              GetTensorShape(alpha), GetTensorData<float>(alpha),
+              GetTensorShape(output), GetTensorData<float>(output),
+              ApplyPrelu<float>);
+        } else {
+          const int flat_size =
+              MatchingElementsSize(GetTensorShape(input), GetTensorShape(alpha),
+                                   GetTensorShape(output));
+          optimized_ops::PReluElementWise(
+              flat_size, op_params, GetTensorData<float>(alpha),
+              GetTensorData<float>(input), GetTensorData<float>(output));
+        }
       } else {
-        reference_ops::BinaryFunction<float, float, float>(
-            GetTensorShape(input), GetTensorData<float>(input),
-            GetTensorShape(alpha), GetTensorData<float>(alpha),
-            GetTensorShape(output), GetTensorData<float>(output),
-            ApplyPrelu<float>);
+        if (data->requires_broadcast) {
+          reference_ops::BroadcastBinaryFunction4DSlow<float, float, float>(
+              GetTensorShape(input), GetTensorData<float>(input),
+              GetTensorShape(alpha), GetTensorData<float>(alpha),
+              GetTensorShape(output), GetTensorData<float>(output),
+              ApplyPrelu<float>);
+        } else {
+          reference_ops::BinaryFunction<float, float, float>(
+              GetTensorShape(input), GetTensorData<float>(input),
+              GetTensorShape(alpha), GetTensorData<float>(alpha),
+              GetTensorShape(output), GetTensorData<float>(output),
+              ApplyPrelu<float>);
+        }
       }
       return kTfLiteOk;
-    } break;
+    }
     case kTfLiteUInt8: {
       PreluParams op_params;
       op_params.input_offset = -input->params.zero_point;
@@ -1227,7 +1371,7 @@ TfLiteStatus PreluEval(TfLiteContext* context, TfLiteNode* node) {
             GetTensorShape(output), GetTensorData<uint8_t>(output));
       }
       return kTfLiteOk;
-    } break;
+    }
     case kTfLiteInt8: {
       PreluParams op_params;
       op_params.input_offset = -input->params.zero_point;
@@ -1249,7 +1393,7 @@ TfLiteStatus PreluEval(TfLiteContext* context, TfLiteNode* node) {
             GetTensorShape(output), GetTensorData<int8_t>(output));
       }
       return kTfLiteOk;
-    } break;
+    }
     default:
       TF_LITE_KERNEL_LOG(
           context,
@@ -1276,8 +1420,10 @@ void QuantizeLeakyRelu(const TfLiteTensor* input, TfLiteTensor* output,
 }
 
 TfLiteStatus LeakyReluEval(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   const auto* params =
       reinterpret_cast<TfLiteLeakyReluParams*>(node->builtin_data);
   const LeakyReluOpData* data =
@@ -1291,19 +1437,19 @@ TfLiteStatus LeakyReluEval(TfLiteContext* context, TfLiteNode* node) {
           op_params, GetTensorShape(input), GetTensorData<float>(input),
           GetTensorShape(output), GetTensorData<float>(output));
       return kTfLiteOk;
-    } break;
+    }
     case kTfLiteUInt8: {
       QuantizeLeakyRelu<uint8_t>(input, output, data);
       return kTfLiteOk;
-    } break;
+    }
     case kTfLiteInt8: {
       QuantizeLeakyRelu<int8_t>(input, output, data);
       return kTfLiteOk;
-    } break;
+    }
     case kTfLiteInt16: {
       QuantizeLeakyRelu<int16_t>(input, output, data);
       return kTfLiteOk;
-    } break;
+    }
     default:
       TF_LITE_KERNEL_LOG(
           context,
@@ -1314,8 +1460,10 @@ TfLiteStatus LeakyReluEval(TfLiteContext* context, TfLiteNode* node) {
 }
 
 TfLiteStatus EluPrepare(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   OpData* data = reinterpret_cast<OpData*>(node->user_data);
 
   // Use LUT to handle quantized elu path.
@@ -1328,19 +1476,21 @@ TfLiteStatus EluPrepare(TfLiteContext* context, TfLiteNode* node) {
 }
 
 TfLiteStatus EluEval(TfLiteContext* context, TfLiteNode* node) {
-  const TfLiteTensor* input = GetInput(context, node, 0);
-  TfLiteTensor* output = GetOutput(context, node, 0);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, 0, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context, GetOutputSafe(context, node, 0, &output));
   switch (input->type) {
     case kTfLiteFloat32: {
       optimized_ops::Elu(GetTensorShape(input), GetTensorData<float>(input),
                          GetTensorShape(output), GetTensorData<float>(output));
       return kTfLiteOk;
-    } break;
+    }
     case kTfLiteInt8: {
       OpData* data = reinterpret_cast<OpData*>(node->user_data);
       EvalUsingLookupTable(data, input, output);
       return kTfLiteOk;
-    } break;
+    }
     default:
       TF_LITE_KERNEL_LOG(
           context, "Only float32 and int8 is supported currently, got %s.",
@@ -1440,17 +1590,26 @@ TfLiteRegistration* Register_LOGISTIC() {
   return Register_LOGISTIC_GENERIC_OPT();
 }
 
+TfLiteRegistration* Register_SOFTMAX_REF() {
+  static TfLiteRegistration r = {
+      activations::SoftmaxInit, activations::SoftmaxFree,
+      activations::SoftmaxPrepare<activations::kReference>,
+      activations::SoftmaxEval<activations::kReference>};
+  return &r;
+}
+
 TfLiteRegistration* Register_SOFTMAX() {
   static TfLiteRegistration r = {
       activations::SoftmaxInit, activations::SoftmaxFree,
-      activations::SoftmaxPrepare, activations::SoftmaxEval};
+      activations::SoftmaxPrepare<activations::kGenericOptimized>,
+      activations::SoftmaxEval<activations::kGenericOptimized>};
   return &r;
 }
 
 TfLiteRegistration* Register_LOG_SOFTMAX_REF() {
   static TfLiteRegistration r = {
       activations::LogSoftmaxInit, activations::LogSoftmaxFree,
-      activations::LogSoftmaxPrepare,
+      activations::LogSoftmaxPrepare<activations::kReference>,
       activations::LogSoftmaxEval<activations::kReference>};
   return &r;
 }
@@ -1458,15 +1617,22 @@ TfLiteRegistration* Register_LOG_SOFTMAX_REF() {
 TfLiteRegistration* Register_LOG_SOFTMAX() {
   static TfLiteRegistration r = {
       activations::LogSoftmaxInit, activations::LogSoftmaxFree,
-      activations::LogSoftmaxPrepare,
+      activations::LogSoftmaxPrepare<activations::kGenericOptimized>,
       activations::LogSoftmaxEval<activations::kGenericOptimized>};
   return &r;
 }
 
+TfLiteRegistration* Register_PRELU_REF() {
+  static TfLiteRegistration r = {
+      activations::PreluInit, activations::PreluFree, activations::PreluPrepare,
+      activations::PreluEval<activations::kReference>};
+  return &r;
+}
+
 TfLiteRegistration* Register_PRELU() {
-  static TfLiteRegistration r = {activations::PreluInit, activations::PreluFree,
-                                 activations::PreluPrepare,
-                                 activations::PreluEval};
+  static TfLiteRegistration r = {
+      activations::PreluInit, activations::PreluFree, activations::PreluPrepare,
+      activations::PreluEval<activations::kGenericOptimized>};
   return &r;
 }
 

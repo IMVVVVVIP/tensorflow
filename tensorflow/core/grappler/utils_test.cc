@@ -199,8 +199,9 @@ TEST_F(UtilsTest, ExecuteWithTimeout) {
   notification.Notify();
 
   // This should run till the end.
-  ASSERT_TRUE(ExecuteWithTimeout([]() { sleep(1); }, 0 /* timeout_in_ms */,
-                                 thread_pool.get()));
+  ASSERT_TRUE(ExecuteWithTimeout(
+      []() { Env::Default()->SleepForMicroseconds(1000000); },
+      0 /* timeout_in_ms */, thread_pool.get()));
 
   // Deleting before local variables go off the stack.
   thread_pool.reset();
@@ -470,15 +471,16 @@ TEST(IsKernelRegisteredForNode, All) {
   EXPECT_FALSE(IsKernelRegisteredForNode(node).ok());
 }
 
-#define BM_NodePositionIfSameNode(I, N, NAME)               \
-  static void BM_NodePositionIfSameNode_##NAME(int iters) { \
-    string input = I;                                       \
-    string node = N;                                        \
-    for (int i = 0; i < iters; ++i) {                       \
-      const int pos = NodePositionIfSameNode(input, node);  \
-      CHECK_GT(pos, -3);                                    \
-    }                                                       \
-  }                                                         \
+#define BM_NodePositionIfSameNode(I, N, NAME)              \
+  static void BM_NodePositionIfSameNode_##NAME(            \
+      ::testing::benchmark::State& state) {                \
+    string input = I;                                      \
+    string node = N;                                       \
+    for (auto s : state) {                                 \
+      const int pos = NodePositionIfSameNode(input, node); \
+      CHECK_GT(pos, -3);                                   \
+    }                                                      \
+  }                                                        \
   BENCHMARK(BM_NodePositionIfSameNode_##NAME)
 
 BM_NodePositionIfSameNode("foo/bar/baz:7", "foo/bar/baz", Match_7);
@@ -487,10 +489,12 @@ BM_NodePositionIfSameNode("^foo/bar/baz", "foo/bar/baz", Match_Ctrl);
 BM_NodePositionIfSameNode("blah", "foo/bar/baz", NoMatch_0);
 BM_NodePositionIfSameNode("foo/bar/baz/gnu", "foo/bar/baz", NoMatch_end);
 
-static void BM_NodeNameAsStringPiece(int iters, int size) {
+void BM_NodeNameAsStringPiece(::testing::benchmark::State& state) {
+  const int size = state.range(0);
+
   string input(size + 3, 'x');
   input[size] = ':';
-  for (int i = 0; i < iters; ++i) {
+  for (auto s : state) {
     StringPiece node_name = NodeNameAsStringPiece(input);
     CHECK_GT(node_name.size(), 0);
   }
@@ -498,9 +502,10 @@ static void BM_NodeNameAsStringPiece(int iters, int size) {
 BENCHMARK(BM_NodeNameAsStringPiece)->Range(1, 1024);
 
 #define BM_ParseNodeNameAsStringPiece(I, NAME)                               \
-  static void BM_ParseNodeNameAsStringPiece_##NAME(int iters) {              \
+  static void BM_ParseNodeNameAsStringPiece_##NAME(                          \
+      ::testing::benchmark::State& state) {                                  \
     string input = I;                                                        \
-    for (int i = 0; i < iters; ++i) {                                        \
+    for (auto s : state) {                                                   \
       int position;                                                          \
       const StringPiece name = ParseNodeNameAsStringPiece(input, &position); \
       CHECK_GE(position, -1);                                                \
@@ -683,25 +688,23 @@ TEST(SetTensorValueTest, Quantized) {
                              /*error_msg=*/"");
 }
 
-static void BM_NodeMapConstruct(int iters, int size) {
-  testing::StopTiming();
+void BM_NodeMapConstruct(::testing::benchmark::State& state) {
+  const int size = state.range(0);
+
   GraphDef graph = test::CreateRandomGraph(size);
-  testing::StartTiming();
-  for (int i = 0; i < iters; i++) {
+  for (auto s : state) {
     NodeMap node_map(&graph);
   }
-  testing::StopTiming();
 }
 BENCHMARK(BM_NodeMapConstruct)->Range(1, 1 << 20);
 
-static void BM_ImmutableNodeMapConstruct(int iters, int size) {
-  testing::StopTiming();
+void BM_ImmutableNodeMapConstruct(::testing::benchmark::State& state) {
+  const int size = state.range(0);
+
   GraphDef graph = test::CreateRandomGraph(size);
-  testing::StartTiming();
-  for (int i = 0; i < iters; i++) {
+  for (auto s : state) {
     ImmutableNodeMap node_map(&graph);
   }
-  testing::StopTiming();
 }
 BENCHMARK(BM_ImmutableNodeMapConstruct)->Range(1, 1 << 20);
 

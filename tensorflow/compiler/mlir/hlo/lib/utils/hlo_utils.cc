@@ -22,7 +22,7 @@ limitations under the License.
 namespace mlir {
 namespace hlo {
 
-DenseIntElementsAttr getBroadcastDimensionsAttr(Builder *b, Value x, Value y,
+DenseIntElementsAttr getBroadcastDimensionsAttr(Builder* b, Value x, Value y,
                                                 bool allow_empty) {
   TensorType xType = x.getType().dyn_cast<RankedTensorType>();
   TensorType yType = y.getType().dyn_cast<RankedTensorType>();
@@ -60,10 +60,106 @@ DenseElementsAttr GetScalarOfType(Type ty, int64_t raw_value) {
   if (auto float_ty = ty.dyn_cast<FloatType>()) {
     APFloat value(float_ty.getFloatSemantics(), raw_value);
     return DenseElementsAttr::get(scalar_ty, value);
+  } else if (auto int_ty = ty.dyn_cast<IntegerType>()) {
+    APInt value(int_ty.getWidth(), static_cast<int64_t>(raw_value), true);
+    return DenseElementsAttr::get(scalar_ty, value);
+  } else if (auto complex_ty = ty.dyn_cast<ComplexType>()) {
+    Type complex_element_ty = complex_ty.getElementType();
+    if (complex_element_ty.isF32()) {
+      return DenseElementsAttr::get(
+          scalar_ty, static_cast<std::complex<float>>(raw_value));
+    } else if (complex_element_ty.isF64()) {
+      return DenseElementsAttr::get(
+          scalar_ty, static_cast<std::complex<double>>(raw_value));
+    }
   }
-  auto int_ty = ty.cast<IntegerType>();
-  APInt value(int_ty.getWidth(), static_cast<int64_t>(raw_value), true);
-  return DenseElementsAttr::get(scalar_ty, value);
+  llvm_unreachable("unsupported type");
+}
+
+static APFloat GetScalarLimitOfFloatType(FloatType float_ty,
+                                         ScalarLimit limit) {
+  auto& semantics = float_ty.getFloatSemantics();
+  switch (limit) {
+    case kLowest:
+      return APFloat::getLargest(semantics, /*negative=*/true);
+    case kInfinityLowest:
+      return APFloat::getInf(semantics, /*negative=*/true);
+    case kMax:
+      return APFloat::getLargest(semantics, /*negative=*/false);
+    case kInfinityMax:
+      return APFloat::getInf(semantics, /*negative=*/false);
+  }
+  llvm_unreachable("invalid limit");
+}
+
+// Returns a scalar value for the given integer type.
+//
+// The argument 'scalar' describes which scalar value to return. `integer_value`
+// is used to specify the integer value for kInteger. For any other scalar,
+// integer_value is ignored.
+static APInt GetScalarLimitOfIntegerType(IntegerType integer_ty,
+                                         ScalarLimit limit) {
+  unsigned width = integer_ty.getWidth();
+  bool is_bool = (width == 1);
+  switch (limit) {
+    case kLowest:
+    case kInfinityLowest:
+      if (integer_ty.isUnsigned() || is_bool) {
+        return APInt::getMinValue(width);
+      } else {
+        return APInt::getSignedMinValue(width);
+      }
+
+    case kMax:
+    case kInfinityMax:
+      if (integer_ty.isUnsigned() || is_bool) {
+        return APInt::getMaxValue(width);
+      } else {
+        return APInt::getSignedMaxValue(width);
+      }
+  }
+  llvm_unreachable("invalid limit");
+}
+
+DenseElementsAttr GetScalarLimitOfType(Type ty, ScalarLimit limit) {
+  RankedTensorType scalar_ty = RankedTensorType::get({}, ty);
+  if (auto float_ty = ty.dyn_cast<FloatType>()) {
+    return DenseElementsAttr::get(scalar_ty,
+                                  GetScalarLimitOfFloatType(float_ty, limit));
+  } else if (auto integer_ty = ty.dyn_cast<IntegerType>()) {
+    return DenseElementsAttr::get(
+        scalar_ty, GetScalarLimitOfIntegerType(integer_ty, limit));
+  }
+  llvm_unreachable("unsupported type");
+}
+
+std::string LmhloToMhloOpName(llvm::StringRef op_name,
+                              mlir::MLIRContext* context) {
+  assert(op_name.startswith("lmhlo.") && "Expected an LMHLO op");
+
+  if (op_name == "lmhlo.dot") {
+    return "mhlo.dot_general";
+  }
+
+  if (op_name == "lmhlo.dynamic_slice") {
+    return "mhlo.dynamic-slice";
+  }
+
+  std::string mhlo_op_name(op_name.drop_front(1));
+  if (context->isOperationRegistered(mhlo_op_name)) return mhlo_op_name;
+  return "";
+}
+
+bool IsSequenceStartingWith0(DenseIntElementsAttr attr) {
+  for (int64_t i = 0, e = attr.getNumElements(); i < e; ++i)
+    if (attr.getValue<IntegerAttr>(i).getInt() != i) return false;
+  return true;
+}
+
+int64_t getArgumentIndex(mlir::FuncOp op, Value value) {
+  BlockArgument arg = value.dyn_cast<BlockArgument>();
+  if (!arg || arg.getOwner() != &op.front()) return -1;
+  return arg.getArgNumber();
 }
 
 }  // namespace hlo

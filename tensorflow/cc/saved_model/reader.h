@@ -22,9 +22,14 @@ limitations under the License.
 #include <unordered_set>
 
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/protobuf/graph_debug_info.pb.h"
 #include "tensorflow/core/protobuf/meta_graph.pb.h"
+#include "tensorflow/core/protobuf/saved_model.pb.h"
 
 namespace tensorflow {
+// Reads the SavedModel proto from saved_model.pb in `export_dir`.
+// Returns a failure status when the SavedModel file does not exist.
+Status ReadSavedModel(const string& export_dir, SavedModel* saved_model_proto);
 
 // Reads the SavedModel proto from saved_model.pb(txt) in the given directory,
 // finds the MetaGraphDef that matches the given set of tags and writes it to
@@ -33,6 +38,11 @@ namespace tensorflow {
 Status ReadMetaGraphDefFromSavedModel(const string& export_dir,
                                       const std::unordered_set<string>& tags,
                                       MetaGraphDef* const meta_graph_def);
+
+// Store debug info from the SavedModel export dir.
+Status ReadSavedModelDebugInfoIfPresent(
+    const string& export_dir,
+    std::unique_ptr<GraphDebugInfo>* debug_info_proto);
 
 }  // namespace tensorflow
 

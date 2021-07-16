@@ -13,9 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/tensor_util.h"
-#include "tensorflow/core/kernels/data/name_utils.h"
 #include "tensorflow/core/platform/stringprintf.h"
 
 namespace tensorflow {
@@ -89,6 +89,12 @@ class RebatchDatasetOp : public UnaryDatasetOpKernel {
       name_utils::DatasetDebugStringParams params;
       params.set_args(num_replicas_);
       return name_utils::DatasetDebugString(kDatasetTypeV1, params);
+    }
+
+    Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      inputs->push_back(input_);
+      return Status::OK();
     }
 
     Status CheckExternalState() const override {
@@ -219,7 +225,7 @@ class RebatchDatasetOp : public UnaryDatasetOpKernel {
         if (slice_number_ % dataset()->num_replicas_ != 0) {
           for (int i = 0; i < input_descriptors_.size(); ++i) {
             TF_RETURN_IF_ERROR(reader->ReadTensor(
-                full_name(strings::StrCat("tensors[", i, "]")),
+                ctx->flr(), full_name(strings::StrCat("tensors[", i, "]")),
                 &input_descriptors_[i].whole_tensor));
             input_descriptors_[i].original_batch_dim =
                 input_descriptors_[i].whole_tensor.dim_size(0);
@@ -346,6 +352,12 @@ class RebatchDatasetV2Op : public UnaryDatasetOpKernel {
       return name_utils::DatasetDebugString(kDatasetTypeV2);
     }
 
+    Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      inputs->push_back(input_);
+      return Status::OK();
+    }
+
     Status CheckExternalState() const override {
       return input_->CheckExternalState();
     }
@@ -417,7 +429,6 @@ class RebatchDatasetV2Op : public UnaryDatasetOpKernel {
           std::vector<Tensor> slices;
           slices.reserve(tensors_.size());
           for (const auto& tensor : tensors_) {
-            Tensor slice = tensor.Slice(offset_, slice_end);
             slices.push_back(tensor.Slice(offset_, slice_end));
           }
           slices_to_concatenate.push_back(std::move(slices));
@@ -452,8 +463,28 @@ class RebatchDatasetV2Op : public UnaryDatasetOpKernel {
         if (desired_batch_size == 0) {
           DCHECK_EQ(batch_size, 0);
           DCHECK_EQ(slices_to_concatenate.size(), 0);
-          for (const auto& dtype : dataset()->output_dtypes()) {
-            out_tensors->push_back(Tensor(dtype));
+          for (int i = 0; i < dataset()->output_dtypes().size(); ++i) {
+            if (dataset()->output_shapes()[i].unknown_rank()) {
+              // For unknown rank tensors, we just create a empty Tensor since
+              // it doesn't matter what shape it is.
+              out_tensors->push_back(Tensor(dataset()->output_dtypes()[i]));
+            } else {
+              auto dim_sizes = dataset()->output_shapes()[i].dim_sizes();
+
+              // The output batch size is always zero since the desired batch
+              // size is zero.
+              dim_sizes[0] = 0;
+
+              // Handle unknown dimensions by setting any unknown dimensions to
+              // zero since there isn't any data anyway.
+              for (int j = 1; j < dim_sizes.size(); ++j) {
+                if (dim_sizes[j] == -1) dim_sizes[j] = 0;
+              }
+
+              TensorShape tensor_shape(dim_sizes);
+              out_tensors->push_back(
+                  Tensor(dataset()->output_dtypes()[i], tensor_shape));
+            }
           }
           return Status::OK();
         }
@@ -537,7 +568,8 @@ class RebatchDatasetV2Op : public UnaryDatasetOpKernel {
           tensors_.resize(dataset()->output_dtypes().size());
           for (int i = 0; i < tensors_.size(); ++i) {
             TF_RETURN_IF_ERROR(reader->ReadTensor(
-                full_name(strings::StrCat("tensors[", i, "]")), &tensors_[i]));
+                ctx->flr(), full_name(strings::StrCat("tensors[", i, "]")),
+                &tensors_[i]));
           }
         }
         return Status::OK();

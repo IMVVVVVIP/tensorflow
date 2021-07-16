@@ -26,6 +26,7 @@ import re
 from absl.testing import parameterized
 import numpy as np
 
+from tensorflow.core.framework import full_type_pb2
 from tensorflow.core.framework import tensor_pb2
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
@@ -34,6 +35,7 @@ from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import cpp_shape_inference_pb2
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors
+from tensorflow.python.framework import memory_checker
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
@@ -42,6 +44,7 @@ from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import custom_gradient
 from tensorflow.python.ops import gradients_impl
+from tensorflow.python.ops import handle_data_util
 from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import list_ops
 from tensorflow.python.ops import math_ops
@@ -56,8 +59,6 @@ from tensorflow.python.training import training_util
 from tensorflow.python.util import compat
 
 
-@test_util.disable_tfrt(
-    "Trying to assign variable with wrong dtype. b/156200342")
 @test_util.with_control_flow_v2
 class ResourceVariableOpsTest(test_util.TensorFlowTestCase,
                               parameterized.TestCase):
@@ -135,13 +136,19 @@ class ResourceVariableOpsTest(test_util.TensorFlowTestCase,
   def testEagerDeepCopy(self):
     with context.eager_mode():
       init_value = np.ones((4, 4, 4))
-      variable = resource_variable_ops.ResourceVariable(init_value,
-                                                        name="init")
+      variable = resource_variable_ops.ResourceVariable(
+          init_value,
+          name="init",
+          synchronization=variables.VariableSynchronization.ON_READ,
+          aggregation=variables.VariableAggregation.SUM)
 
       copied_variable = copy.deepcopy(variable)
       self.assertEqual(variable.name, copied_variable.name)
       self.assertEqual(variable.shape, copied_variable.shape)
       self.assertEqual(variable.device, copied_variable.device)
+      self.assertEqual(variable.synchronization,
+                       copied_variable.synchronization)
+      self.assertEqual(variable.aggregation, copied_variable.aggregation)
 
       # The copied variable should have the same value as the original.
       self.assertAllEqual(variable.numpy(), copied_variable.numpy())
@@ -169,10 +176,12 @@ class ResourceVariableOpsTest(test_util.TensorFlowTestCase,
   @test_util.run_in_graph_and_eager_modes
   def testVariableShape(self):
     v = resource_variable_ops.ResourceVariable([1., 1.])
+    vshape = resource_variable_ops.variable_shape(v.handle)
     self.assertAllEqual(
-        tensor_util.constant_value(
-            resource_variable_ops.variable_shape(v.handle)),
+        tensor_util.constant_value(vshape),
         [2])
+    if not context.executing_eagerly():
+      self.assertEqual("Const", vshape.op.type)
 
   @test_util.run_deprecated_v1
   def testDifferentAssignGraph(self):
@@ -319,7 +328,7 @@ class ResourceVariableOpsTest(test_util.TensorFlowTestCase,
     c = constant_op.constant(1.)
     identity = array_ops.identity_n([c, v.handle])
     # TODO(b/137403775): Remove this.
-    custom_gradient.copy_handle_data(v.handle, identity[1])
+    handle_data_util.copy_handle_data(v.handle, identity[1])
 
     g = gradients_impl.gradients(identity[0], [c, v.handle])
     self.assertEqual(g[1].dtype, dtypes.float64)
@@ -333,7 +342,6 @@ class ResourceVariableOpsTest(test_util.TensorFlowTestCase,
     g = gradients_impl.gradients(c, [b], unconnected_gradients="zero")[0]
     self.assertAllEqual(g.shape.as_list(), [1, 2])
 
-  @test_util.disable_tfrt("Graph is not supported yet. b/156187905")
   @test_util.run_deprecated_v1
   def testGradientCondInWhileLoop(self):
     v = resource_variable_ops.ResourceVariable(initial_value=1.0)
@@ -1006,11 +1014,10 @@ class ResourceVariableOpsTest(test_util.TensorFlowTestCase,
         var = variable_scope.get_variable("x", shape=[1, 1],
                                           dtype=dtypes.float32)
         with self.assertRaisesRegex(ValueError,
-                                    "Shapes.*and.*are incompatible"):
+                                    "shape.*and.*are incompatible"):
           assign = var.assign(np.zeros(shape=[2, 2]))
           self.evaluate(assign)
 
-  @test_util.disable_tfrt("Graph is not supported yet. b/156187905")
   @test_util.disable_xla("XLA doesn't allow changing shape at assignment, as "
                          "dictated by tf2xla/xla_resource.cc:SetTypeAndShape")
   @test_util.run_in_graph_and_eager_modes
@@ -1365,7 +1372,10 @@ class ResourceVariableOpsTest(test_util.TensorFlowTestCase,
     # NOTE(ebrevdo): shape_and_type lacks append() in some versions of protobuf.
     variant_shape_and_type_data.shape_and_type.extend([
         cpp_shape_inference_pb2.CppShapeInferenceResult.HandleShapeAndType(
-            shape=stored_shape, dtype=stored_dtype)])
+            shape=stored_shape,
+            dtype=stored_dtype,
+            type=full_type_pb2.FullTypeDef())
+    ])
     return variant_shape_and_type_data
 
   @def_function.function
@@ -1384,7 +1394,7 @@ class ResourceVariableOpsTest(test_util.TensorFlowTestCase,
 
   # TODO(ebrevdo): Add run_in_graph_and_eager_modes once we can create
   # EagerTensor constants with TensorProto inputs.
-  @test_util.disable_tfrt("Graph is not supported yet. b/156187905")
+  @test_util.disable_tfrt("Does not support tf.Const in lowering.")
   @test_util.run_in_graph_and_eager_modes()
   def testVariantInitializer(self):
     variant_shape_and_type_data = self.create_variant_shape_and_type_data()
@@ -1566,6 +1576,29 @@ class ResourceVariableOpsTest(test_util.TensorFlowTestCase,
           var.handle, indices, dtype=dtype)
     self.assertAllEqual(expected, result)
 
+  @test_util.run_v2_only
+  def testUninitializedVariableMemoryUsage(self):
+    if test_util.is_gpu_available():
+      # TODO(allenl): Investigate possible GPU-specific memory leaks
+      self.skipTest("Disabled when a GPU is available")
+    # TODO(kkb): Python memory checker complains continuous `weakref`
+    # allocations, investigate.
+    if memory_checker.CppMemoryChecker is None:
+      self.skipTest("Requires the C++ memory checker")
+
+    def _create_and_delete_variable():
+      resource_variable_ops.UninitializedVariable(
+          shape=[100, 100],
+          dtype=dtypes.float32)
+
+    _create_and_delete_variable()
+    checker = memory_checker.CppMemoryChecker(
+        "ResourceVariableOps.testUninitializedVariableMemoryUsage")
+    for _ in range(2):
+      _create_and_delete_variable()
+      checker.record_snapshot()
+    checker.report()
+    checker.assert_no_leak_if_all_possibly_except_one()
 
 if __name__ == "__main__":
   test.main()

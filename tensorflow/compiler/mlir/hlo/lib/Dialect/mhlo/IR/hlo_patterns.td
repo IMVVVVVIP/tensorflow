@@ -16,17 +16,54 @@ limitations under the License.
 // Canonicalization patterns for the MHLO dialect.
 
 include "mlir/Dialect/Shape/IR/ShapeOps.td"
+include "mlir/Dialect/Tensor/IR/TensorOps.td"
 include "mlir-hlo/Dialect/mhlo/IR/hlo_ops.td"
 
-def EqualBinaryOperands : Constraint<CPred<"$0 == $1">>;
+def HasSameType : Constraint<CPred<"$0.getType() == $1.getType()">>;
 
 // Canonicalization patterns.
 
 def DynamicBroadcastToOwnShape_1 : Pat<
-   (HLO_DynamicBroadcastInDimOp:$op $arg0,
-       (Shape_ToExtentTensorOp (Shape_ShapeOfOp $arg1)), $attr),
-  (replaceWithValue $arg0), [(EqualBinaryOperands $arg0, $arg1)]>;
+   (HLO_DynamicBroadcastInDimOp:$op $x,
+       (Shape_ToExtentTensorOp (Shape_ShapeOfOp $x)), $attr),
+   (replaceWithValue $x)>;
 def DynamicBroadcastToOwnShape_2 : Pat<
-  (HLO_DynamicBroadcastInDimOp:$op $arg0, (Shape_ShapeOfOp $arg1), $attr),
-  (replaceWithValue $arg0), [(EqualBinaryOperands $arg0, $arg1)]>;
+  (HLO_DynamicBroadcastInDimOp:$op $x, (Shape_ShapeOfOp $x), $attr),
+  (replaceWithValue $x)>;
+def DynamicBroadcastToOwnShape_3 : Pat<
+   (HLO_DynamicBroadcastInDimOp:$op $x,
+       (Tensor_CastOp (Shape_ToExtentTensorOp (Shape_ShapeOfOp $x))), $attr),
+   (Tensor_CastOp $x)>;
+def DynamicBroadcastToOwnShape_4 : Pat<
+  (HLO_DynamicBroadcastInDimOp:$op $x, (Tensor_CastOp (Shape_ShapeOfOp $x)), $attr),
+  (Tensor_CastOp $x)>;
 
+def ShapeOfDynamicReshape : Pat<
+  (Shape_ShapeOfOp:$op (HLO_DynamicReshapeOp $x, $shape)),
+  (replaceWithValue $shape),
+  [(HasSameType $shape, $op)]>;
+
+def IdentityBroadcastReshape : Pat<
+  (HLO_ReshapeOp:$op (HLO_BroadcastOp $input, $dims)),
+  (replaceWithValue $input),
+  [(HasSameType $input, $op)]>;
+
+def IdentityBroadcastInDimReshape : Pat<
+  (HLO_ReshapeOp:$op (HLO_BroadcastInDimOp $input, $dims)),
+  (replaceWithValue $input),
+  [(HasSameType $input, $op)]>;
+
+def EliminateIdentityConvert : Pat<
+  (HLO_ConvertOp:$res $src),
+  (replaceWithValue $src),
+  [(HasSameType $res, $src)]>;
+
+def EliminateRedundantReshape : Pat<
+  (HLO_ReshapeOp:$res (HLO_ReshapeOp $src)),
+  (replaceWithValue $src),
+  [(HasSameType $res, $src)]>;
+
+def EliminateIdentityReshape : Pat<
+  (HLO_ReshapeOp:$res $src),
+  (replaceWithValue $src),
+  [(HasSameType $res, $src)]>;

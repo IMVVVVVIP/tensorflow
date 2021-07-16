@@ -72,6 +72,16 @@ class TopK : public OpKernel {
 
     const int64 num_rows = input.dimension(0);  // generally batch_size
     const int64 num_cols = input.dimension(1);
+    OP_REQUIRES(
+        context, num_rows <= std::numeric_limits<int32>::max(),
+        errors::InvalidArgument(
+            "First dimension of flattened input must be <= INT_MAX, got ",
+            num_rows));
+    OP_REQUIRES(
+        context, num_cols <= std::numeric_limits<int32>::max(),
+        errors::InvalidArgument(
+            "Second dimension of flattened input must be <= INT_MAX, got ",
+            num_cols));
 
     TensorShape output_shape = input_in.shape();
     output_shape.set_dim(input_in.dims() - 1, k);
@@ -136,7 +146,7 @@ struct TopKFunctor<CPUDevice, T> {
       return Status::OK();
     }
 
-    auto SortIndices = [&](int start_batch, int limit_batch) {
+    auto SortIndices = [&](int64 start_batch, int64 limit_batch) {
       for (int32 b = start_batch; b < limit_batch; ++b) {
         const T* input_data = &input(b, 0);
         const auto stable_comp = [input_data](const int32 a, const int32 b) {
@@ -244,7 +254,7 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNELS);
 #undef REGISTER_KERNELS_NAME
 #undef REGISTER_KERNELS
 
-#ifdef GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 namespace functor {
 #define DECLARE_GPU_SPEC(T)                                                  \
@@ -277,6 +287,6 @@ TF_CALL_GPU_NUMBER_TYPES(REGISTER_KERNELS);
 TF_CALL_INTEGRAL_TYPES(REGISTER_KERNELS);
 #undef REGISTER_KERNELS
 
-#endif  // end GOOGLE_CUDA
+#endif  // end GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // end namespace tensorflow

@@ -14,9 +14,6 @@
 # ==============================================================================
 """Adamax optimizer implementation."""
 # pylint: disable=g-classes-have-attributes
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -122,7 +119,8 @@ class Adamax(optimizer_v2.OptimizerV2):
     apply_state[(var_device, var_dtype)].update(
         dict(
             neg_scaled_lr=-lr_t / (1 - beta_1_power),
-            epsilon=ops.convert_to_tensor_v2(self.epsilon, var_dtype),
+            epsilon=ops.convert_to_tensor_v2_with_dispatch(
+                self.epsilon, var_dtype),
             beta_1_t=beta_1_t,
             beta_1_power=beta_1_power,
             one_minus_beta_1_t=1 - beta_1_t,
@@ -179,7 +177,7 @@ class Adamax(optimizer_v2.OptimizerV2):
     config = super(Adamax, self).get_config()
     config.update({
         'learning_rate': self._serialize_hyperparameter('learning_rate'),
-        'decay': self._serialize_hyperparameter('decay'),
+        'decay': self._initial_decay,
         'beta_1': self._serialize_hyperparameter('beta_1'),
         'beta_2': self._serialize_hyperparameter('beta_2'),
         'epsilon': self.epsilon,

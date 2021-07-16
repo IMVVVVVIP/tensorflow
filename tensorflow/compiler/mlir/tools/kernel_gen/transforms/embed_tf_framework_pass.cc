@@ -13,6 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <utility>
+
+#include "mlir/Dialect/MemRef/IR/MemRef.h"  // from @llvm-project
 #include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Transforms/DialectConversion.h"  // from @llvm-project
@@ -28,7 +31,15 @@ namespace {
 #define GEN_PASS_CLASSES
 #include "tensorflow/compiler/mlir/tools/kernel_gen/transforms/kernel_gen_passes.h.inc"
 
-static constexpr StringRef kTFEntry = "tf_entry";
+bool IsNotInsideTfEntryFunction(Operation* op) {
+  auto func = op->getParentOfType<FuncOp>();
+  return !func->hasAttrOfType<UnitAttr>(TFFrameworkDialect::kTFEntryAttrName);
+}
+
+template <typename OpTy>
+bool HasInitializedOpKernelContextOperand(OpTy op) {
+  return op.ctx() != nullptr;
+}
 
 // The pass rewrites the function marked with `tf_entry` attribute.
 // * adds tf_framework::OpKernelContextType argument to the function,
@@ -36,31 +47,38 @@ static constexpr StringRef kTFEntry = "tf_entry";
 // * std.dealloc becomes tf_framework.dealloc_raw.
 class EmbedTFFrameworkPass
     : public EmbedTFFrameworkPassBase<EmbedTFFrameworkPass> {
+  void getDependentDialects(DialectRegistry& registry) const override {
+    registry.insert<mlir::kernel_gen::tf_framework::TFFrameworkDialect>();
+  }
+
  public:
   void runOnOperation() override {
     ModuleOp m = getOperation();
 
     // Populate patterns.
-    OwningRewritePatternList patterns;
-    PopulateEmbedTFFrameworkConversionPatterns(m.getContext(), &patterns);
+    RewritePatternSet patterns(&getContext());
+    PopulateEmbedTFFrameworkPatterns(&patterns);
 
     // Set target.
     ConversionTarget target(getContext());
     target.addLegalDialect<tf_framework::TFFrameworkDialect>();
 
     target.addDynamicallyLegalOp<FuncOp>([&](FuncOp op) {
-      if (!op.getAttrOfType<UnitAttr>(kTFEntry)) {
+      if (!op->hasAttrOfType<UnitAttr>(TFFrameworkDialect::kTFEntryAttrName)) {
         return true;
       }
       FunctionType func_type = op.getType();
       return func_type.getNumInputs() > 0 &&
              func_type.getInput(0).isa<OpKernelContextType>();
     });
-    target.addDynamicallyLegalOp<AllocOp, DeallocOp>([](Operation* op) {
-      return !op->getParentOfType<FuncOp>().getAttrOfType<UnitAttr>(kTFEntry);
-    });
+    target.addDynamicallyLegalOp<AssertOp, memref::AllocOp, memref::DeallocOp>(
+        IsNotInsideTfEntryFunction);
+    target.addDynamicallyLegalOp<JITExecuteOp>(
+        &HasInitializedOpKernelContextOperand<JITExecuteOp>);
+    target.addDynamicallyLegalOp<JITCompileFromStrOp>(
+        &HasInitializedOpKernelContextOperand<JITCompileFromStrOp>);
 
-    if (failed(applyPartialConversion(m, target, patterns))) {
+    if (failed(applyPartialConversion(m, target, std::move(patterns)))) {
       signalPassFailure();
     }
   }
@@ -68,7 +86,7 @@ class EmbedTFFrameworkPass
 
 }  // namespace
 
-std::unique_ptr<OperationPass<ModuleOp> > createEmbedTFFrameworkPass() {
+std::unique_ptr<OperationPass<ModuleOp> > CreateEmbedTFFrameworkPass() {
   return std::make_unique<EmbedTFFrameworkPass>();
 }
 

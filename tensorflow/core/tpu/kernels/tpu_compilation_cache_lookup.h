@@ -17,7 +17,7 @@ limitations under the License.
 
 #include "tensorflow/core/lib/core/refcount.h"
 #include "tensorflow/core/platform/status.h"
-#include "tensorflow/core/tpu/kernels/tpu_compilation_cache.pb.h"
+#include "tensorflow/core/tpu/kernels/tpu_compilation_cache_common.pb.h"
 #include "tensorflow/core/tpu/kernels/tpu_compilation_cache_interface.h"
 
 namespace tensorflow {
@@ -57,11 +57,11 @@ class TpuCompilationCacheLookup : public ResourceBase {
   // the subgraph represented by uid. On success a wrapper for the proto is
   // returned in program. The wrapper is guaranteed to be valid only during the
   // execution of the Op requesting the proto.
-  virtual Status Lookup(int64 uid, int proto_index,
+  virtual Status Lookup(int64_t uid, int proto_index,
                         std::unique_ptr<CompilationCacheEntryRef>* entry,
                         CompilationCacheFetchTarget fetch_target) = 0;
 
-  virtual Status Lookup(int64 uid, int proto_index,
+  virtual Status Lookup(int64_t uid, int proto_index,
                         std::unique_ptr<CompilationCacheEntryRef>* entry) {
     return Lookup(uid, proto_index, std::move(entry),
                   CompilationCacheFetchTarget::MAIN);

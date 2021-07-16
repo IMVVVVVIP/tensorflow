@@ -13,13 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 # pylint: disable=protected-access
-"""Home of the `Sequential` model.
-"""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+"""Home of the `Sequential` model."""
 
 import copy
+import warnings
 
 from tensorflow.python import tf2
 from tensorflow.python.framework import ops
@@ -32,12 +29,13 @@ from tensorflow.python.keras.engine import training_utils
 from tensorflow.python.keras.saving.saved_model import model_serialization
 from tensorflow.python.keras.utils import generic_utils
 from tensorflow.python.keras.utils import layer_utils
+from tensorflow.python.keras.utils import tf_inspect
 from tensorflow.python.keras.utils import tf_utils
+from tensorflow.python.module import module
 from tensorflow.python.ops.numpy_ops import np_arrays
 from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.training.tracking import base as trackable
 from tensorflow.python.util import nest
-from tensorflow.python.util import tf_inspect
 from tensorflow.python.util.tf_export import keras_export
 
 
@@ -115,7 +113,6 @@ class Sequential(functional.Functional):
     # Skip the init in FunctionalModel since model doesn't have input/output yet
     super(functional.Functional, self).__init__(  # pylint: disable=bad-super-call
         name=name, autocast=False)
-    base_layer.keras_api_gauge.get_cell('Sequential').set(True)
     self.supports_masking = True
     self._compute_output_and_mask_jointly = True
     self._auto_track_sub_layers = False
@@ -158,7 +155,7 @@ class Sequential(functional.Functional):
   def add(self, layer):
     """Adds a layer instance on top of the layer stack.
 
-    Arguments:
+    Args:
         layer: layer instance.
 
     Raises:
@@ -176,8 +173,15 @@ class Sequential(functional.Functional):
       origin_layer = layer._keras_history[0]
       if isinstance(origin_layer, input_layer.InputLayer):
         layer = origin_layer
+        logging.warning(
+            'Please add `keras.layers.InputLayer` instead of `keras.Input` to '
+            'Sequential model. `keras.Input` is intended to be used by '
+            'Functional model.')
 
-    if not isinstance(layer, base_layer.Layer):
+    if isinstance(layer, module.Module):
+      if not isinstance(layer, base_layer.Layer):
+        layer = functional.ModuleWrapper(layer)
+    else:
       raise TypeError('The added layer must be '
                       'an instance of class Layer. '
                       'Found: ' + str(layer))
@@ -191,7 +195,8 @@ class Sequential(functional.Functional):
 
     self.built = False
     set_inputs = False
-    if not self._layers:
+    self._maybe_create_attribute('_self_tracked_trackables', [])
+    if not self._self_tracked_trackables:
       if isinstance(layer, input_layer.InputLayer):
         # Case where the user passes an Input or InputLayer layer via `add`.
         set_inputs = True
@@ -229,7 +234,7 @@ class Sequential(functional.Functional):
       self._init_graph_network(self.inputs, self.outputs)
       self._graph_initialized = True
     else:
-      self._layers.append(layer)
+      self._self_tracked_trackables.append(layer)
       self._handle_deferred_layer_dependencies([layer])
 
     self._layer_call_argspecs[layer] = tf_inspect.getfullargspec(layer.call)
@@ -244,7 +249,7 @@ class Sequential(functional.Functional):
     if not self.layers:
       raise TypeError('There are no layers in the model.')
 
-    layer = self._layers.pop()
+    layer = self._self_tracked_trackables.pop()
     self._layer_call_argspecs.pop(layer)
     if not self.layers:
       self.outputs = None
@@ -353,7 +358,7 @@ class Sequential(functional.Functional):
   def call(self, inputs, training=None, mask=None):  # pylint: disable=redefined-outer-name
     # If applicable, update the static input shape of the model.
     if not self._has_explicit_input_shape:
-      if not tensor_util.is_tensor(inputs) and not isinstance(
+      if not tensor_util.is_tf_type(inputs) and not isinstance(
           inputs, np_arrays.ndarray):
         # This is a Sequential with mutiple inputs. This is technically an
         # invalid use case of Sequential, but we tolerate it for backwards
@@ -404,7 +409,7 @@ class Sequential(functional.Functional):
     # TODO(omalleyt): b/123540974 This function is not really safe to call
     # by itself because it will duplicate any updates and losses in graph
     # mode by `call`ing the Layers again.
-    outputs = self.call(inputs, mask=mask)
+    outputs = self.call(inputs, mask=mask)  # pylint: disable=unexpected-keyword-arg
     return getattr(outputs, '_keras_mask', None)
 
   def predict_proba(self, x, batch_size=32, verbose=0):
@@ -412,7 +417,7 @@ class Sequential(functional.Functional):
 
     The input samples are processed batch by batch.
 
-    Arguments:
+    Args:
         x: input data, as a Numpy array or list of Numpy arrays
             (if the model has multiple inputs).
         batch_size: integer.
@@ -421,9 +426,9 @@ class Sequential(functional.Functional):
     Returns:
         A Numpy array of probability predictions.
     """
-    logging.warning('`model.predict_proba()` is deprecated and '
-                    'will be removed after 2021-01-01. '
-                    'Please use `model.predict()` instead.')
+    warnings.warn('`model.predict_proba()` is deprecated and '
+                  'will be removed after 2021-01-01. '
+                  'Please use `model.predict()` instead.')
     preds = self.predict(x, batch_size, verbose)
     if preds.min() < 0. or preds.max() > 1.:
       logging.warning('Network returning invalid probability values. '
@@ -437,7 +442,7 @@ class Sequential(functional.Functional):
 
     The input samples are processed batch by batch.
 
-    Arguments:
+    Args:
         x: input data, as a Numpy array or list of Numpy arrays
             (if the model has multiple inputs).
         batch_size: integer.
@@ -446,15 +451,15 @@ class Sequential(functional.Functional):
     Returns:
         A numpy array of class predictions.
     """
-    logging.warning('`model.predict_classes()` is deprecated and '
-                    'will be removed after 2021-01-01. '
-                    'Please use instead:'
-                    '* `np.argmax(model.predict(x), axis=-1)`, '
-                    '  if your model does multi-class classification '
-                    '  (e.g. if it uses a `softmax` last-layer activation).'
-                    '* `(model.predict(x) > 0.5).astype("int32")`, '
-                    '  if your model does binary classification '
-                    '  (e.g. if it uses a `sigmoid` last-layer activation).')
+    warnings.warn('`model.predict_classes()` is deprecated and '
+                  'will be removed after 2021-01-01. '
+                  'Please use instead:'
+                  '* `np.argmax(model.predict(x), axis=-1)`, '
+                  '  if your model does multi-class classification '
+                  '  (e.g. if it uses a `softmax` last-layer activation).'
+                  '* `(model.predict(x) > 0.5).astype("int32")`, '
+                  '  if your model does binary classification '
+                  '  (e.g. if it uses a `sigmoid` last-layer activation).')
     proba = self.predict(x, batch_size=batch_size, verbose=verbose)
     if proba.shape[-1] > 1:
       return proba.argmax(axis=-1)
@@ -465,8 +470,8 @@ class Sequential(functional.Functional):
     layer_configs = []
     for layer in super(Sequential, self).layers:
       # `super().layers` include the InputLayer if available (it is filtered out
-      # of `self.layers`). Note that `self._layers` is managed by the
-      # tracking infrastructure and should not be used.
+      # of `self.layers`). Note that `self._self_tracked_trackables` is managed
+      # by the tracking infrastructure and should not be used.
       layer_configs.append(generic_utils.serialize_keras_object(layer))
     config = {
         'name': self.name,

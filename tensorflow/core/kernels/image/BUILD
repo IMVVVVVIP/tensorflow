@@ -1,18 +1,29 @@
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load(
     "//tensorflow:tensorflow.bzl",
     "if_android",
+    "if_cuda_or_rocm",
     "tf_cc_test",
     "tf_cc_tests",
     "tf_copts",
-    "tf_kernel_library",
 )
-load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
 load(
     "//tensorflow/core/platform:build_config_root.bzl",
     "tf_cuda_tests_tags",
 )
+
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "filegroup")
+
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "tf_disable_ptxas_warning_flags")
+
+# buildifier: disable=same-origin-load
 load("//tensorflow:tensorflow.bzl", "tf_cuda_cc_test")
+
+# buildifier: disable=same-origin-load
+load("//tensorflow:tensorflow.bzl", "tf_kernel_library")
 
 # TODO(rmlarsen): Remove ASAP.
 package_group(
@@ -29,7 +40,8 @@ package(
         "//tensorflow:__subpackages__",
         "//tensorflow:internal",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    features = ["-layering_check"],
+    licenses = ["notice"],
 )
 
 # Export a few files for use on Android.
@@ -42,6 +54,8 @@ exports_files([
     "adjust_saturation_op.h",
     "crop_and_resize_op.cc",
     "crop_and_resize_op.h",
+    "colorspace_op.cc",
+    "colorspace_op.h",
     "extract_image_patches_op.cc",
     "extract_image_patches_op.h",
     "image_ops.h",
@@ -56,11 +70,15 @@ exports_files([
     "mirror_pad_op_cpu_impl_5.cc",
     "non_max_suppression_op.cc",
     "non_max_suppression_op.h",
+    "resize_bicubic_op.cc",
     "resize_bilinear_op.cc",
     "resize_bilinear_op.h",
     "resize_nearest_neighbor_op.cc",
     "resize_nearest_neighbor_op.h",
     "sample_distorted_bounding_box_op.cc",
+    "decode_image_op.cc",
+    "encode_jpeg_op.cc",
+    "encode_png_op.cc",
 ])
 
 # Private support libraries ---------------------------------------------------
@@ -87,6 +105,7 @@ tf_cc_test(
 # Public support libraries ----------------------------------------------------<
 cc_library(
     name = "image",
+    visibility = ["//visibility:public"],
     deps = [
         ":adjust_contrast_op",
         ":adjust_hue_op",
@@ -122,9 +141,9 @@ IMAGE_DEPS = [
     "//tensorflow/core:jpeg_internal",
     "//tensorflow/core:lib",
     "//tensorflow/core:lib_internal",
-    "//tensorflow/core:png_internal",
+    "//tensorflow/core/lib/png:png_io",
     "//tensorflow/core:protos_all_cc",
-    "//tensorflow/core/kernels:bounds_check",
+    "//tensorflow/core/framework:bounds_check",
     "//tensorflow/core/kernels:eigen_helpers",
     "//tensorflow/core/util/tensor_bundle",
     "//tensorflow/core/util:image_resizer_state",
@@ -175,6 +194,7 @@ tf_kernel_library(
 
 tf_kernel_library(
     name = "colorspace_op",
+    gpu_copts = tf_disable_ptxas_warning_flags(),
     prefix = "colorspace_op",
     deps = IMAGE_DEPS,
 )
@@ -238,7 +258,7 @@ tf_kernel_library(
 tf_kernel_library(
     name = "generate_box_proposals_op",
     gpu_srcs = ["generate_box_proposals_op.cu.cc"],
-    deps = ["//tensorflow/core/kernels:gpu_prim_hdrs"] + if_cuda([
+    deps = ["//tensorflow/core/kernels:gpu_prim_hdrs"] + if_cuda_or_rocm([
         ":non_max_suppression_op_gpu",
     ]),
 )
@@ -276,7 +296,7 @@ tf_kernel_library(
 tf_kernel_library(
     name = "resize_bilinear_op",
     prefix = "resize_bilinear_op",
-    deps = IMAGE_DEPS,
+    deps = IMAGE_DEPS + ["//tensorflow/core/kernels:cast_op"],
 )
 
 tf_kernel_library(
@@ -315,7 +335,6 @@ tf_cc_tests(
         "non_max_suppression_op_test.cc",
         "resize_area_op_test.cc",
         "resize_bicubic_op_test.cc",
-        "resize_nearest_neighbor_op_test.cc",
         "scale_and_translate_op_test.cc",
     ],
     linkopts = select({
@@ -338,9 +357,15 @@ tf_cc_test(
 )
 
 tf_cuda_cc_test(
-    name = "resize_bilinear_op_test",
-    srcs = ["resize_bilinear_op_test.cc"],
-    tags = ["no_cuda_on_cpu_tap"],
+    name = "resize_ops_test",
+    srcs = [
+        "resize_bilinear_op_test.cc",
+        "resize_nearest_neighbor_op_test.cc",
+    ],
+    tags = [
+        "no_cuda_asan",  # TODO(b/171334997): re-enable
+        "no_cuda_on_cpu_tap",
+    ],
     deps = [
         ":image",
         ":sampling_kernels",
@@ -374,7 +399,10 @@ tf_cuda_cc_test(
 tf_cuda_cc_test(
     name = "non_max_suppression_op_gpu_test",
     srcs = ["non_max_suppression_op_gpu_test.cc"],
-    tags = tf_cuda_tests_tags() + ["no_cuda_on_cpu_tap"],
+    tags = tf_cuda_tests_tags() + [
+        "no_cuda_asan",  # TODO(b/171263349): re-enable.
+        "no_cuda_on_cpu_tap",
+    ],
     deps = [
         ":image",
         "@com_google_absl//absl/strings",
@@ -405,10 +433,10 @@ cc_library(
     linkopts = ["-ldl"],
     visibility = ["//visibility:public"],
     deps = [
-        "//tensorflow/core:android_gif_internal",
-        "//tensorflow/core:android_jpeg_internal",
-        "//tensorflow/core:android_png_internal",
+        "//tensorflow/core:portable_gif_internal",
+        "//tensorflow/core:portable_jpeg_internal",
         "//tensorflow/core:portable_tensorflow_lib_lite",
+        "//tensorflow/core/lib/png:png_io",
     ],
     alwayslink = 1,
 )
@@ -420,7 +448,7 @@ build_test(
 
 # A file group which contains all operators which are known to work on mobile.
 filegroup(
-    name = "android_all_op_kernels",
+    name = "portable_all_op_kernels",
     srcs = glob(
         [
             "*.cc",
@@ -443,7 +471,7 @@ filegroup(
 )
 
 filegroup(
-    name = "android_all_ops_textual_hdrs",
+    name = "portable_all_ops_textual_hdrs",
     srcs = ["mirror_pad_op.h"],
     visibility = ["//visibility:public"],
 )

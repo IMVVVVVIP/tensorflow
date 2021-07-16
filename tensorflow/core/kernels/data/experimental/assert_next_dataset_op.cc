@@ -16,10 +16,10 @@ limitations under the License.
 
 #include <map>
 
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
-#include "tensorflow/core/kernels/data/name_utils.h"
 
 namespace tensorflow {
 namespace data {
@@ -64,6 +64,11 @@ class AssertNextDatasetOp::Dataset : public DatasetBase {
 
   int64 Cardinality() const override { return input_->Cardinality(); }
 
+  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+    inputs->push_back(input_);
+    return Status::OK();
+  }
+
   Status CheckExternalState() const override {
     return input_->CheckExternalState();
   }
@@ -97,8 +102,8 @@ class AssertNextDatasetOp::Dataset : public DatasetBase {
       }
       int n = tokens.size();
       for (size_t i = 0; i < dataset()->transformations_.size(); ++i) {
-        if (!MatchesAnyVersionRE(dataset()->transformations_[i],
-                                 tokens[n - 2 - i])) {
+        if (!MatchesAnyVersion(dataset()->transformations_[i],
+                               tokens[n - 2 - i])) {
           return errors::InvalidArgument("Asserted transformation matching ",
                                          dataset()->transformations_[i],
                                          " at offset ", i, " but encountered ",

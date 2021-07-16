@@ -89,6 +89,11 @@ class DeviceNameUtils {
     bool has_id = false;
     int id = 0;
   };
+
+  // Parses the device name, first as a full name, then, if it fails, as a
+  // global one. Returns `false` if both attempts fail.
+  static bool ParseFullOrLocalName(StringPiece fullname, ParsedName* parsed);
+
   // Parses "fullname" into "*parsed". Returns true iff succeeds.
   // Legacy names like "/cpu:0" that don't contain "device",
   // are parsed to mean their current counterparts "/device:CPU:0". More
@@ -148,6 +153,11 @@ class DeviceNameUtils {
   // clearing conflicting fields, overrides them with `other`'s values.
   static Status MergeOverrideDevNames(ParsedName* target,
                                       const ParsedName& other);
+
+  // Merges the device specifications in "*target" and "other", and
+  // stores the result in "*target" by setting all unset values in target with
+  // corresponding set ones in other.
+  static void MergeUnsetDevNames(ParsedName* target, const ParsedName& other);
 
   // Returns true iff devices identified by 'src' and 'dst' are in the
   // same address space.

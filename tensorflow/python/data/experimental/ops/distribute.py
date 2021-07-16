@@ -29,6 +29,11 @@ from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_experimental_dataset_ops as ged_ops
+from tensorflow.python.util.tf_export import tf_export
+
+SHARD_HINT = -1
+tf_export("data.experimental.SHARD_HINT").export_constant(
+    __name__, "SHARD_HINT")
 
 
 class _AutoShardDataset(dataset_ops.UnaryDataset):
@@ -53,7 +58,7 @@ class _AutoShardDataset(dataset_ops.UnaryDataset):
 
   If the AutoShardPolicy is set to OFF, it does nothing.
 
-  Args:
+  Attributes:
     num_workers: Total number of workers to shard this dataset across.
     index: The current worker index (out of the total number of workers) this
       dataset is for.
@@ -85,9 +90,9 @@ class _AutoShardDataset(dataset_ops.UnaryDataset):
     return self._element_spec
 
 
-def _AutoShardDatasetV1(input_dataset, num_workers, index):  # pylint: disable=invalid-name
+def _AutoShardDatasetV1(input_dataset, num_workers, index, num_replicas=None):  # pylint: disable=invalid-name
   return dataset_ops.DatasetV1Adapter(
-      _AutoShardDataset(input_dataset, num_workers, index))
+      _AutoShardDataset(input_dataset, num_workers, index, num_replicas))
 
 
 class _RebatchDataset(dataset_ops.UnaryDataset):
@@ -330,12 +335,10 @@ def replicate(dataset, devices):
     return datasets
 
   with ops.colocate_with(dataset._variant_tensor):
-    dataset = dataset._apply_options()
-    policy = dataset.options().experimental_external_state_policy
-    if policy is None:
-      policy = ExternalStatePolicy.WARN
+    dataset = dataset._apply_debug_options()
     graph_def = dataset._as_serialized_graph(
-        strip_device_assignment=True, external_state_policy=policy)
+        strip_device_assignment=True,
+        external_state_policy=ExternalStatePolicy.WARN)
   for device in devices:
     ds = _RemoteDataset(graph_def, device, dataset.element_spec)
     datasets[device] = ds

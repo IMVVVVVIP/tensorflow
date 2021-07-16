@@ -23,10 +23,9 @@ limitations under the License.
 namespace xla {
 namespace gpu {
 
-ForThunk::ForThunk(ThunkInfo thunk_info, const int64 loop_limit,
+ForThunk::ForThunk(ThunkInfo thunk_info, const int64_t loop_limit,
                    std::unique_ptr<ThunkSequence> body_thunk_sequence)
     : Thunk(Kind::kWhile, thunk_info),
-      hlo_instruction_(thunk_info.hlo_instruction),
       loop_limit_(loop_limit),
       body_thunk_sequence_(absl::make_unique<SequentialThunk>(
           // Pass nullptr as the HloInstruction* to the body_thunk_sequence_
@@ -41,15 +40,10 @@ Status ForThunk::Initialize(const GpuExecutable& executable,
 }
 
 Status ForThunk::ExecuteOnStream(const ExecuteParams& params) {
-  VLOG(2) << "Executing ForThunk with " << loop_limit_ << " iters for "
-          << (hlo_instruction_ ? hlo_instruction_->ToString() : "<null>");
-  auto op_profiler =
-      params.profiler->MakeScopedInstructionProfiler(profile_index());
-  for (int64 i = 0; i < loop_limit_; ++i) {
-    params.profiler->StartHloComputation();
+  VLOG(2) << "Executing ForThunk with " << loop_limit_ << " iters";
+  for (int64_t i = 0; i < loop_limit_; ++i) {
     // Invoke loop body thunk sequence.
     TF_RETURN_IF_ERROR(body_thunk_sequence_->ExecuteOnStream(params));
-    params.profiler->FinishHloComputation(hlo_instruction_->while_body());
   }
   return Status::OK();
 }

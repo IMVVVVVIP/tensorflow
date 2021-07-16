@@ -16,6 +16,10 @@ limitations under the License.
 // See docs in ../ops/image_ops.cc
 #define EIGEN_USE_THREADS
 
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#define EIGEN_USE_GPU
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
 #include "tensorflow/core/kernels/image/resize_bilinear_op.h"
 
 #ifdef __SSE4_1__
@@ -30,6 +34,7 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/kernels/cast_op.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/util/image_resizer_state.h"
@@ -49,16 +54,16 @@ class ResizeBilinearOp : public OpKernel {
   }
 
   void Compute(OpKernelContext* context) override {
-    const Tensor& input = context->input(0);
     ImageResizerState st(align_corners_, half_pixel_centers_);
-    st.ValidateAndCreateOutput(context, input);
+    st.ValidateAndCreateOutput(context);
 
     if (!context->status().ok()) return;
 
     // Return if the output is empty.
     if (st.output->NumElements() == 0) return;
 
-    typename TTypes<T, 4>::ConstTensor image_data(input.tensor<T, 4>());
+    typename TTypes<T, 4>::ConstTensor image_data(
+        context->input(0).tensor<T, 4>());
     TTypes<float, 4>::Tensor output_data = st.output->tensor<float, 4>();
 
     functor::ResizeBilinear<Device, T>()(
@@ -127,41 +132,25 @@ inline __m128 compute_lerp_v(const __m128 top_left, const __m128 top_right,
 #endif
 
 template <typename T>
-void ResizeLine3Channels(const T* const ys_input_lower_ptr,
-                         const T* const ys_input_upper_ptr,
-                         const CachedInterpolation* const xs,
-                         const float ys_lerp, const int64 out_width,
-                         float* out_y) {
+void ResizeLineChannels(const T* const ys_input_lower_ptr,
+                        const T* const ys_input_upper_ptr,
+                        const CachedInterpolation* const xs,
+                        const float ys_lerp, const int64 out_width,
+                        float* out_y, const int channels) {
   for (int64 x = 0; x < out_width; ++x) {
     const int64 xs_lower = xs[x].lower;
     const int64 xs_upper = xs[x].upper;
     const float xs_lerp = xs[x].lerp;
 
-    // Read channel 0.
-    const float top_left0(ys_input_lower_ptr[xs_lower + 0]);
-    const float top_right0(ys_input_lower_ptr[xs_upper + 0]);
-    const float bottom_left0(ys_input_upper_ptr[xs_lower + 0]);
-    const float bottom_right0(ys_input_upper_ptr[xs_upper + 0]);
+    for (int c = 0; c < channels; ++c) {
+      const float top_left(ys_input_lower_ptr[xs_lower + c]);
+      const float top_right(ys_input_lower_ptr[xs_upper + c]);
+      const float bottom_left(ys_input_upper_ptr[xs_lower + c]);
+      const float bottom_right(ys_input_upper_ptr[xs_upper + c]);
 
-    // Read channel 1.
-    const float top_left1(ys_input_lower_ptr[xs_lower + 1]);
-    const float top_right1(ys_input_lower_ptr[xs_upper + 1]);
-    const float bottom_left1(ys_input_upper_ptr[xs_lower + 1]);
-    const float bottom_right1(ys_input_upper_ptr[xs_upper + 1]);
-
-    // Read channel 2.
-    const float top_left2(ys_input_lower_ptr[xs_lower + 2]);
-    const float top_right2(ys_input_lower_ptr[xs_upper + 2]);
-    const float bottom_left2(ys_input_upper_ptr[xs_lower + 2]);
-    const float bottom_right2(ys_input_upper_ptr[xs_upper + 2]);
-
-    // Compute output.
-    out_y[x * 3 + 0] = compute_lerp(top_left0, top_right0, bottom_left0,
-                                    bottom_right0, xs_lerp, ys_lerp);
-    out_y[x * 3 + 1] = compute_lerp(top_left1, top_right1, bottom_left1,
-                                    bottom_right1, xs_lerp, ys_lerp);
-    out_y[x * 3 + 2] = compute_lerp(top_left2, top_right2, bottom_left2,
-                                    bottom_right2, xs_lerp, ys_lerp);
+      out_y[x * channels + c] = compute_lerp(top_left, top_right, bottom_left,
+                                             bottom_right, xs_lerp, ys_lerp);
+    }
   }
 }
 
@@ -207,9 +196,8 @@ void ResizeLine3ChannelsVector(const T* const ys_input_lower_ptr,
   }
   // The last pixel of each row must be done in a non-vectorized way
   // because we cannot overflow.
-  ResizeLine3Channels(ys_input_lower_ptr, ys_input_upper_ptr,
-                      xs + out_width - 1, ys_lerp, 1,
-                      out_y + (out_width - 1) * 3);
+  ResizeLineChannels(ys_input_lower_ptr, ys_input_upper_ptr, xs + out_width - 1,
+                     ys_lerp, 1, out_y + (out_width - 1) * 3, 3);
 }
 #endif
 
@@ -246,8 +234,8 @@ void resize_image(typename TTypes<T, 4>::ConstTensor images,
         ResizeLine3ChannelsVector(ys_input_lower_ptr, ys_input_upper_ptr, xs,
                                   ys[y].lerp, out_width, output_y_ptr);
 #else
-        ResizeLine3Channels(ys_input_lower_ptr, ys_input_upper_ptr, xs,
-                            ys[y].lerp, out_width, output_y_ptr);
+        ResizeLineChannels(ys_input_lower_ptr, ys_input_upper_ptr, xs,
+                           ys[y].lerp, out_width, output_y_ptr, 3);
 #endif
         output_y_ptr += out_row_size;
       }
@@ -259,27 +247,36 @@ void resize_image(typename TTypes<T, 4>::ConstTensor images,
       for (int64 y = 0; y < out_height; ++y) {
         const T* ys_input_lower_ptr = input_b_ptr + ys[y].lower * in_row_size;
         const T* ys_input_upper_ptr = input_b_ptr + ys[y].upper * in_row_size;
-        const float ys_lerp = ys[y].lerp;
-        for (int64 x = 0; x < out_width; ++x) {
-          auto xs_lower = xs[x].lower;
-          auto xs_upper = xs[x].upper;
-          auto xs_lerp = xs[x].lerp;
-          for (int c = 0; c < channels; ++c) {
-            const float top_left(ys_input_lower_ptr[xs_lower + c]);
-            const float top_right(ys_input_lower_ptr[xs_upper + c]);
-            const float bottom_left(ys_input_upper_ptr[xs_lower + c]);
-            const float bottom_right(ys_input_upper_ptr[xs_upper + c]);
-            output_y_ptr[x * channels + c] =
-                compute_lerp(top_left, top_right, bottom_left, bottom_right,
-                             xs_lerp, ys_lerp);
-          }
-        }
+
+        ResizeLineChannels(ys_input_lower_ptr, ys_input_upper_ptr, xs,
+                           ys[y].lerp, out_width, output_y_ptr, channels);
+
         output_y_ptr += out_row_size;
       }
       input_b_ptr += in_batch_num_values;
     }
   }
 }
+
+// Casts from float16 to T.
+template <typename Device, typename T>
+struct CastFloatTo {
+  void operator()(const Device& d, typename TTypes<float>::ConstFlat input,
+                  typename TTypes<T>::Flat output) {
+    output.device(d) = input.template cast<T>();
+  }
+};
+
+template <typename T>
+struct CastFloatTo<GPUDevice, T> {
+  void operator()(const GPUDevice& d, typename TTypes<float>::ConstFlat input,
+                  typename TTypes<T>::Flat output) {
+    // Use existing cast functor instead of directly casting Eigen tensor, as
+    // otherwise we need to instantiate the cast function in a .cu.cc file
+    functor::CastFunctor<GPUDevice, T, float> cast;
+    cast(d, output, input);
+  }
+};
 
 }  // namespace
 
@@ -345,21 +342,38 @@ class ResizeBilinearOpGrad : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     // Validate input.
-    // First argument is gradient with respect to resized image.
-    const Tensor& input = context->input(0);
-    const Tensor& original_image = context->input(1);
-
     ImageResizerGradientState st(align_corners_, half_pixel_centers_);
-    st.ValidateAndCreateOutput(context, input, original_image);
+    st.ValidateAndCreateOutput(context);
 
     if (!context->status().ok()) return;
 
-    TTypes<float, 4>::ConstTensor input_grad = input.tensor<float, 4>();
-    typename TTypes<T, 4>::Tensor output_grad(st.output->tensor<T, 4>());
+    // First argument is gradient with respect to resized image.
+    TTypes<float, 4>::ConstTensor input_grad =
+        context->input(0).tensor<float, 4>();
 
-    functor::ResizeBilinearGrad<Device, T>()(
-        context->eigen_device<Device>(), input_grad, st.height_scale,
-        st.width_scale, half_pixel_centers_, output_grad);
+    if (!std::is_same<T, Eigen::half>::value &&
+        !std::is_same<T, Eigen::bfloat16>::value) {
+      typename TTypes<T, 4>::Tensor output_grad(st.output->tensor<T, 4>());
+      functor::ResizeBilinearGrad<Device, T>()(
+          context->eigen_device<Device>(), input_grad, st.height_scale,
+          st.width_scale, half_pixel_centers_, output_grad);
+    } else {
+      // Accumulate output to float instead of half/bfloat16 tensor, since float
+      // accumulation is more numerically stable and GPU half implementation is
+      // slow.
+      // TODO(b/165759037): Create optimized and numerically stable half and
+      // bfloat16 implementation
+      Tensor output_grad;
+      OP_REQUIRES_OK(context, context->allocate_temp(
+                                  DT_FLOAT, st.output->shape(), &output_grad));
+      functor::ResizeBilinearGrad<Device, float>()(
+          context->eigen_device<Device>(), input_grad, st.height_scale,
+          st.width_scale, half_pixel_centers_, output_grad.tensor<float, 4>());
+      const Tensor& output_grad_const = output_grad;
+      CastFloatTo<Device, T>{}(context->template eigen_device<Device>(),
+                               output_grad_const.template flat<float>(),
+                               st.output->template flat<T>());
+    }
   }
 
  private:
@@ -467,6 +481,7 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_KERNEL);
 TF_CALL_half(REGISTER_GRAD_KERNEL);
 TF_CALL_float(REGISTER_GRAD_KERNEL);
 TF_CALL_double(REGISTER_GRAD_KERNEL);
+TF_CALL_bfloat16(REGISTER_GRAD_KERNEL);
 
 #undef REGISTER_GRAD_KERNEL
 
@@ -479,7 +494,7 @@ TF_CALL_double(REGISTER_GRAD_KERNEL);
                               .HostMemory("size"),    \
                           ResizeBilinearOp<GPUDevice, T>);
 
-TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_KERNEL);
+TF_CALL_GPU_NUMBER_TYPES(REGISTER_KERNEL);
 
 #undef REGISTER_KERNEL
 
@@ -488,7 +503,7 @@ TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_KERNEL);
       Name("ResizeBilinearGrad").Device(DEVICE_GPU).TypeConstraint<T>("T"), \
       ResizeBilinearOpGrad<GPUDevice, T>);
 
-TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_GRAD_KERNEL);
+TF_CALL_GPU_NUMBER_TYPES(REGISTER_GRAD_KERNEL);
 
 #undef REGISTER_GRAD_KERNEL
 
