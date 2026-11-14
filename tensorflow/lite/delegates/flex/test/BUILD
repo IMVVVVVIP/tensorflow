@@ -1,3 +1,21 @@
+# Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_static_framework")
+load("@rules_java//java:defs.bzl", "java_library", "java_test")
 load("//tensorflow/java:build_defs.bzl", "JAVACOPTS")
 load("//tensorflow/lite/delegates/flex:build_def.bzl", "tflite_flex_jni_library")
 
@@ -5,16 +23,17 @@ load("//tensorflow/lite/delegates/flex:build_def.bzl", "tflite_flex_jni_library"
 # in Java. Please don't use them for other purposes.
 
 package(
-    default_visibility = [
-        "//tensorflow/lite/android:__subpackages__",
-    ],
-    licenses = ["notice"],  # Apache 2.0
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:LICENSE"],
+    licenses = ["notice"],
 )
 
 tflite_flex_jni_library(
     name = "test",
+    testonly = 1,
+    additional_deps = ["//tensorflow/lite/python/testdata:double_op_and_kernels"],
     models = [
         "//tensorflow/lite:testdata/multi_add_flex.bin",
+        "//tensorflow/lite:testdata/double_flex.bin",
     ],
 )
 
@@ -46,9 +65,8 @@ java_test(
         "no_cuda_on_cpu_tap",  # CUDA + flex is not officially supported.
         "no_gpu",  # GPU + flex is not officially supported.
         "no_oss",  # Currently requires --config=monolithic, b/118895218.
-        # TODO(b/121204962): Re-enable test after fixing memory leaks.
-        "noasan",
-        "notsan",  # TODO(b/158651814) Re-enable after fixing racing condition.
+        "noasan",  # b/494579957: JVM shutdown rseq crash under ASAN.
+        "notsan",  # b/494579957: JVM shutdown rseq crash under TSAN.
     ],
     test_class = "org.tensorflow.lite.InterpreterFlexTest",
     visibility = ["//visibility:private"],
@@ -57,5 +75,60 @@ java_test(
         "//tensorflow/lite/java:tensorflowlitelib",
         "@com_google_truth",
         "@junit",
+    ],
+)
+
+java_test(
+    name = "SelectiveBuiltInterpreterFlexWithCustomOpsTest",
+    size = "small",
+    srcs = [
+        "//tensorflow/lite/java:portable_flex_with_custom_ops_tests",
+        "//tensorflow/lite/java:portable_test_utils",
+    ],
+    data = [
+        "//tensorflow/lite:testdata/double_flex.bin",
+    ],
+    javacopts = JAVACOPTS,
+    tags = [
+        "no_cuda_on_cpu_tap",  # CUDA + flex is not officially supported.
+        "no_gpu",  # GPU + flex is not officially supported.
+        "no_oss",  # Currently requires --config=monolithic, b/118895218.
+        "noasan",  # b/494579957: JVM shutdown rseq crash under ASAN.
+        "notsan",  # b/494579957: JVM shutdown rseq crash under TSAN.
+    ],
+    test_class = "org.tensorflow.lite.InterpreterFlexWithCustomOpsTest",
+    visibility = ["//visibility:private"],
+    deps = [
+        ":test_tensorflowlitelib_flex",
+        "//tensorflow/lite/java:tensorflowlitelib",
+        "@com_google_truth",
+        "@junit",
+    ],
+)
+
+# For build test only.
+ios_static_framework(
+    name = "TestTensorFlowLiteSelectTfOps_framework",
+    testonly = 1,
+    avoid_deps = ["//tensorflow/lite/core/c:common"],
+    bundle_name = "TestTensorFlowLiteSelectTfOps",
+    minimum_os_version = "15.0",
+    deps = [
+        ":test_flex_delegate",
+    ],
+)
+
+build_test(
+    name = "framework_build_test",
+    # build_test targets are not meant to be run with sanitizers, and can also
+    # cause problems with coverage testing.
+    tags = [
+        "noasan",
+        "nomsan",
+        "notsan",
+        "nozapfhahn",
+    ],
+    targets = [
+        ":TestTensorFlowLiteSelectTfOps_framework",
     ],
 )

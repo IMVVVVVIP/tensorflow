@@ -67,10 +67,10 @@ static Graph* Conv2DBackpropFilter(int batch, int height, int width,
                 {batch, out_depth, conv2d_dims.out_rows, conv2d_dims.out_cols});
 
   Tensor filter_dims_t(DT_INT32, TensorShape({4}));
-  filter_dims_t.flat<int32>()(0) = filter_h;
-  filter_dims_t.flat<int32>()(1) = filter_w;
-  filter_dims_t.flat<int32>()(2) = in_depth;
-  filter_dims_t.flat<int32>()(3) = out_depth;
+  filter_dims_t.flat<int32_t>()(0) = filter_h;
+  filter_dims_t.flat<int32_t>()(1) = filter_w;
+  filter_dims_t.flat<int32_t>()(2) = in_depth;
+  filter_dims_t.flat<int32_t>()(3) = out_depth;
 
   Node* input = test::graph::Constant(graph, input_t, "input");
   Node* filter_dims =
@@ -116,12 +116,15 @@ static Graph* Conv2DBackpropFilter(int batch, int height, int width,
 #define BM_Conv2DBwdFilter(T, FMT, N, H, W, C, FH, FW, FC, SH, SW, PADDING,    \
                            type)                                               \
   static void BM_NAME(BM_Conv2DBackpropFilter, type, T, FMT, N, H, W, C, FH,   \
-                      FW, FC, SH, SW, PADDING)(int iters) {                    \
-    testing::ItemsProcessed(static_cast<int64>(iters) * (N) * (H) * (W) *      \
-                            (C));                                              \
-    test::Benchmark(#type, Conv2DBackpropFilter<T>(N, H, W, C, FH, FW, FC, SH, \
-                                                   SW, PADDING, FORMAT_##FMT)) \
-        .Run(iters);                                                           \
+                      FW, FC, SH, SW,                                          \
+                      PADDING)(::testing::benchmark::State & state) {          \
+    test::Benchmark(#type,                                                     \
+                    Conv2DBackpropFilter<T>(N, H, W, C, FH, FW, FC, SH, SW,    \
+                                            PADDING, FORMAT_##FMT),            \
+                    /*old_benchmark_api*/ false)                               \
+        .Run(state);                                                           \
+    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * (N) *   \
+                            (H) * (W) * (C));                                  \
   }                                                                            \
   BENCHMARK(BM_NAME(BM_Conv2DBackpropFilter, type, T, FMT, N, H, W, C, FH, FW, \
                     FC, SH, SW, PADDING));

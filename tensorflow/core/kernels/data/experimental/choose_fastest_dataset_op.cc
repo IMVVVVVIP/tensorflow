@@ -13,6 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "absl/synchronization/notification.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/op.h"
@@ -41,7 +42,7 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
     OP_REQUIRES_OK(ctx, ctx->input_list("input_datasets", &input_list));
     OP_REQUIRES(
         ctx, input_list.size() > 1,
-        errors::InvalidArgument(
+        absl::InvalidArgumentError(
             "ChooseFastestDataset must have at least two input datasets."));
 
     std::vector<DatasetBase*> inputs;
@@ -55,12 +56,12 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
     for (size_t i = 1, num_inputs = inputs.size(); i < num_inputs; ++i) {
       OP_REQUIRES(
           ctx, inputs[i]->output_dtypes() == output_types_,
-          errors::InvalidArgument(
+          absl::InvalidArgumentError(absl::StrCat(
               "All inputs to ChooseFastestDataset "
               "must have the same output types. Input ",
               i, " has output types: ",
               DataTypeVectorString(inputs[i]->output_dtypes()),
-              ". Expected: ", DataTypeVectorString(output_types_), "."));
+              ". Expected: ", DataTypeVectorString(output_types_), ".")));
     }
 
     // Merge the output shapes of all the input datasets, returning an
@@ -68,12 +69,12 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
     for (size_t i = 1, num_inputs = inputs.size(); i < num_inputs; ++i) {
       OP_REQUIRES(
           ctx, inputs[i]->output_shapes().size() == output_shapes_.size(),
-          errors::InvalidArgument(
+          absl::InvalidArgumentError(absl::StrCat(
               "All inputs to ChooseFastestDataset must have compatible outputs."
               " Input ",
               i, " has ", inputs[i]->output_shapes().size(),
               " components. Expected to have ", output_shapes_.size(),
-              " components."));
+              " components.")));
       for (size_t j = 0, num_components = output_shapes_.size();
            j < num_components; ++j) {
         PartialTensorShape result;
@@ -92,7 +93,7 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
       }
     }
 
-    int64 cardinality = inputs[0]->Cardinality();
+    int64_t cardinality = inputs[0]->Cardinality();
     for (size_t i = 1, num_inputs = inputs.size(); i < num_inputs; ++i) {
       if (cardinality == kUnknownCardinality) {
         cardinality = inputs[i]->Cardinality();
@@ -101,12 +102,12 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
             ctx,
             inputs[i]->Cardinality() == cardinality ||
                 inputs[i]->Cardinality() == kUnknownCardinality,
-            errors::InvalidArgument(
+            absl::InvalidArgumentError(absl::StrCat(
                 "All inputs to ChooseFastestDataset must have compatible "
                 "cardinalities. Input ",
                 i, " has cardinality: ", inputs[i]->Cardinality(),
                 ", while all prior inputs have cardinality: ", cardinality,
-                "."));
+                ".")));
       }
     }
     *output = new Dataset(ctx, std::move(inputs), output_types_, output_shapes_,
@@ -119,7 +120,7 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
     Dataset(OpKernelContext* ctx, std::vector<DatasetBase*> inputs,
             const DataTypeVector& output_types,
             const std::vector<PartialTensorShape>& output_shapes,
-            int64 cardinality, int64 num_experiments)
+            int64_t cardinality, int64_t num_experiments)
         : DatasetBase(DatasetContext(ctx)),
           inputs_(std::move(inputs)),
           output_types_(output_types),
@@ -138,10 +139,10 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
     }
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
-        const string& prefix) const override {
-      return absl::make_unique<ChooseFastestIterator>(
+        const std::string& prefix) const override {
+      return std::make_unique<ChooseFastestIterator>(
           ChooseFastestIterator::Params{
-              this, strings::StrCat(prefix, "::ChooseFastest")});
+              this, absl::StrCat(prefix, "::ChooseFastest")});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -152,23 +153,33 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
       return output_shapes_;
     }
 
-    string DebugString() const override {
+    std::string DebugString() const override {
       return "ChooseFastestDatasetOp::Dataset";
     }
 
-    int64 Cardinality() const override { return cardinality_; }
+    int64_t CardinalityInternal(CardinalityOptions options) const override {
+      return cardinality_;
+    }
 
-    Status CheckExternalState() const override {
+    absl::Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      for (const auto& input : inputs_) {
+        inputs->push_back(input);
+      }
+      return absl::OkStatus();
+    }
+
+    absl::Status CheckExternalState() const override {
       for (const auto& input : inputs_) {
         TF_RETURN_IF_ERROR(input->CheckExternalState());
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
 
    protected:
-    Status AsGraphDefInternal(SerializationContext* ctx,
-                              DatasetGraphDefBuilder* b,
-                              Node** output) const override {
+    absl::Status AsGraphDefInternal(SerializationContext* ctx,
+                                    DatasetGraphDefBuilder* b,
+                                    Node** output) const override {
       std::vector<Node*> input_nodes;
       input_nodes.reserve(inputs_.size());
       for (const auto& input : inputs_) {
@@ -191,21 +202,21 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
           : DatasetIterator<Dataset>(params),
             histograms_(dataset()->inputs_.size()) {}
 
-      Status Initialize(IteratorContext* ctx) override {
+      absl::Status Initialize(IteratorContext* ctx) override {
         mutex_lock l(mu_);
         input_impls_.resize(dataset()->inputs_.size());
         for (size_t i = 0, num_inputs = dataset()->inputs_.size();
              i < num_inputs; ++i) {
           TF_RETURN_IF_ERROR(dataset()->inputs_[i]->MakeIterator(
-              ctx, this, strings::StrCat(prefix(), "[", i, "]"),
+              ctx, this, absl::StrCat(prefix(), "[", i, "]"),
               &input_impls_[i]));
         }
-        return Status::OK();
+        return absl::OkStatus();
       }
 
-      Status GetNextInternal(IteratorContext* ctx,
-                             std::vector<Tensor>* out_tensors,
-                             bool* end_of_sequence) override {
+      absl::Status GetNextInternal(IteratorContext* ctx,
+                                   std::vector<Tensor>* out_tensors,
+                                   bool* end_of_sequence) override {
         mutex_lock l(mu_);
 
         // The first num_experiments_ iterations, we fire up a thread for
@@ -238,8 +249,8 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
       // TODO(rachelim): Save and restore histogram state as well. Currently,
       // if an iterator is saved and restored, the histograms start recording
       // from scratch.
-      Status SaveInternal(SerializationContext* ctx,
-                          IteratorStateWriter* writer) override {
+      absl::Status SaveInternal(SerializationContext* ctx,
+                                IteratorStateWriter* writer) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(writer->WriteScalar(full_name("experiment_counter"),
                                                experiment_counter_));
@@ -256,11 +267,11 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
             TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl));
           }
         }
-        return Status::OK();
+        return absl::OkStatus();
       }
 
-      Status RestoreInternal(IteratorContext* ctx,
-                             IteratorStateReader* reader) override {
+      absl::Status RestoreInternal(IteratorContext* ctx,
+                                   IteratorStateReader* reader) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(reader->ReadScalar(full_name("experiment_counter"),
                                               &experiment_counter_));
@@ -268,7 +279,7 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
             reader->ReadScalar(full_name("fastest_index"), &fastest_index_));
         if (fastest_index_ != -1) {
           TF_RETURN_IF_ERROR(dataset()->inputs_[fastest_index_]->MakeIterator(
-              ctx, this, strings::StrCat(prefix(), "[", fastest_index_, "]"),
+              ctx, this, absl::StrCat(prefix(), "[", fastest_index_, "]"),
               &fastest_input_impl_));
           TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, fastest_input_impl_));
         } else if (reader->Contains(full_name("input_impls_empty"))) {
@@ -279,13 +290,13 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
             TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl));
           }
         }
-        return Status::OK();
+        return absl::OkStatus();
       }
 
      private:
       struct InvocationResult {
-        Notification notification;
-        Status status;
+        absl::Notification notification;
+        absl::Status status;
         bool end_of_sequence;
         std::vector<Tensor> out_tensors;
       };
@@ -301,17 +312,17 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
       std::vector<histogram::Histogram> histograms_;
 
       mutex mu_;
-      int64 experiment_counter_ TF_GUARDED_BY(mu_) = 0;
-      int64 fastest_index_ = -1;
+      int64_t experiment_counter_ TF_GUARDED_BY(mu_) = 0;
+      int64_t fastest_index_ = -1;
 
       std::vector<ThreadInfo> StartThreads(IteratorContext* ctx)
           TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
         std::vector<ThreadInfo> threads(dataset()->inputs_.size());
         for (size_t i = 0, num_inputs = dataset()->inputs_.size();
              i < num_inputs; ++i) {
-          threads[i].result = absl::make_unique<InvocationResult>();
+          threads[i].result = std::make_unique<InvocationResult>();
           threads[i].thread = ctx->StartThread(
-              strings::StrCat("tf_data_merge_", i),
+              absl::StrCat("tf_data_merge_", i),
               std::bind(&ChooseFastestIterator::RunnerThread, this, ctx,
                         threads[i].result.get(), i));
         }
@@ -321,9 +332,9 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
       void RunnerThread(IteratorContext* ctx, InvocationResult* result, int i) {
         RecordStart(ctx);
         auto cleanup = gtl::MakeCleanup([this, ctx]() { RecordStop(ctx); });
-        int64 start = EnvTime::NowNanos();
-        Status s = input_impls_[i]->GetNext(ctx, &result->out_tensors,
-                                            &result->end_of_sequence);
+        int64_t start = EnvTime::NowNanos();
+        absl::Status s = input_impls_[i]->GetNext(ctx, &result->out_tensors,
+                                                  &result->end_of_sequence);
         histograms_[i].Add(static_cast<double>(EnvTime::NowNanos() - start));
 
         result->status = s;
@@ -359,11 +370,11 @@ class ChooseFastestDatasetOp : public DatasetOpKernel {
     const std::vector<DatasetBase*> inputs_;
     const DataTypeVector output_types_;
     const std::vector<PartialTensorShape> output_shapes_;
-    const int64 cardinality_;
-    const int64 num_experiments_;
+    const int64_t cardinality_;
+    const int64_t num_experiments_;
   };  // class Dataset
 
-  int64 num_experiments_;
+  int64_t num_experiments_;
   DataTypeVector output_types_;
   std::vector<PartialTensorShape> output_shapes_;
 };  // class ChooseFastestDatasetOp

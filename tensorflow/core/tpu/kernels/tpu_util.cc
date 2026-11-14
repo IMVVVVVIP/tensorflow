@@ -14,39 +14,19 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/tpu/kernels/tpu_util.h"
 
-#include "absl/strings/str_split.h"
-#include "tensorflow/core/platform/random.h"
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+#include "absl/status/status.h"
+#include "tensorflow/compiler/tf2xla/xla_compiler.h"
+#include "xla/client/compile_only_client.h"
+#include "xla/shape.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
 
 namespace tensorflow {
 namespace tpu {
-
-std::string SessionNameFromMetadata(const SessionMetadata* session_metadata) {
-  return session_metadata ? session_metadata->name() : "";
-}
-
-std::string ProtoKeyForComputation(const std::string& key, int core) {
-  return absl::StrCat(key, ":", core);
-}
-
-xla::StatusOr<TpuCompilationCacheKey> ParseCompilationCacheKey(
-    const std::string& key) {
-  const std::vector<std::string> splits = absl::StrSplit(key, '|');
-  if (splits.size() == 1) {
-    // No guaranteed_const.
-    return TpuCompilationCacheKey(key);
-  } else if (splits.size() != 3) {
-    return errors::InvalidArgument("Invalid TPU compilation cache key:", key);
-  }
-
-  TpuCompilationCacheKey parsed_key(splits.at(0));
-  parsed_key.has_guaranteed_const = true;
-  parsed_key.session_handle = splits.at(1);
-  const string fingerprint = splits.at(2);
-  parsed_key.guaranteed_const_fingerprint = [fingerprint] {
-    return fingerprint;
-  };
-  return parsed_key;
-}
 
 xla::CompileOnlyClient::AotXlaComputationInstance
 BuildAotXlaComputationInstance(
@@ -60,40 +40,20 @@ BuildAotXlaComputationInstance(
   return instance;
 }
 
-Status ShapeTensorToTensorShape(const Tensor& tensor, TensorShape* shape) {
+absl::Status ShapeTensorToTensorShape(const Tensor& tensor,
+                                      TensorShape* shape) {
   if (tensor.dtype() != DT_INT64 ||
       !TensorShapeUtils::IsVector(tensor.shape())) {
-    return errors::InvalidArgument("Shape tensor must be an int64 vector.");
+    return absl::InvalidArgumentError("Shape tensor must be an int64 vector.");
   }
-  const int64 rank = tensor.NumElements();
-  auto tensor_dims = tensor.flat<int64>();
-  std::vector<int64> dims(rank);
-  for (int64 i = 0; i < rank; ++i) {
+  const int64_t rank = tensor.NumElements();
+  auto tensor_dims = tensor.flat<int64_t>();
+  std::vector<int64_t> dims(rank);
+  for (int64_t i = 0; i < rank; ++i) {
     dims[i] = tensor_dims(i);
   }
   return TensorShapeUtils::MakeShape(dims, shape);
 }
 
-Status DynamicShapesToTensorShapes(const OpInputList& dynamic_shapes,
-                                   std::vector<TensorShape>* shapes) {
-  shapes->resize(dynamic_shapes.size());
-  for (int i = 0; i < dynamic_shapes.size(); ++i) {
-    TF_RETURN_IF_ERROR(
-        ShapeTensorToTensorShape(dynamic_shapes[i], &(*shapes)[i]));
-  }
-  return Status::OK();
-}
-
-Status DynamicShapesToTensorShapes(const InputList& dynamic_shapes,
-                                   std::vector<TensorShape>* shapes) {
-  shapes->resize(dynamic_shapes.end() - dynamic_shapes.begin());
-  size_t i = 0;
-  for (auto& dynamic_shape : dynamic_shapes) {
-    TF_RETURN_IF_ERROR(
-        ShapeTensorToTensorShape(dynamic_shape.tensor(), &(*shapes)[i]));
-    ++i;
-  }
-  return Status::OK();
-}
 }  // namespace tpu
 }  // namespace tensorflow

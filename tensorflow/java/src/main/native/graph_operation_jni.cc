@@ -14,7 +14,10 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/java/src/main/native/graph_operation_jni.h"
+
+#include <cstdint>
 #include <memory>
+
 #include "tensorflow/c/c_api.h"
 #include "tensorflow/java/src/main/native/exception_jni.h"
 
@@ -98,11 +101,10 @@ JNIEXPORT jlongArray JNICALL Java_org_tensorflow_GraphOperation_shape(
   TF_Output output{op, output_index};
   TF_Status* status = TF_NewStatus();
   jsize num_dims = TF_GraphGetTensorNumDims(graph, output, status);
-  if (!throwExceptionIfNotOK(env, status)) {
+  if (!throwExceptionIfNotOK(env, status) || num_dims < 0) {
     TF_DeleteStatus(status);
     return nullptr;
   }
-  if (num_dims < 0) return nullptr;
   static_assert(sizeof(jlong) == sizeof(int64_t),
                 "Java long is not compatible with the TensorFlow C API");
   // One might have trivially wanted to do:

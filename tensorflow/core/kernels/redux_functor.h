@@ -18,8 +18,8 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#include "third_party/eigen3/Eigen/Core"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "Eigen/Core"  // from @eigen_archive
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/platform/types.h"
@@ -38,7 +38,7 @@ namespace functor {
 template <typename InputT, typename AccumT, typename OutputT,
           typename BinaryFunctor>
 struct ReduceOuterDimensions {
-  ReduceOuterDimensions() {}
+  ReduceOuterDimensions() = default;
 
   template <int num_dims>
   void operator()(const CPUDevice& device,
@@ -206,7 +206,7 @@ struct ReduceOuterDimensions {
 template <typename InputT, typename AccumT, typename OutputT,
           typename BinaryFunctor, typename Reducer>
 struct ReduceMiddleDimensions {
-  ReduceMiddleDimensions() {}
+  ReduceMiddleDimensions() = default;
 
   template <int num_dims>
   void operator()(const CPUDevice& device,
@@ -229,11 +229,6 @@ struct ReduceMiddleDimensions {
       output->template flat<OutputT>() =
           input.template flat<InputT>().template cast<OutputT>().reshape(
               output_dims);
-      return;
-    } else if (1 == inner_dim) {
-      // Equivalent to ReduceOuterDimensions.
-      const ReduceOuterDimensions<InputT, AccumT, OutputT, BinaryFunctor> redux;
-      redux(device, input_dims, input, output);
       return;
     }
 

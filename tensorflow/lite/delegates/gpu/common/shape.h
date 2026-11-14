@@ -16,17 +16,16 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_GPU_COMMON_SHAPE_H_
 #define TENSORFLOW_LITE_DELEGATES_GPU_COMMON_SHAPE_H_
 
-#include <sys/types.h>
+#include <stddef.h>
+#include <stdint.h>
 
-#include <algorithm>
 #include <array>
 #include <functional>
 #include <numeric>
+#include <ostream>
 #include <string>
 #include <utility>
 #include <vector>
-
-#include "absl/hash/hash.h"
 
 namespace tflite {
 namespace gpu {
@@ -43,7 +42,7 @@ enum class Axis {
   DEPTH = 8,
 };
 
-std::string ToString(Axis t);
+std::string ToString(Axis axis);
 
 // Layout represents axis order.
 enum class Layout {
@@ -62,6 +61,7 @@ enum class Layout {
   BHWDC = 12,
   HWD = 13,
   OHWDI = 14,
+  HWIO = 15,
 };
 
 std::string ToString(Layout l);
@@ -128,7 +128,7 @@ struct Shape {
   bool has(Axis axis) const { return HasAxis(layout, axis); }
 
   int64_t DimensionsProduct() const {
-    return std::accumulate(dimensions.begin(), dimensions.end(), 1ll,
+    return std::accumulate(dimensions.begin(), dimensions.end(), 1LL,
                            std::multiplies<int64_t>());
   }
 
@@ -204,6 +204,7 @@ using OIHW = StrongShape<Layout::OIHW>;
 using OHWI = StrongShape<Layout::OHWI>;
 using IHWO = StrongShape<Layout::IHWO>;
 using IOHW = StrongShape<Layout::IOHW>;
+using HWIO = StrongShape<Layout::HWIO>;
 
 // Tensor shape used in convolution_3d weights.
 using OHWDI = StrongShape<Layout::OHWDI>;
@@ -375,6 +376,8 @@ TFLITE_GPU_LAYOUT_TRAITS(BHWDC, Axis::BATCH, Axis::HEIGHT, Axis::WIDTH,
                          Axis::DEPTH, Axis::CHANNELS);
 TFLITE_GPU_LAYOUT_TRAITS(OHWDI, Axis::OUTPUT_CHANNELS, Axis::HEIGHT,
                          Axis::WIDTH, Axis::DEPTH, Axis::INPUT_CHANNELS);
+TFLITE_GPU_LAYOUT_TRAITS(HWIO, Axis::HEIGHT, Axis::WIDTH, Axis::INPUT_CHANNELS,
+                         Axis::OUTPUT_CHANNELS);
 
 #undef TFLITE_GPU_LAYOUT_TRAITS
 
@@ -620,6 +623,8 @@ auto DispatchByLayout(Layout type, F f)
       return f.template operator()<Layout::BHWDC>();
     case Layout::OHWDI:
       return f.template operator()<Layout::OHWDI>();
+    case Layout::HWIO:
+      return f.template operator()<Layout::HWIO>();
     case Layout::UNKNOWN:
       return f.template operator()<Layout::UNKNOWN>();
   }
@@ -665,6 +670,12 @@ inline bool Shape::set(int32_t t) {
 inline bool Shape::set(Axis axis, int32_t t) {
   return DispatchByLayout(layout,
                           internal_shape::DimensionSetterFunc{axis, this, t});
+}
+
+template <Layout T>
+std::ostream& operator<<(std::ostream& ostream, const StrongShape<T>& shape) {
+  ostream << ToString(shape);
+  return ostream;
 }
 
 }  // namespace gpu

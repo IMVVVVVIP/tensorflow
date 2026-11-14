@@ -56,8 +56,11 @@ namespace grappler {
 
 class UniqueNodes {
  public:
+  // Warning: This is conservative and may fail to find an identical node in
+  // some cases. This happens if the node has large attribute tensor values that
+  // have different proto encoding but identical tensor value.
   NodeDef* FindOrAddRepresentative(NodeDef* node) {
-    uint64 sig = ComputeSignature(*node);
+    uint64_t sig = ComputeSignature(*node);
     std::vector<NodeDef*>& candidates = rep_[sig];
     for (auto& candidate : candidates) {
       if ((candidate == node) || SameNode(*candidate, *node)) {
@@ -84,29 +87,29 @@ class UniqueNodes {
   }
 
  private:
-  uint64 ComputeSignature(const NodeDef& node);
+  uint64_t ComputeSignature(const NodeDef& node);
   bool SameNode(const NodeDef& node1, const NodeDef& node2) const;
 
-  absl::flat_hash_map<uint64, std::vector<NodeDef*>> rep_;
-  absl::flat_hash_map<const NodeDef*, uint64> memoized_signatures_;
+  absl::flat_hash_map<uint64_t, std::vector<NodeDef*>> rep_;
+  absl::flat_hash_map<const NodeDef*, uint64_t> memoized_signatures_;
 };
 
-uint64 UniqueNodes::ComputeSignature(const NodeDef& node) {
+uint64_t UniqueNodes::ComputeSignature(const NodeDef& node) {
   auto it = memoized_signatures_.find(&node);
   if (it != memoized_signatures_.end()) return it->second;
 
-  uint64 h = Hash64(node.op());
+  uint64_t h = Hash64(node.op());
   h = Hash64Combine(Hash64(node.device()), h);
 
   for (const auto& input : node.input()) {
     const TensorId input_tensor = ParseTensorName(input);
-    uint64 input_hash = Hash64Combine(
+    uint64_t input_hash = Hash64Combine(
         Hash64(input_tensor.node().data(), input_tensor.node().size()),
         std::hash<int>()(input_tensor.index()));
     h = Hash64CombineUnordered(input_hash, h);
   }
   for (const auto& attr : node.attr()) {
-    uint64 attr_hash =
+    uint64_t attr_hash =
         Hash64Combine(Hash64(attr.first), FastAttrValueHash(attr.second));
     h = Hash64CombineUnordered(attr_hash, h);
   }
@@ -142,7 +145,10 @@ bool UniqueNodes::SameNode(const NodeDef& node1, const NodeDef& node2) const {
   for (const auto& attr1 : node1.attr()) {
     auto it = node2.attr().find(attr1.first);
     if (it == node2.attr().end()) return false;
-    if (!FastAreAttrValuesEqual(attr1.second, it->second)) return false;
+    if (!AreAttrValuesEqual(attr1.second, it->second,
+                            /*allow_false_negatives=*/true)) {
+      return false;
+    }
   }
 
   return true;
@@ -155,7 +161,7 @@ bool CommonSubgraphElimination::CanDedup(const NodeDef& node) const {
   if (IsEnter(node) || IsExit(node)) {
     return false;
   }
-  if (node.device().find("SPU") != string::npos) {
+  if (node.device().find("SPU") != std::string::npos) {
     return false;
   }
   // Workaround for Assert and Print mistakenly being labeled as stateful.
@@ -165,13 +171,14 @@ bool CommonSubgraphElimination::CanDedup(const NodeDef& node) const {
   return IsFreeOfSideEffect(node);
 }
 
-Status CommonSubgraphElimination::DedupComputations(GraphDef* optimized_graph) {
+absl::Status CommonSubgraphElimination::DedupComputations(
+    GraphDef* optimized_graph) {
   CanonicalizeGraph(optimized_graph);
 
   GraphTopologyView graph_view;
   if (!graph_view.InitializeFromGraph(*optimized_graph).ok()) {
     LOG(WARNING) << "Failed to initialize GraphTopologyView.";
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // If either node or rep feeds an inplace op, deduping them may cause data
@@ -223,7 +230,7 @@ Status CommonSubgraphElimination::DedupComputations(GraphDef* optimized_graph) {
         // Update consumers of node.
         bool updated_fanout = false;
         for (int i = 0; i < fanout->input_size(); ++i) {
-          string* fanout_input = fanout->mutable_input(i);
+          std::string* fanout_input = fanout->mutable_input(i);
 
           const int position =
               NodePositionIfSameNode(*fanout_input, node->name());
@@ -238,11 +245,11 @@ Status CommonSubgraphElimination::DedupComputations(GraphDef* optimized_graph) {
             }
             updated_fanout = true;
             if (position > 0) {
-              *fanout_input = StrCat(rep->name(), ":", position);
+              *fanout_input = absl::StrCat(rep->name(), ":", position);
             } else if (position == 0) {
               *fanout_input = rep->name();
             } else {
-              *fanout_input = StrCat("^", rep->name());
+              *fanout_input = absl::StrCat("^", rep->name());
             }
           }
         }
@@ -264,12 +271,12 @@ Status CommonSubgraphElimination::DedupComputations(GraphDef* optimized_graph) {
     EraseNodesFromGraph(duplicates, optimized_graph);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status CommonSubgraphElimination::Optimize(Cluster* /*cluster*/,
-                                           const GrapplerItem& item,
-                                           GraphDef* optimized_graph) {
+absl::Status CommonSubgraphElimination::Optimize(Cluster* /*cluster*/,
+                                                 const GrapplerItem& item,
+                                                 GraphDef* optimized_graph) {
   // Set up helper data structures.
   nodes_to_preserve_ = item.NodesToPreserve();
   fetch_nodes_known_ = !item.fetch.empty();
@@ -281,13 +288,6 @@ Status CommonSubgraphElimination::Optimize(Cluster* /*cluster*/,
   GRAPPLER_RETURN_IF_DEADLINE_EXCEEDED();
 
   return DedupComputations(optimized_graph);
-}
-
-void CommonSubgraphElimination::Feedback(Cluster* /*cluster*/,
-                                         const GrapplerItem& /*item*/,
-                                         const GraphDef& /*optimized_graph*/,
-                                         double /*result*/) {
-  // Nothing to do for ArithmeticOptimizer.
 }
 
 }  // namespace grappler

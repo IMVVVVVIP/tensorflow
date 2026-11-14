@@ -14,6 +14,8 @@ limitations under the License.
 ==============================================================================*/
 // See docs in ../ops/data_flow_ops.cc.
 
+#include "tensorflow/core/kernels/priority_queue.h"
+
 #include <deque>
 #include <queue>
 #include <vector>
@@ -22,7 +24,6 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/kernels/priority_queue.h"
 #include "tensorflow/core/kernels/queue_base.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/gtl/priority_queue_util.h"
@@ -33,38 +34,38 @@ limitations under the License.
 
 namespace tensorflow {
 
-PriorityQueue::PriorityQueue(int32 capacity,
+PriorityQueue::PriorityQueue(int32_t capacity,
                              const DataTypeVector& component_dtypes,
                              const std::vector<TensorShape>& component_shapes,
-                             const string& name)
+                             const std::string& name)
     : TypedQueue(capacity, component_dtypes, component_shapes, name) {}
 
-Status PriorityQueue::Initialize() {
-  Status s = TypedQueue::Initialize();
+absl::Status PriorityQueue::Initialize() {
+  absl::Status s = TypedQueue::Initialize();
   if (!s.ok()) return s;
 
   mutex_lock lock(mu_);
   if (component_dtypes_[0] != DT_INT64) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "PriorityQueue priority index component must be type int64, but "
         "dtype is: ",
-        DataTypeString(component_dtypes_[0]));
+        DataTypeString(component_dtypes_[0])));
   }
   if (specified_shapes() && !TensorShapeUtils::IsScalar(component_shapes_[0])) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "PriorityQueue priority index component must be a scalar, but shape "
         "is: ",
-        component_shapes_[0].DebugString());
+        component_shapes_[0].DebugString()));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void PriorityQueue::DequeueLocked(OpKernelContext* ctx, Tuple* tuple) {
   DCHECK_GT(queues_[0].size(), 0);
   (*tuple).reserve(num_components());
   for (int i = 0; i < num_components(); ++i) {
-    PersistentTensor persistent_tensor = gtl::ConsumeTop(&queues_[i]).second;
-    (*tuple).push_back(*persistent_tensor.AccessTensor(ctx));
+    Tensor tensor = gtl::ConsumeTop(&queues_[i]).second;
+    (*tuple).push_back(tensor);
   }
 }
 
@@ -82,21 +83,22 @@ void PriorityQueue::TryEnqueue(const Tuple& tuple, OpKernelContext* ctx,
           1, callback, ctx, cm, token,
           [tuple, this](Attempt* attempt) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
             if (closed_) {
-              attempt->context->SetStatus(
-                  errors::Cancelled("PriorityQueue '", name_, "' is closed."));
+              attempt->context->SetStatus(absl::CancelledError(
+                  absl::StrCat("PriorityQueue '", name_, "' is closed.")));
               return kComplete;
             }
             if (queues_[0].size() < static_cast<size_t>(capacity_)) {
               if (!TensorShapeUtils::IsScalar(tuple[0].shape())) {
-                attempt->context->SetStatus(errors::InvalidArgument(
-                    "Expected the priority element to be a scalar, but "
-                    "received shape: ",
-                    tuple[0].shape().DebugString()));
+                attempt->context->SetStatus(
+                    absl::InvalidArgumentError(absl::StrCat(
+                        "Expected the priority element to be a scalar, but "
+                        "received shape: ",
+                        tuple[0].shape().DebugString())));
                 return kComplete;
               }
-              const int64 priority = tuple[0].scalar<int64>()();
+              const int64_t priority = tuple[0].scalar<int64_t>()();
               for (int i = 0; i < num_components(); ++i) {
-                queues_[i].emplace(priority, PersistentTensor(tuple[i]));
+                queues_[i].emplace(priority, tuple[i]);
               }
               return kComplete;
             } else {
@@ -108,28 +110,27 @@ void PriorityQueue::TryEnqueue(const Tuple& tuple, OpKernelContext* ctx,
   if (!already_cancelled) {
     FlushUnlocked();
   } else {
-    ctx->SetStatus(errors::Cancelled("Enqueue operation was cancelled"));
+    ctx->SetStatus(absl::CancelledError("Enqueue operation was cancelled"));
     callback();
   }
 }
 
 /* static */
-Status PriorityQueue::GetElementComponentFromBatch(
+absl::Status PriorityQueue::GetElementComponentFromBatch(
     const PriorityQueue::Tuple& tuple, int index, int component,
-    OpKernelContext* ctx, PersistentTensor* out_tensor) {
+    OpKernelContext* ctx, Tensor* out_element) {
   TensorShape element_shape(tuple[component].shape());
   element_shape.RemoveDim(0);
-  Tensor* element_access = nullptr;
-  TF_RETURN_IF_ERROR(ctx->allocate_persistent(
-      tuple[component].dtype(), element_shape, out_tensor, &element_access));
   TF_RETURN_IF_ERROR(
-      batch_util::CopySliceToElement(tuple[component], element_access, index));
-  return Status::OK();
+      ctx->allocate_temp(tuple[component].dtype(), element_shape, out_element));
+  TF_RETURN_IF_ERROR(
+      batch_util::CopySliceToElement(tuple[component], out_element, index));
+  return absl::OkStatus();
 }
 
 void PriorityQueue::TryEnqueueMany(const Tuple& tuple, OpKernelContext* ctx,
                                    DoneCallback callback) {
-  const int64 batch_size = tuple[0].dim_size(0);
+  const int64_t batch_size = tuple[0].dim_size(0);
   if (batch_size == 0) {
     callback();
     return;
@@ -145,11 +146,10 @@ void PriorityQueue::TryEnqueueMany(const Tuple& tuple, OpKernelContext* ctx,
     if (!already_cancelled) {
       enqueue_attempts_.emplace_back(
           batch_size, callback, ctx, cm, token,
-          [tuple, this,
-           ctx](Attempt* attempt) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+          [tuple, this](Attempt* attempt) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
             if (closed_) {
-              attempt->context->SetStatus(
-                  errors::Cancelled("PriorityQueue '", name_, "' is closed."));
+              attempt->context->SetStatus(absl::CancelledError(
+                  absl::StrCat("PriorityQueue '", name_, "' is closed.")));
               return kComplete;
             }
             RunResult result = kNoProgress;
@@ -158,21 +158,21 @@ void PriorityQueue::TryEnqueueMany(const Tuple& tuple, OpKernelContext* ctx,
               const int index =
                   tuple[0].dim_size(0) - attempt->elements_requested;
 
-              PersistentTensor priority_element;
+              Tensor priority_element;
               attempt->context->SetStatus(GetElementComponentFromBatch(
                   tuple, index, 0, attempt->context, &priority_element));
               if (!attempt->context->status().ok()) return kComplete;
-              Tensor* priority_tensor = priority_element.AccessTensor(ctx);
-              if (!TensorShapeUtils::IsScalar(priority_tensor->shape())) {
-                attempt->context->SetStatus(errors::InvalidArgument(
-                    "Expected the priority element to be a scalar, but "
-                    "received shape: ",
-                    priority_tensor->shape().DebugString()));
+              if (!TensorShapeUtils::IsScalar(priority_element.shape())) {
+                attempt->context->SetStatus(
+                    absl::InvalidArgumentError(absl::StrCat(
+                        "Expected the priority element to be a scalar, but "
+                        "received shape: ",
+                        priority_element.shape().DebugString())));
                 return kComplete;
               }
-              const int64 priority = priority_tensor->scalar<int64>()();
+              const int64_t priority = priority_element.scalar<int64_t>()();
               for (int i = 0; i < num_components(); ++i) {
-                PersistentTensor element;
+                Tensor element;
                 attempt->context->SetStatus(GetElementComponentFromBatch(
                     tuple, index, i, attempt->context, &element));
                 if (!attempt->context->status().ok()) return kComplete;
@@ -190,7 +190,7 @@ void PriorityQueue::TryEnqueueMany(const Tuple& tuple, OpKernelContext* ctx,
   if (!already_cancelled) {
     FlushUnlocked();
   } else {
-    ctx->SetStatus(errors::Cancelled("Enqueue operation was cancelled"));
+    ctx->SetStatus(absl::CancelledError("Enqueue operation was cancelled"));
     callback();
   }
 }
@@ -209,12 +209,12 @@ void PriorityQueue::TryDequeue(OpKernelContext* ctx,
       dequeue_attempts_.emplace_back(
           1, [callback]() { callback(Tuple()); }, ctx, cm, token,
           [callback, this](Attempt* attempt) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-            const int32 s = queues_[0].size();
+            const int32_t s = queues_[0].size();
             if (closed_ && s == 0) {
-              attempt->context->SetStatus(errors::OutOfRange(
-                  "PriorityQueue '", name_, "' is closed and has ",
-                  "insufficient elements (requested ", 1, ", current size ", s,
-                  ")"));
+              attempt->context->SetStatus(absl::OutOfRangeError(
+                  absl::StrCat("PriorityQueue '", name_, "' is closed and has ",
+                               "insufficient elements (requested ", 1,
+                               ", current size ", s, ")")));
               return kComplete;
             }
             if (s > 0) {
@@ -231,7 +231,7 @@ void PriorityQueue::TryDequeue(OpKernelContext* ctx,
   if (!already_cancelled) {
     FlushUnlocked();
   } else {
-    ctx->SetStatus(errors::Cancelled("Dequeue operation was cancelled"));
+    ctx->SetStatus(absl::CancelledError("Dequeue operation was cancelled"));
     callback(Tuple());
   }
 }
@@ -241,8 +241,8 @@ void PriorityQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
                                    CallbackWithTuple callback) {
   if (!specified_shapes()) {
     ctx->SetStatus(
-        errors::InvalidArgument("PriorityQueue's DequeueMany requires the "
-                                "components to have specified shapes."));
+        absl::InvalidArgumentError("PriorityQueue's DequeueMany requires the "
+                                   "components to have specified shapes."));
     callback(Tuple());
     return;
   }
@@ -275,8 +275,8 @@ void PriorityQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
       // an optimized case where the queue 'knows' what attributes to
       // use, and plumbs them through here.
       Tensor element;
-      Status status = ctx->allocate_temp(component_dtypes_[i],
-                                         ManyOutShape(i, 0), &element);
+      absl::Status status = ctx->allocate_temp(component_dtypes_[i],
+                                               ManyOutShape(i, 0), &element);
       if (!status.ok()) {
         ctx->SetStatus(status);
         callback(Tuple());
@@ -301,7 +301,7 @@ void PriorityQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
           num_elements, [callback]() { callback(Tuple()); }, ctx, cm, token,
           [callback, this, allow_small_batch](
               Attempt* attempt) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-            int32 s = queues_[0].size();
+            int32_t s = queues_[0].size();
             // Return OutOfRange if closed and there are fewer elements
             // available than requested.  *Unless* allow_small_batch
             // is true, in which case we return as many elements as
@@ -309,10 +309,10 @@ void PriorityQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
             if (closed_) {
               if (s == 0 ||
                   (!allow_small_batch && s < attempt->elements_requested)) {
-                attempt->context->SetStatus(errors::OutOfRange(
+                attempt->context->SetStatus(absl::OutOfRangeError(absl::StrCat(
                     "PriorityQueue '", name_, "' is closed and has ",
                     "insufficient elements (requested ",
-                    attempt->elements_requested, ", current size ", s, ")"));
+                    attempt->elements_requested, ", current size ", s, ")")));
                 return kComplete;
               }
             }
@@ -381,52 +381,52 @@ void PriorityQueue::TryDequeueMany(int num_elements, OpKernelContext* ctx,
   if (!already_cancelled) {
     FlushUnlocked();
   } else {
-    ctx->SetStatus(errors::Cancelled("Dequeue operation was cancelled"));
+    ctx->SetStatus(absl::CancelledError("Dequeue operation was cancelled"));
     callback(Tuple());
   }
 }
 
-Status PriorityQueue::MatchesNodeDef(const NodeDef& node_def) {
+absl::Status PriorityQueue::MatchesNodeDef(const NodeDef& node_def) {
   if (!MatchesNodeDefOp(node_def, "PriorityQueue").ok() &&
       !MatchesNodeDefOp(node_def, "PriorityQueueV2").ok()) {
-    return errors::InvalidArgument("Expected PriorityQueue, found ",
-                                   node_def.op());
+    return absl::InvalidArgumentError(
+        absl::StrCat("Expected PriorityQueue, found ", node_def.op()));
   }
   TF_RETURN_IF_ERROR(MatchesNodeDefCapacity(node_def, capacity_));
   TF_RETURN_IF_ERROR(MatchesPriorityNodeDefTypes(node_def));
   TF_RETURN_IF_ERROR(MatchesPriorityNodeDefShapes(node_def));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status PriorityQueue::MatchesPriorityNodeDefTypes(
+absl::Status PriorityQueue::MatchesPriorityNodeDefTypes(
     const NodeDef& node_def) const {
   DataTypeVector requested_dtypes;
   TF_RETURN_IF_ERROR(
       GetNodeAttr(node_def, "component_types", &requested_dtypes));
   requested_dtypes.insert(requested_dtypes.begin(), DT_INT64);
   if (requested_dtypes != component_dtypes_) {
-    return errors::InvalidArgument("Shared queue '", name_,
-                                   "' has component types ",
-                                   DataTypeSliceString(component_dtypes_),
-                                   " but requested component types were ",
-                                   DataTypeSliceString(requested_dtypes));
+    return absl::InvalidArgumentError(
+        absl::StrCat("Shared queue '", name_, "' has component types ",
+                     DataTypeSliceString(component_dtypes_),
+                     " but requested component types were ",
+                     DataTypeSliceString(requested_dtypes)));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status PriorityQueue::MatchesPriorityNodeDefShapes(
+absl::Status PriorityQueue::MatchesPriorityNodeDefShapes(
     const NodeDef& node_def) const {
   std::vector<TensorShape> requested_shapes;
   TF_RETURN_IF_ERROR(GetNodeAttr(node_def, "shapes", &requested_shapes));
   requested_shapes.insert(requested_shapes.begin(), TensorShape({}));
   if (requested_shapes != component_shapes_) {
-    return errors::InvalidArgument("Shared queue '", name_,
-                                   "' has component shapes ",
-                                   ShapeListString(component_shapes_),
-                                   " but requested component shapes were ",
-                                   ShapeListString(requested_shapes));
+    return absl::InvalidArgumentError(
+        absl::StrCat("Shared queue '", name_, "' has component shapes ",
+                     ShapeListString(component_shapes_),
+                     " but requested component shapes were ",
+                     ShapeListString(requested_shapes)));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

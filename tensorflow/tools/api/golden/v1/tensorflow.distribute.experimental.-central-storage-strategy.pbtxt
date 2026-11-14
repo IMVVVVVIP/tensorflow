@@ -3,18 +3,18 @@ tf_class {
   is_instance: "<class \'tensorflow.python.distribute.central_storage_strategy.CentralStorageStrategyV1\'>"
   is_instance: "<class \'tensorflow.python.distribute.distribute_lib.StrategyV1\'>"
   is_instance: "<class \'tensorflow.python.distribute.distribute_lib.StrategyBase\'>"
-  is_instance: "<type \'object\'>"
+  is_instance: "<class \'object\'>"
   member {
     name: "cluster_resolver"
-    mtype: "<type \'property\'>"
+    mtype: "<class \'property\'>"
   }
   member {
     name: "extended"
-    mtype: "<type \'property\'>"
+    mtype: "<class \'property\'>"
   }
   member {
     name: "num_replicas_in_sync"
-    mtype: "<type \'property\'>"
+    mtype: "<class \'property\'>"
   }
   member_method {
     name: "__init__"
@@ -27,6 +27,10 @@ tf_class {
   member_method {
     name: "configure"
     argspec: "args=[\'self\', \'session_config\', \'cluster_spec\', \'task_type\', \'task_id\'], varargs=None, keywords=None, defaults=[\'None\', \'None\', \'None\', \'None\'], "
+  }
+  member_method {
+    name: "distribute_datasets_from_function"
+    argspec: "args=[\'self\', \'dataset_fn\', \'options\'], varargs=None, keywords=None, defaults=[\'None\'], "
   }
   member_method {
     name: "experimental_distribute_dataset"

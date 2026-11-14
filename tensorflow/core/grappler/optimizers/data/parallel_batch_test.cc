@@ -17,7 +17,9 @@ limitations under the License.
 
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/function_testlib.h"
+#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/grappler/grappler_item.h"
 #include "tensorflow/core/grappler/optimizers/data/graph_test_utils.h"
 #include "tensorflow/core/grappler/optimizers/data/graph_utils.h"
@@ -28,7 +30,7 @@ namespace tensorflow {
 namespace grappler {
 namespace {
 
-TEST(ParallelBatch, Batch) {
+TEST(ParallelBatch, BatchDataset) {
   using test::function::NDef;
   GrapplerItem item;
   item.graph = test::function::GDef(
@@ -50,7 +52,7 @@ TEST(ParallelBatch, Batch) {
   EXPECT_TRUE(output.node(index).attr().at("parallel_copy").b());
 }
 
-TEST(ParallelBatch, PaddedBatch) {
+TEST(ParallelBatch, PaddedBatchDataset) {
   using test::function::NDef;
   GrapplerItem item;
   item.graph = test::function::GDef(

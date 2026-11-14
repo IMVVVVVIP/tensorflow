@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 
@@ -54,7 +55,7 @@ REGISTER_OP("OutfeedDequeueTuple")
       TF_RETURN_IF_ERROR(c->GetAttr("shapes", &shapes));
       TF_RETURN_IF_ERROR(c->GetAttr("dtypes", &dtypes));
       if (shapes.size() != dtypes.size()) {
-        return errors::InvalidArgument(
+        return absl::InvalidArgumentError(
             "Incorrect number of output shapes specified");
       }
       for (int i = 0; i < shapes.size(); ++i) {
@@ -62,7 +63,41 @@ REGISTER_OP("OutfeedDequeueTuple")
         TF_RETURN_IF_ERROR(c->MakeShapeFromPartialTensorShape(shapes[i], &out));
         c->set_output(i, out);
       }
-      return Status::OK();
+      return absl::OkStatus();
+    });
+
+REGISTER_OP("OutfeedDequeueV2")
+    .Input("device_ordinal: int32")
+    .Output("output: dtype")
+    .Attr("dtype: type")
+    .Attr("shape: shape")
+    .SetIsStateful()
+    .SetShapeFn(shape_inference::ExplicitShape);
+
+REGISTER_OP("OutfeedDequeueTupleV2")
+    .Input("device_ordinal: int32")
+    .Output("outputs: dtypes")
+    .Attr("dtypes: list(type)")
+    .Attr("shapes: list(shape)")
+    .SetIsStateful()
+    .SetShapeFn([](InferenceContext* c) {
+      if (c->Rank(c->input(0)) != 0) {
+        return absl::InvalidArgumentError("device ordinal must be a scalar.");
+      }
+      std::vector<PartialTensorShape> shapes;
+      std::vector<DataType> dtypes;
+      TF_RETURN_IF_ERROR(c->GetAttr("shapes", &shapes));
+      TF_RETURN_IF_ERROR(c->GetAttr("dtypes", &dtypes));
+      if (shapes.size() != dtypes.size()) {
+        return absl::InvalidArgumentError(
+            "Incorrect number of output shapes specified");
+      }
+      for (int i = 0; i < shapes.size(); ++i) {
+        ShapeHandle out;
+        TF_RETURN_IF_ERROR(c->MakeShapeFromPartialTensorShape(shapes[i], &out));
+        c->set_output(i, out);
+      }
+      return absl::OkStatus();
     });
 
 }  // namespace tensorflow

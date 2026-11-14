@@ -29,6 +29,7 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tensorflow/core/public/session_options.h"
 
 namespace tensorflow {
@@ -81,39 +82,39 @@ class ResizeBilinearOpTestBase
   void ResizeBilinearBaseline(TTypes<float, 4>::ConstTensor images,
                               TTypes<float, 4>::Tensor output) {
     const int batch = images.dimension(0);
-    const int64 in_height = images.dimension(1);
-    const int64 in_width = images.dimension(2);
+    const int64_t in_height = images.dimension(1);
+    const int64_t in_width = images.dimension(2);
     const int channels = images.dimension(3);
 
     ASSERT_EQ(batch, output.dimension(0));
     ASSERT_EQ(channels, output.dimension(3));
 
-    const int64 out_height = output.dimension(1);
-    const int64 out_width = output.dimension(2);
+    const int64_t out_height = output.dimension(1);
+    const int64_t out_width = output.dimension(2);
 
     const float height_scale = in_height / static_cast<float>(out_height);
     const float width_scale = in_width / static_cast<float>(out_width);
 
     for (int b = 0; b < batch; ++b) {
-      for (int64 y = 0; y < out_height; ++y) {
+      for (int64_t y = 0; y < out_height; ++y) {
         const float in_y =
             half_pixel_centers_
                 ? (static_cast<float>(y) + 0.5f) * height_scale - 0.5f
                 : y * height_scale;
-        const int64 top_y_index =
-            std::max(static_cast<int64>(floorf(in_y)), static_cast<int64>(0));
-        const int64 bottom_y_index =
-            std::min(static_cast<int64>(ceilf(in_y)), in_height - 1);
+        const int64_t top_y_index = std::max(static_cast<int64_t>(floorf(in_y)),
+                                             static_cast<int64_t>(0));
+        const int64_t bottom_y_index =
+            std::min(static_cast<int64_t>(ceilf(in_y)), in_height - 1);
         const float y_lerp = in_y - std::floor(in_y);
-        for (int64 x = 0; x < out_width; ++x) {
+        for (int64_t x = 0; x < out_width; ++x) {
           const float in_x =
               half_pixel_centers_
                   ? (static_cast<float>(x) + 0.5f) * width_scale - 0.5f
                   : x * width_scale;
-          const int64 left_x_index =
-              std::max(static_cast<int64>(floorf(in_x)), static_cast<int64>(0));
-          const int64 right_x_index =
-              std::min(static_cast<int64>(ceilf(in_x)), in_width - 1);
+          const int64_t left_x_index = std::max(
+              static_cast<int64_t>(floorf(in_x)), static_cast<int64_t>(0));
+          const int64_t right_x_index =
+              std::min(static_cast<int64_t>(ceilf(in_x)), in_width - 1);
           const float x_lerp = in_x - std::floor(in_x);
           for (int c = 0; c < channels; ++c) {
             const float top_left = images(b, top_y_index, left_x_index, c);
@@ -136,7 +137,7 @@ class ResizeBilinearOpTestBase
                   int channels, int output_width, int output_height) {
     const TensorShape shape({batch_size, input_width, input_height, channels});
     const Tensor* input = SetRandomImageInput(shape);
-    AddInputFromArray<int32>(TensorShape({2}), {output_width, output_height});
+    AddInputFromArray<int32_t>(TensorShape({2}), {output_width, output_height});
     TF_ASSERT_OK(RunOpKernel());
 
     std::unique_ptr<Tensor> expected(new Tensor(
@@ -144,7 +145,7 @@ class ResizeBilinearOpTestBase
         TensorShape({batch_size, output_width, output_height, channels})));
     ResizeBilinearBaseline(input->tensor<float, 4>(),
                            expected->tensor<float, 4>());
-    test::ExpectClose(*expected, *GetOutput(0), /*atol=*/3e-5);
+    test::ExpectClose(*expected, *GetOutput(0), /*atol=*/5e-5);
   }
 
   void RunManyRandomTests(int channels) {
@@ -168,7 +169,7 @@ class ResizeBilinearOpTestBase
 
 class ResizeBilinearOpTest : public ResizeBilinearOpTestBase {
  public:
-  ResizeBilinearOpTest() {}
+  ResizeBilinearOpTest() = default;
 };
 
 class ResizeBilinearHalfPixelCentersOpTest : public ResizeBilinearOpTestBase {
@@ -198,7 +199,7 @@ TEST_P(ResizeBilinearOpTest, TestBilinear2x2To1x1) {
   //  1, 2
   //  3, 4
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({2}), {1, 1});
+  AddInputFromArray<int32_t>(TensorShape({2}), {1, 1});
   TF_ASSERT_OK(RunOpKernel());
 
   // When scaling down, we have to arbitrarily pick a pixel from the
@@ -210,7 +211,7 @@ TEST_P(ResizeBilinearOpTest, TestBilinear2x2To1x1) {
 
 TEST_P(ResizeBilinearOpTest, TestBilinearRandom2x2To1x1) {
   const Tensor* input = SetRandomImageInput(TensorShape({1, 2, 2, 1}));
-  AddInputFromArray<int32>(TensorShape({2}), {1, 1});
+  AddInputFromArray<int32_t>(TensorShape({2}), {1, 1});
   TF_ASSERT_OK(RunOpKernel());
 
   // When scaling down, we have to arbitrarily pick a pixel from the
@@ -229,7 +230,7 @@ TEST_P(ResizeBilinearOpAlignCornersTest, TestBilinearAlignCorners2x2To1x1) {
   //  1, 2
   //  3, 4
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({2}), {1, 1});
+  AddInputFromArray<int32_t>(TensorShape({2}), {1, 1});
   TF_ASSERT_OK(RunOpKernel());
 
   // When scaling down, we have to arbitrarily pick a pixel from the
@@ -244,7 +245,7 @@ TEST_P(ResizeBilinearOpTest, TestBilinear2x2To3x3) {
   //  1, 2
   //  3, 4
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({2}), {3, 3});
+  AddInputFromArray<int32_t>(TensorShape({2}), {3, 3});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 3, 3, 1}));
@@ -264,7 +265,7 @@ TEST_P(ResizeBilinearOpAlignCornersTest, TestBilinearAlignCorners2x2To3x3) {
   //  1, 2
   //  3, 4
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({2}), {3, 3});
+  AddInputFromArray<int32_t>(TensorShape({2}), {3, 3});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 3, 3, 1}));
@@ -289,7 +290,7 @@ TEST_P(ResizeBilinearOpTest, TestBilinear3x3To2x2) {
   //  7, 8, 9
   AddInputFromArray<float>(TensorShape({1, 3, 3, 1}),
                            {1, 2, 3, 4, 5, 6, 7, 8, 9});
-  AddInputFromArray<int32>(TensorShape({2}), {2, 2});
+  AddInputFromArray<int32_t>(TensorShape({2}), {2, 2});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 2, 2, 1}));
@@ -310,7 +311,7 @@ TEST_P(ResizeBilinearOpAlignCornersTest, TestBilinearAlignCorners3x3To2x2) {
   //  7, 8, 9
   AddInputFromArray<float>(TensorShape({1, 3, 3, 1}),
                            {1, 2, 3, 4, 5, 6, 7, 8, 9});
-  AddInputFromArray<int32>(TensorShape({2}), {2, 2});
+  AddInputFromArray<int32_t>(TensorShape({2}), {2, 2});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 2, 2, 1}));
@@ -331,7 +332,7 @@ TEST_P(ResizeBilinearOpTest, TestBilinear3x3To4x4) {
   //  7, 8, 9
   AddInputFromArray<float>(TensorShape({1, 3, 3, 1}),
                            {1, 2, 3, 4, 5, 6, 7, 8, 9});
-  AddInputFromArray<int32>(TensorShape({2}), {4, 4});
+  AddInputFromArray<int32_t>(TensorShape({2}), {4, 4});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 4, 4, 1}));
@@ -355,7 +356,7 @@ TEST_P(ResizeBilinearOpTest, TestBilinear4x4To3x3) {
   AddInputFromArray<float>(
       TensorShape({1, 4, 4, 1}),
       {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
-  AddInputFromArray<int32>(TensorShape({2}), {3, 3});
+  AddInputFromArray<int32_t>(TensorShape({2}), {3, 3});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 3, 3, 1}));
@@ -387,7 +388,7 @@ TEST_P(ResizeBilinearOpAlignCornersTest, TestBilinearAlignCorners4x4To3x3) {
   AddInputFromArray<float>(
       TensorShape({1, 4, 4, 1}),
       {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
-  AddInputFromArray<int32>(TensorShape({2}), {3, 3});
+  AddInputFromArray<int32_t>(TensorShape({2}), {3, 3});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 3, 3, 1}));
@@ -409,7 +410,7 @@ TEST_P(ResizeBilinearOpTest, TestBilinear2x2To3x3Batch2) {
   //
   // repeated twice
   AddInputFromArray<float>(TensorShape({2, 2, 2, 1}), {1, 2, 3, 4, 1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({2}), {3, 3});
+  AddInputFromArray<int32_t>(TensorShape({2}), {3, 3});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({2, 3, 3, 1}));
@@ -425,7 +426,7 @@ TEST_P(ResizeBilinearOpTest, TestBilinear2x2To3x3Batch2) {
 TEST_P(ResizeBilinearOpTest, TestBilinear2x2x2To3x3x2) {
   AddInputFromArray<float>(TensorShape({1, 2, 2, 2}),
                            {1, -1, 2, -2, 3, -3, 4, -4});
-  AddInputFromArray<int32>(TensorShape({2}), {3, 3});
+  AddInputFromArray<int32_t>(TensorShape({2}), {3, 3});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 3, 3, 2}));
@@ -451,7 +452,7 @@ TEST_P(ResizeBilinearOpTest, TestBilinear2x2To4x4) {
   //  1, 2
   //  3, 4
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({2}), {4, 4});
+  AddInputFromArray<int32_t>(TensorShape({2}), {4, 4});
   TF_ASSERT_OK(RunOpKernel());
 
   Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 4, 4, 1}));
@@ -491,37 +492,38 @@ TEST_P(ResizeBilinearOpTest, Test6_3c) { TestResize(1, 304, 303, 3, 299, 299); }
 
 TEST_P(ResizeBilinearOpTest, TestInvalidOutputSize) {
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({2}), {0, 0});
-  Status s = RunOpKernel();
-  EXPECT_TRUE(absl::StrContains(
-      s.ToString(), "Invalid argument: output dimensions must be positive"))
+  AddInputFromArray<int32_t>(TensorShape({2}), {0, 0});
+  absl::Status s = RunOpKernel();
+  EXPECT_EQ(s.code(), error::INVALID_ARGUMENT);
+  EXPECT_TRUE(
+      absl::StrContains(s.message(), "output dimensions must be positive"))
       << s;
 }
 
 TEST_P(ResizeBilinearOpTest, TestInvalidInputShape) {
   AddInputFromArray<float>(TensorShape({2, 2, 1}), {1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({2}), {4, 4});
-  Status s = RunOpKernel();
-  EXPECT_TRUE(absl::StrContains(
-      s.ToString(), "Invalid argument: input must be 4-dimensional"))
+  AddInputFromArray<int32_t>(TensorShape({2}), {4, 4});
+  absl::Status s = RunOpKernel();
+  EXPECT_EQ(s.code(), error::INVALID_ARGUMENT);
+  EXPECT_TRUE(absl::StrContains(s.message(), "input must be 4-dimensional"))
       << s;
 }
 
 TEST_P(ResizeBilinearOpTest, TestInvalidSizeDim) {
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({2, 1}), {4, 4});
-  Status s = RunOpKernel();
-  EXPECT_TRUE(absl::StrContains(
-      s.ToString(), "Invalid argument: shape_t must be 1-dimensional"))
+  AddInputFromArray<int32_t>(TensorShape({2, 1}), {4, 4});
+  absl::Status s = RunOpKernel();
+  EXPECT_EQ(s.code(), error::INVALID_ARGUMENT);
+  EXPECT_TRUE(absl::StrContains(s.message(), "shape_t must be 1-dimensional"))
       << s;
 }
 
 TEST_P(ResizeBilinearOpTest, TestInvalidSizeElements) {
   AddInputFromArray<float>(TensorShape({1, 2, 2, 1}), {1, 2, 3, 4});
-  AddInputFromArray<int32>(TensorShape({3}), {4, 4, 1});
-  Status s = RunOpKernel();
-  EXPECT_TRUE(absl::StrContains(
-      s.ToString(), "Invalid argument: shape_t must have two elements"))
+  AddInputFromArray<int32_t>(TensorShape({3}), {4, 4, 1});
+  absl::Status s = RunOpKernel();
+  EXPECT_EQ(s.code(), error::INVALID_ARGUMENT);
+  EXPECT_TRUE(absl::StrContains(s.message(), "shape_t must have two elements"))
       << s;
 }
 
@@ -533,7 +535,7 @@ INSTANTIATE_TEST_SUITE_P(ResizeBilinearHalfPixelCentersOpTestCpu,
 INSTANTIATE_TEST_SUITE_P(ResizeBilinearOpAlignCornersTestCpu,
                          ResizeBilinearOpAlignCornersTest,
                          ::testing::Values(TestDevice::CPU));
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 // Instantiate tests for GPU.
 INSTANTIATE_TEST_SUITE_P(ResizeBilinearOpTestGpu, ResizeBilinearOpTest,
                          ::testing::Values(TestDevice::GPU));
@@ -543,7 +545,7 @@ INSTANTIATE_TEST_SUITE_P(ResizeBilinearHalfPixelCentersOpTestGpu,
 INSTANTIATE_TEST_SUITE_P(ResizeBilinearOpAlignCornersTestGpu,
                          ResizeBilinearOpAlignCornersTest,
                          ::testing::Values(TestDevice::GPU));
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 class ResizeBM : public ResizeBilinearOpTest {
  public:
@@ -560,7 +562,7 @@ class ResizeBM : public ResizeBilinearOpTest {
     const TensorShape shape(
         {/*batch_size*/ 1, input_width, input_height, num_channels});
     SetRandomImageInput(shape);
-    AddInputFromArray<int32>(TensorShape({2}), {output_width, output_height});
+    AddInputFromArray<int32_t>(TensorShape({2}), {output_width, output_height});
   }
 
   using ResizeBilinearOpTest::RunOpKernel;

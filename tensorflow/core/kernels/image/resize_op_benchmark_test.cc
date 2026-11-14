@@ -21,31 +21,34 @@ limitations under the License.
 
 namespace tensorflow {
 
-static Graph* BM_Resize(const char* algorithm, int batches, int width,
-                        int height) {
+static Graph* Resize(const char* algorithm, int batches, int width,
+                     int height) {
   Graph* g = new Graph(OpRegistry::Global());
   Tensor in(DT_FLOAT, TensorShape({batches, width, height, 3}));
   in.flat<float>().setRandom();
 
   Tensor out_size(DT_INT32, TensorShape({2}));
-  auto out_size_flat = out_size.flat<int32>();
+  auto out_size_flat = out_size.flat<int32_t>();
   out_size_flat(0) = width * 2;
   out_size_flat(1) = height * 2;
 
   Node* ret;
-  Status s = NodeBuilder(g->NewName("n"), algorithm)
-                 .Input(test::graph::Constant(g, in))
-                 .Input(test::graph::Constant(g, out_size))
-                 .Finalize(g, &ret);
+  absl::Status s = NodeBuilder(g->NewName("n"), algorithm)
+                       .Input(test::graph::Constant(g, in))
+                       .Input(test::graph::Constant(g, out_size))
+                       .Finalize(g, &ret);
   assert(s.ok());
   return g;
 }
 
-#define BM_ResizeDev(DEVICE, ALGORITHM, B, W, H)                              \
-  static void BM_Resize_##ALGORITHM##_##DEVICE##_##B##_##W##_##H(int iters) { \
-    testing::ItemsProcessed(iters* B* W* H * 3);                              \
-    test::Benchmark(#DEVICE, BM_Resize(#ALGORITHM, B, W, H)).Run(iters);      \
-  }                                                                           \
+#define BM_ResizeDev(DEVICE, ALGORITHM, B, W, H)                  \
+  static void BM_Resize_##ALGORITHM##_##DEVICE##_##B##_##W##_##H( \
+      ::testing::benchmark::State& state) {                       \
+    test::Benchmark(#DEVICE, Resize(#ALGORITHM, B, W, H),         \
+                    /*old_benchmark_api*/ false)                  \
+        .Run(state);                                              \
+    state.SetItemsProcessed(state.iterations() * B * W * H * 3);  \
+  }                                                               \
   BENCHMARK(BM_Resize_##ALGORITHM##_##DEVICE##_##B##_##W##_##H)
 
 BM_ResizeDev(cpu, ResizeNearestNeighbor, 10, 499, 499);

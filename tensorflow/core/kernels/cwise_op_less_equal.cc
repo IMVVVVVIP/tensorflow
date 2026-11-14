@@ -17,13 +17,17 @@ limitations under the License.
 
 namespace tensorflow {
 REGISTER5(BinaryOp, CPU, "LessEqual", functor::less_equal, float, Eigen::half,
-          bfloat16, double, int32);
-REGISTER4(BinaryOp, CPU, "LessEqual", functor::less_equal, int64, uint8, int8,
-          int16);
+          bfloat16, double, int32_t);
+REGISTER7(BinaryOp, CPU, "LessEqual", functor::less_equal, int64_t, uint8_t,
+          uint16_t, uint32_t, uint64_t, int8_t, int16_t);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-REGISTER7(BinaryOp, GPU, "LessEqual", functor::less_equal, float, Eigen::half,
-          double, int64, uint8, int8, int16);
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
+REGISTER9(BinaryOp, GPU, "LessEqual", functor::less_equal, float, Eigen::half,
+          double, int64, uint8, uint16, uint32, uint64, int8);
+REGISTER(BinaryOp, GPU, "LessEqual", functor::less_equal, int16);
+#endif
+REGISTER(BinaryOp, GPU, "LessEqual", functor::less_equal, bfloat16);
 
 // A special GPU kernel for int32.
 // TODO(b/25387198): Also enable int32 in device memory. This kernel
@@ -33,19 +37,15 @@ REGISTER_KERNEL_BUILDER(Name("LessEqual")
                             .HostMemory("x")
                             .HostMemory("y")
                             .HostMemory("z")
-                            .TypeConstraint<int32>("T"),
-                        BinaryOp<CPUDevice, functor::less_equal<int32>>);
+                            .TypeConstraint<int32_t>("T"),
+                        BinaryOp<CPUDevice, functor::less_equal<int32_t>>);
 #endif
-
-#ifdef TENSORFLOW_USE_SYCL
-REGISTER6(BinaryOp, SYCL, "LessEqual", functor::less_equal, float, double,
-          int64, uint8, int8, int16);
 REGISTER_KERNEL_BUILDER(Name("LessEqual")
-                            .Device(DEVICE_SYCL)
+                            .Device(DEVICE_DEFAULT)
                             .HostMemory("x")
                             .HostMemory("y")
                             .HostMemory("z")
-                            .TypeConstraint<int32>("T"),
-                        BinaryOp<CPUDevice, functor::less_equal<int32>>);
-#endif  // TENSORFLOW_USE_SYCL
+                            .TypeConstraint<int32_t>("T"),
+                        BinaryOp<CPUDevice, functor::less_equal<int32_t>>);
+
 }  // namespace tensorflow

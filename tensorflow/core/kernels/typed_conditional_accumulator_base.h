@@ -35,8 +35,8 @@ class TypedConditionalAccumulatorBase : public ConditionalAccumulatorBase {
  public:
   TypedConditionalAccumulatorBase(const DataType& dtype,
                                   const PartialTensorShape& shape,
-                                  const string& name,
-                                  const string& reduction_type)
+                                  const std::string& name,
+                                  const std::string& reduction_type)
       : ConditionalAccumulatorBase(dtype, shape, name, reduction_type) {}
 
   /**
@@ -49,7 +49,7 @@ class TypedConditionalAccumulatorBase : public ConditionalAccumulatorBase {
    * grad:       Gradient tensor to be added to the accumulator.
    * ctx:        Context in which the op is executed.
    */
-  void TryApplyGrad(int64 local_step, OpKernelContext* ctx) override {
+  void TryApplyGrad(int64_t local_step, OpKernelContext* ctx) override {
     {
       mutex_lock l(mu_);
       if (local_step >= current_global_step_) {

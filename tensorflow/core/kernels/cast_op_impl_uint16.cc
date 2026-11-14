@@ -13,7 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#define EIGEN_USE_THREADS
+
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "tensorflow/core/kernels/cast_op.h"
 #include "tensorflow/core/kernels/cast_op_impl.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 
@@ -21,24 +26,25 @@ typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
 CastFunctorType GetCpuCastFromUint16(DataType dst_dtype) {
-  CURRY_TYPES3(CAST_CASE, CPUDevice, uint16);
+  CURRY_TYPES3(CAST_CASE, CPUDevice, uint16_t);
+  CAST_CASE(CPUDevice, uint16_t, int4);
+  CAST_CASE(CPUDevice, uint16_t, uint4);
   return nullptr;
 }
 
 #if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
     (defined(TENSORFLOW_USE_ROCM) && TENSORFLOW_USE_ROCM)
 CastFunctorType GetGpuCastFromUint16(DataType dst_dtype) {
-  CURRY_TYPES3_NO_BF16(CAST_CASE, GPUDevice, uint16);
+#if defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
+  CAST_CASE(GPUDevice, uint16_t, bfloat16);
+#else
+  CURRY_TYPES3(CAST_CASE, GPUDevice, uint16);
+#endif
+  CAST_CASE(GPUDevice, uint16_t, int4);
+  CAST_CASE(GPUDevice, uint16_t, uint4);
   return nullptr;
 }
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#ifdef TENSORFLOW_USE_SYCL
-typedef Eigen::SyclDevice SYCLDevice;
-CastFunctorType GetSyclCastFromUint16(DataType dst_dtype) {
-  CURRY_TYPES3_NO_HALF(CAST_CASE, SYCLDevice, uint16);
-  return nullptr;
-}
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow

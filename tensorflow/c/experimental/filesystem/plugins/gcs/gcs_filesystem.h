@@ -15,6 +15,13 @@
 #ifndef TENSORFLOW_C_EXPERIMENTAL_FILESYSTEM_PLUGINS_GCS_GCS_FILESYSTEM_H_
 #define TENSORFLOW_C_EXPERIMENTAL_FILESYSTEM_PLUGINS_GCS_GCS_FILESYSTEM_H_
 
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include "absl/base/thread_annotations.h"
+#include "absl/synchronization/mutex.h"
 #include "google/cloud/storage/client.h"
 #include "tensorflow/c/experimental/filesystem/filesystem_interface.h"
 #include "tensorflow/c/experimental/filesystem/plugins/gcs/expiring_lru_cache.h"
@@ -87,6 +94,24 @@ void NewReadOnlyMemoryRegionFromFile(const TF_Filesystem* filesystem,
                                      const char* path,
                                      TF_ReadOnlyMemoryRegion* region,
                                      TF_Status* status);
+int64_t GetFileSize(const TF_Filesystem* filesystem, const char* path,
+                    TF_Status* status);
+void PathExists(const TF_Filesystem* filesystem, const char* path,
+                TF_Status* status);
+void CreateDir(const TF_Filesystem* filesystem, const char* path,
+               TF_Status* status);
+int GetChildren(const TF_Filesystem* filesystem, const char* path,
+                char*** entries, TF_Status* status);
+void DeleteFile(const TF_Filesystem* filesystem, const char* path,
+                TF_Status* status);
+void Stat(const TF_Filesystem* filesystem, const char* path,
+          TF_FileStatistics* stats, TF_Status* status);
+void DeleteDir(const TF_Filesystem* filesystem, const char* path,
+               TF_Status* status);
+void CopyFile(const TF_Filesystem* filesystem, const char* src, const char* dst,
+              TF_Status* status);
+void RenameFile(const TF_Filesystem* filesystem, const char* src,
+                const char* dst, TF_Status* status);
 }  // namespace tf_gcs_filesystem
 
 #endif  // TENSORFLOW_C_EXPERIMENTAL_FILESYSTEM_PLUGINS_GCS_GCS_FILESYSTEM_H_

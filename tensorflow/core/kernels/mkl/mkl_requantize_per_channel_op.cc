@@ -15,12 +15,13 @@ limitations under the License.
 
 // See docs in ../ops/array_ops.cc.
 
-#ifdef INTEL_MKL
+#if defined(INTEL_MKL)
 #define EIGEN_USE_THREADS
+
 #include <math.h>
 
-#include "mkldnn.hpp"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
+#include "dnnl.hpp"
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/type_traits.h"
@@ -28,7 +29,6 @@ limitations under the License.
 #include "tensorflow/core/kernels/meta_support.h"
 #include "tensorflow/core/kernels/no_op.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/util/mkl_types.h"
 #include "tensorflow/core/util/mkl_util.h"
 
 namespace tensorflow {
@@ -49,35 +49,45 @@ class MklRequantizePerChannelOp : public OpKernel {
   void Compute(OpKernelContext* ctx) override {
     try {
       const Tensor& input = ctx->input(kInputTensorIndex);
-      const Tensor& input_min_vec = ctx->input(kInputMinVecIndex);
-      float* input_min_vec_data = (float*)const_cast<void*>(
-          static_cast<const void*>(input_min_vec.flat<float>().data()));
-      const Tensor& input_max_vec = ctx->input(kInputMaxVecIndex);
-      float* input_max_vec_data = (float*)const_cast<void*>(
-          static_cast<const void*>(input_max_vec.flat<float>().data()));
-
-      const Tensor& input_requested_min = ctx->input(this->kRequestMinIndex);
-      const float input_requested_min_float =
-          input_requested_min.flat<float>()(0);
-      const Tensor& input_requested_max = ctx->input(this->kRequestMaxIndex);
-      const float input_requested_max_float =
-          input_requested_max.flat<float>()(0);
-
-      size_t depth = input_min_vec.NumElements();
       OP_REQUIRES(
           ctx, input.dims() == 4,
           errors::InvalidArgument("Current RequantizePerChannel operator"
                                   "supports 4D tensors only."));
-      OP_REQUIRES(
-          ctx, input_min_vec.dim_size(0) == depth,
-          errors::InvalidArgument("input_min has incorrect size, expected ",
-                                  depth, " was ", input_min_vec.dim_size(0)));
-      OP_REQUIRES(
-          ctx, input_max_vec.dim_size(0) == depth,
-          errors::InvalidArgument("input_max has incorrect size, expected ",
-                                  depth, " was ", input_max_vec.dim_size(0)));
 
-      if (out_type_ == DT_QINT8) DCHECK(input_requested_min_float < 0.0f);
+      const Tensor& input_min_vec = ctx->input(kInputMinVecIndex);
+      size_t depth = input_min_vec.NumElements();
+      float* input_min_vec_data = (float*)const_cast<void*>(
+          static_cast<const void*>(input_min_vec.flat<float>().data()));
+
+      const Tensor& input_max_vec = ctx->input(kInputMaxVecIndex);
+      OP_REQUIRES(
+          ctx, input_max_vec.NumElements() == depth,
+          errors::InvalidArgument("input_max has incorrect size, expected ",
+                                  depth, " was ", input_max_vec.NumElements()));
+      float* input_max_vec_data = (float*)const_cast<void*>(
+          static_cast<const void*>(input_max_vec.flat<float>().data()));
+
+      const Tensor& input_requested_min = ctx->input(this->kRequestMinIndex);
+      OP_REQUIRES(
+          ctx, input_requested_min.NumElements() == 1,
+          errors::InvalidArgument("requested_output_min must be a scalar"));
+      const float input_requested_min_float =
+          input_requested_min.scalar<float>()();
+
+      const Tensor& input_requested_max = ctx->input(this->kRequestMaxIndex);
+      OP_REQUIRES(
+          ctx, input_requested_min.NumElements() == 1,
+          errors::InvalidArgument("requested_output_max must be a scalar"));
+      const float input_requested_max_float =
+          input_requested_max.scalar<float>()();
+
+      if (out_type_ == DT_QINT8) {
+        OP_REQUIRES(ctx, input_requested_min_float < 0.0f,
+                    errors::InvalidArgument(
+                        "If out_type is QINT8, requested_output_max must be "
+                        "non negative, got ",
+                        input_requested_min_float));
+      }
 
       const float factor = (out_type_ == DT_QINT8) ? 127.0f : 255.0f;
       const float requested_min_max =
@@ -95,19 +105,33 @@ class MklRequantizePerChannelOp : public OpKernel {
                               static_cast<float>(1L << 31));
       }
 
-      mkldnn::primitive_attr reorder_attr;
+      dnnl::primitive_attr reorder_attr;
+#ifndef ENABLE_ONEDNN_V3
       reorder_attr.set_output_scales(2, scales);
+#else
+      reorder_attr.set_scales_mask(DNNL_ARG_SRC, 2);
+      auto scale_mem = memory({{static_cast<int64_t>(scales.size())},
+                               MklDnnType<float>(),
+                               memory::format_tag::x},
+                              cpu_engine_, scales.data());
+#endif  // !ENABLE_ONEDNN_V3
 
+      // Create the oneDNN wrapper over Eigen threadpool and set max threads
+      // in oneDNN.
+      Eigen::ThreadPoolInterface* eigen_interface =
+          EigenThreadPoolFromTfContext(ctx);
+      tsl::OneDnnThreadPool eigen_tp(eigen_interface,
+                                     ThreadPoolUseCallerThread());
       memory::dims dims_mkl_order =
           TFShapeToMklDnnDimsInNCHW(input.shape(), FORMAT_NHWC);
       memory::desc input_md = memory::desc(dims_mkl_order, MklDnnType<qint32>(),
-                                           MEMORY_FORMAT::nhwc);
+                                           memory::format_tag::nhwc);
       memory::desc output_md =
           (out_type_ == DT_QINT8)
               ? memory::desc(dims_mkl_order, MklDnnType<qint8>(),
-                             MEMORY_FORMAT::nhwc)
+                             memory::format_tag::nhwc)
               : memory::desc(dims_mkl_order, MklDnnType<quint8>(),
-                             MEMORY_FORMAT::nhwc);
+                             memory::format_tag::nhwc);
 
       void* input_buf =
           static_cast<void*>(const_cast<qint32*>(input.flat<qint32>().data()));
@@ -121,28 +145,24 @@ class MklRequantizePerChannelOp : public OpKernel {
       }
 
       std::unique_ptr<memory> input_mem_prim(
-          new MEMORY_CONSTRUCTOR_USING_MD(input_md, cpu_engine_, input_buf));
+          new memory(input_md, cpu_engine_, input_buf));
       std::unique_ptr<memory> output_mem_prim(
-          new MEMORY_CONSTRUCTOR_USING_MD(output_md, cpu_engine_, output_buf));
+          new memory(output_md, cpu_engine_, output_buf));
 
-      mkldnn::reorder::primitive_desc reorder_pd =
-          REORDER_PD_CONSTRUCTOR_WITH_ATTR(
-              GET_MEMORY_PRIMITIVE_DESC_FROM_MEM_PTR(input_mem_prim),
-              GET_MEMORY_PRIMITIVE_DESC_FROM_MEM_PTR(output_mem_prim),
-              cpu_engine_, reorder_attr);
+      dnnl::reorder::primitive_desc reorder_pd =
+          ReorderPd(cpu_engine_, input_mem_prim->get_desc(), cpu_engine_,
+                    output_mem_prim->get_desc(), reorder_attr);
       std::shared_ptr<stream> reorder_stream;
-      reorder_stream.reset(CreateStream(ctx, cpu_engine_));
-#ifndef ENABLE_MKLDNN_V1
-      reorder_stream->submit(
-          {mkldnn::reorder(reorder_pd, *input_mem_prim, *output_mem_prim)});
-#else
-      std::unordered_map<int, mkldnn::memory> reorder_args = {
-          {MKLDNN_ARG_FROM, *input_mem_prim},
-          {MKLDNN_ARG_TO, *output_mem_prim}};
-      std::unique_ptr<mkldnn::primitive> reorder_prim(
-          new mkldnn::reorder(reorder_pd));
+
+      reorder_stream.reset(CreateStream(&eigen_tp, cpu_engine_));
+      std::unordered_map<int, dnnl::memory> reorder_args = {
+          {DNNL_ARG_FROM, *input_mem_prim}, {DNNL_ARG_TO, *output_mem_prim}};
+#ifdef ENABLE_ONEDNN_V3
+      reorder_args.insert({DNNL_ARG_ATTR_SCALES | DNNL_ARG_SRC, scale_mem});
+#endif  // ENABLE_ONEDNN_V3
+      std::unique_ptr<dnnl::primitive> reorder_prim(
+          new dnnl::reorder(reorder_pd));
       reorder_prim->execute(*reorder_stream, reorder_args);
-#endif  // !ENABLE_MKLDNN_V1
 
       Tensor* output_min = nullptr;
       Tensor* output_max = nullptr;
@@ -151,9 +171,9 @@ class MklRequantizePerChannelOp : public OpKernel {
       OP_REQUIRES_OK(ctx,
                      ctx->allocate_output(kOutputMaxIndex, {}, &output_max));
 
-      output_min->flat<float>()(0) = input_requested_min_float;
-      output_max->flat<float>()(0) = input_requested_max_float;
-    } catch (mkldnn::error& e) {
+      output_min->scalar<float>()() = input_requested_min_float;
+      output_max->scalar<float>()() = input_requested_max_float;
+    } catch (dnnl::error& e) {
       string error_msg = "Status: " + std::to_string(e.status) +
                          ", message: " + std::string(e.message) + ", in file " +
                          std::string(__FILE__) + ":" + std::to_string(__LINE__);
@@ -172,7 +192,7 @@ class MklRequantizePerChannelOp : public OpKernel {
   const int kOutputMinIndex = 1;
   const int kOutputMaxIndex = 2;
   DataType out_type_;
-  engine cpu_engine_ = engine(ENGINE_CPU, 0);
+  engine cpu_engine_ = engine(engine::kind::cpu, 0);
 };
 
 // Registration for out_type: qint8

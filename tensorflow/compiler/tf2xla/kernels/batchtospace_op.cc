@@ -13,48 +13,58 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <algorithm>
+#include <cstdint>
+#include <numeric>
+#include <vector>
+
+#include "absl/container/inlined_vector.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "tensorflow/core/framework/types.pb.h"
 
 namespace tensorflow {
 namespace {
 
-void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp& input,
+void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp input,
                   DataType input_dtype, const TensorShape& input_tensor_shape,
-                  absl::Span<const int64> block_shape,
+                  absl::Span<const int64_t> block_shape,
                   const xla::Literal& crops) {
   const int input_rank = input_tensor_shape.dims();
-  const absl::InlinedVector<int64, 4> input_shape =
+  const absl::InlinedVector<int64_t, 4> input_shape =
       input_tensor_shape.dim_sizes();
   const int block_rank = block_shape.size();
 
-  OP_REQUIRES(
-      ctx, input_rank >= 1 + block_rank,
-      errors::InvalidArgument("input rank should be >= ", 1 + block_rank,
-                              " instead of ", input_rank));
-  absl::Span<const int64> remainder_shape(input_shape);
+  OP_REQUIRES(ctx, input_rank >= 1 + block_rank,
+              absl::InvalidArgumentError(
+                  absl::StrCat("input rank should be >= ", 1 + block_rank,
+                               " instead of ", input_rank)));
+  absl::Span<const int64_t> remainder_shape(input_shape);
   remainder_shape.remove_prefix(1 + block_rank);
 
   OP_REQUIRES(
       ctx,
-      crops.shape().rank() == 2 &&
+      crops.shape().dimensions().size() == 2 &&
           block_rank == xla::ShapeUtil::GetDimension(crops.shape(), 0) &&
           2 == xla::ShapeUtil::GetDimension(crops.shape(), 1),
-      errors::InvalidArgument("crops should have shape [", block_rank,
-                              ", 2] instead of ",
-                              xla::ShapeUtil::HumanString(crops.shape())));
+      absl::InvalidArgumentError(absl::StrCat(
+          "crops should have shape [", block_rank, ", 2] instead of ",
+          xla::ShapeUtil::HumanString(crops.shape()))));
 
-  const int64 batch_size = input_shape[0];
+  const int64_t batch_size = input_shape[0];
 
   // Compute the product of the block_shape values.
-  int64 block_num_elems = 1;
+  int64_t block_num_elems = 1;
   for (int i = 0; i < block_rank; ++i) {
     block_num_elems *= block_shape[i];
   }
   OP_REQUIRES(ctx, block_num_elems > 0,
-              errors::InvalidArgument(
+              absl::InvalidArgumentError(
                   "The product of the block dimensions must be positive"));
 
   // 1. Reshape `input` to `reshaped` of shape:
@@ -62,12 +72,12 @@ void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp& input,
   //       batch / prod(block_shape),
   //       input_shape[1], ..., input_shape[N-1]]
 
-  OP_REQUIRES(
-      ctx, batch_size % block_num_elems == 0,
-      errors::InvalidArgument("Input batch dimension (", batch_size,
-                              ") is not divisible by product of block sizes (",
-                              block_num_elems, ")"));
-  std::vector<int64> reshaped_shape(input_rank + block_rank);
+  OP_REQUIRES(ctx, batch_size % block_num_elems == 0,
+              absl::InvalidArgumentError(
+                  absl::StrCat("Input batch dimension (", batch_size,
+                               ") is not divisible by product of block sizes (",
+                               block_num_elems, ")")));
+  std::vector<int64_t> reshaped_shape(input_rank + block_rank);
   std::copy(block_shape.begin(), block_shape.end(), reshaped_shape.begin());
   reshaped_shape[block_rank] = batch_size / block_num_elems;
   std::copy(input_shape.begin() + 1, input_shape.end(),
@@ -82,7 +92,7 @@ void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp& input,
   //       input_shape[M], block_shape[M-1],
   //
   //       input_shape[M+1], ..., input_shape[N-1]]
-  std::vector<int64> permutation(reshaped_shape.size());
+  std::vector<int64_t> permutation(reshaped_shape.size());
   permutation[0] = block_rank;
   for (int i = 0; i < block_rank; ++i) {
     permutation[1 + 2 * i] = block_rank + 1 + i;
@@ -102,7 +112,7 @@ void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp& input,
   //       input_shape[M+1],
   //       ...,
   //       input_shape[N-1]]
-  std::vector<int64> reshaped_permuted_shape(input_rank);
+  std::vector<int64_t> reshaped_permuted_shape(input_rank);
   reshaped_permuted_shape[0] = batch_size / block_num_elems;
   for (int i = 0; i < block_rank; ++i) {
     reshaped_permuted_shape[1 + i] = block_shape[i] * input_shape[1 + i];
@@ -122,21 +132,21 @@ void BatchToSpace(XlaOpKernelContext* ctx, const xla::XlaOp& input,
   //       input_shape[M] * block_shape[M-1] - crops[M-1,0] - crops[M-1,1],
   //
   //       input_shape[M+1], ..., input_shape[N-1]]
-  std::vector<int64> start_indices(input_rank, 0);
-  std::vector<int64> end_indices = reshaped_permuted_shape;
-  std::vector<int64> strides(input_rank, 1);
+  std::vector<int64_t> start_indices(input_rank, 0);
+  std::vector<int64_t> end_indices = reshaped_permuted_shape;
+  std::vector<int64_t> strides(input_rank, 1);
   for (int i = 0; i < block_rank; ++i) {
-    int64 crop_start = crops.Get<int64>({i, 0});
-    int64 crop_end = crops.Get<int64>({i, 1});
+    int64_t crop_start = crops.Get<int64_t>({i, 0});
+    int64_t crop_end = crops.Get<int64_t>({i, 1});
     OP_REQUIRES(ctx, crop_start >= 0 && crop_end >= 0,
-                errors::InvalidArgument("Crops must be non-negative"));
+                absl::InvalidArgumentError("Crops must be non-negative"));
     start_indices[1 + i] = crop_start;
     end_indices[1 + i] -= crop_end;
     OP_REQUIRES(
         ctx, start_indices[1 + i] <= end_indices[1 + i],
-        errors::InvalidArgument(
+        absl::InvalidArgumentError(absl::StrCat(
             "Cropped size must be non-negative: start: ", crop_start,
-            " end: ", crop_end, " size ", reshaped_permuted_shape[1 + i]));
+            " end: ", crop_end, " size ", reshaped_permuted_shape[1 + i])));
   }
   xla::XlaOp output =
       xla::Slice(reshaped_permuted, start_indices, end_indices, strides);
@@ -148,7 +158,7 @@ class BatchToSpaceNDOp : public XlaOpKernel {
   explicit BatchToSpaceNDOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {}
 
   void Compile(XlaOpKernelContext* ctx) override {
-    std::vector<int64> block_shape;
+    std::vector<int64_t> block_shape;
     OP_REQUIRES_OK(ctx, ctx->ConstantInputAsIntVector(1, &block_shape));
 
     xla::Literal crops;
@@ -167,9 +177,9 @@ class BatchToSpaceOp : public XlaOpKernel {
  public:
   explicit BatchToSpaceOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("block_size", &block_size_));
-    OP_REQUIRES(
-        ctx, block_size_ > 1,
-        errors::InvalidArgument("Block size should be > 1: ", block_size_));
+    OP_REQUIRES(ctx, block_size_ > 1,
+                absl::InvalidArgumentError(
+                    absl::StrCat("Block size should be > 1: ", block_size_)));
   }
 
   void Compile(XlaOpKernelContext* ctx) override {

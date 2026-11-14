@@ -15,8 +15,11 @@ limitations under the License.
 
 #include "tensorflow/core/framework/function_testlib.h"
 
+#include <cstdint>
+
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/framework/versions.pb.h"
 #include "tensorflow/core/lib/core/threadpool.h"
@@ -28,8 +31,8 @@ namespace function {
 
 typedef FunctionDefHelper FDH;
 
-GraphDef GDef(gtl::ArraySlice<NodeDef> nodes,
-              gtl::ArraySlice<FunctionDef> funcs) {
+GraphDef GDef(absl::Span<const NodeDef> nodes,
+              absl::Span<const FunctionDef> funcs) {
   GraphDef g;
   VersionDef* versions = g.mutable_versions();
   versions->set_producer(TF_GRAPH_DEF_VERSION);
@@ -45,12 +48,14 @@ GraphDef GDef(gtl::ArraySlice<NodeDef> nodes,
 }
 
 // Helper to construct a NodeDef.
-NodeDef NDef(StringPiece name, StringPiece op, gtl::ArraySlice<string> inputs,
-             gtl::ArraySlice<std::pair<string, FDH::AttrValueWrapper>> attrs,
-             const string& device) {
+NodeDef NDef(
+    absl::string_view name, absl::string_view op,
+    absl::Span<const std::string> inputs,
+    absl::Span<const std::pair<std::string, FDH::AttrValueWrapper>> attrs,
+    const std::string& device) {
   NodeDef n;
-  n.set_name(string(name));
-  n.set_op(string(op));
+  n.set_name(name);
+  n.set_op(op);
   for (const auto& in : inputs) n.add_input(in);
   n.set_device(device);
   for (const auto& na : attrs)
@@ -75,7 +80,7 @@ FunctionDef NonZero() {
 }
 
 FunctionDef IsZero() {
-  const Tensor kZero = test::AsScalar<int64>(0);
+  const Tensor kZero = test::AsScalar<int64_t>(0);
   return FDH::Define(
       // Name
       "IsZero",
@@ -93,17 +98,18 @@ FunctionDef IsZero() {
 }
 
 FunctionDef RandomUniform() {
-  const Tensor kZero = test::AsScalar<int64>(0);
+  const Tensor kZero = test::AsScalar<int64_t>(0);
 
   return FDH::Define(
       // Name
-      "RandomUniform",
+      "RandomUniformFn",
       // Args
       {"x: T"},
       // Return values
       {"random_uniform: int64"},
       // Attr def
       {"T:{float, double, int32, int64, string}"},
+      // NodeDef
       {{{"random_uniform/shape"},
         "Const",
         {},
@@ -112,13 +118,13 @@ FunctionDef RandomUniform() {
         "RandomUniform",
         {"random_uniform/shape"},
         {{"T", DT_INT32},
-         {"Tout", DT_FLOAT},
+         {"dtype", DT_FLOAT},
          {"seed", 87654321},
          {"seed2", 42}}}});
 }
 
 FunctionDef XTimesTwo() {
-  const Tensor kTwo = test::AsScalar<int64>(2);
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
   return FDH::Define(
       // Name
       "XTimesTwo",
@@ -136,9 +142,72 @@ FunctionDef XTimesTwo() {
       });
 }
 
+FunctionDef XTimesTwoWithControlInput() {
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
+  return FDH::Define(
+      // Name
+      "XTimesTwo",
+      // Args
+      {"x: T"},
+      // Return values
+      {"y: T"},
+      // Attr def
+      {"T: {float, double, int32, int64}"},
+      // Nodes
+      {
+          {{"two"}, "Const", {}, {{"value", kTwo}, {"dtype", DT_INT64}}},
+          {{"scale"}, "Cast", {"two"}, {{"SrcT", DT_INT64}, {"DstT", "$T"}}},
+          {{"y"}, "Mul", {"scale"}, {{"T", "$T"}}, /*dep=*/{"x"}},
+      });
+}
+
+FunctionDef XTimesTwoWithControlOutput() {
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
+  return FDH::Create(
+      // function_name
+      "XTimesTwo",
+      // in_def
+      {"x: T"},
+      // out_def
+      {"y: T"},
+      // attr_def
+      {"T: {float, double, int32, int64}"},
+      // node_def
+      {
+          {{"two"}, "Const", {}, {{"value", kTwo}, {"dtype", DT_INT64}}},
+          {{"scale"}, "Cast", {"two"}, {{"SrcT", DT_INT64}, {"DstT", "$T"}}},
+          {{"y"}, "Mul", {"x", "scale"}, {{"T", "$T"}}},
+          {{"dummy"}, "Const", {}, {{"value", kTwo}, {"dtype", DT_INT64}}},
+      },
+      // ret_def
+      {{"y", "y"}},
+      // control_ret_def
+      {{"dummy", "dummy"}});
+}
+
+FunctionDef XTimesTwoWithDanglingFloorDivNode() {
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
+  return FDH::Define(
+      // Name
+      "XTimesTwoWithDanglingFloorDivNode",
+      // Args
+      {"x: T"},
+      // Return values
+      {"y: T"},
+      // Attr def
+      {"T: {float, double, int32, int64}"},
+      // Nodes
+      {
+          {{"two"}, "Const", {}, {{"value", kTwo}, {"dtype", DT_INT64}}},
+          {{"scale"}, "Cast", {"two"}, {{"SrcT", DT_INT64}, {"DstT", "$T"}}},
+          {{"z"}, "FloorDiv", {"x", "scale"}, {{"T", "$T"}}},
+          {{"y"}, "Mul", {"x", "scale"}, {{"T", "$T"}}},
+      });
+}
+
 FunctionDef TwoDeviceMult() {
-  const Tensor kTwo = test::AsScalar<int64>(2);
-  const Tensor kThree = test::AsScalar<int64>(3);
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
+  const Tensor kThree = test::AsScalar<int64_t>(3);
   return FDH::Create(
       // Name
       "TwoDeviceMult",
@@ -277,7 +346,7 @@ FunctionDef XAddY() {
 }
 
 FunctionDef XTimesTwoInt32() {
-  const Tensor kTwo = test::AsScalar<int64>(2);
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
   return FDH::Define(
       // Name
       "XTimesTwoInt32",
@@ -314,6 +383,24 @@ FunctionDef XTimesFour() {
       {{"y", "y:y:0"}});
 }
 
+FunctionDef XTimesFourInt32() {
+  return FDH::Create(
+      // Name
+      "XTimesFourInt32",
+      // Args
+      {"x: int32"},
+      // Return values
+      {"y: int32"},
+      // Attr def
+      {},
+      // Nodes
+      {
+          {{"x2"}, "XTimesTwoInt32", {"x"}},
+          {{"y"}, "XTimesTwoInt32", {"x2:y:0"}},
+      },
+      {{"y", "y:y:0"}});
+}
+
 FunctionDef XTimes16() {
   return FDH::Create(
       // Name
@@ -346,10 +433,7 @@ FunctionDef WXPlusB() {
       {{{"mm"},
         "MatMul",
         {"w", "x"},
-        {{"T", "$T"},
-         {"transpose_a", false},
-         {"transpose_b", false},
-         {"_kernel", "eigen"}}},
+        {{"T", "$T"}, {"transpose_a", false}, {"transpose_b", false}}},
        {{"y"}, "Add", {"mm", "b"}, {{"T", "$T"}}}});
 }
 
@@ -436,6 +520,22 @@ FunctionDef ReadResourceVariable() {
       {{"y", "read:value:0"}});
 }
 
+FunctionDef ControlFlow() {
+  return FDH::Create(
+      // Name
+      "ControlFlow",
+      // Args
+      {"i: float"},
+      // Return values
+      {"o: float"},
+      // Attr def
+      {},
+      // Nodes
+      {{{"enter"}, "Enter", {"i"}, {{"T", DT_FLOAT}, {"frame_name", "while"}}}},
+      // Output mapping
+      {{"o", "enter:output"}});
+}
+
 FunctionDef InvalidControlFlow() {
   return FDH::Create(
       // Name
@@ -453,8 +553,8 @@ FunctionDef InvalidControlFlow() {
       {{"o", "add:z"}});
 }
 
-FunctionDef LessThanOrEqualToN(int64 N) {
-  const Tensor kN = test::AsScalar<int64>(N);
+FunctionDef LessThanOrEqualToN(int64_t N) {
+  const Tensor kN = test::AsScalar<int64_t>(N);
   return FDH::Define(
       // Name
       "LessThanOrEqualToN",
@@ -473,7 +573,7 @@ FunctionDef LessThanOrEqualToN(int64 N) {
 }
 
 FunctionDef XPlusOneXTimesY() {
-  const Tensor kOne = test::AsScalar<int64>(1);
+  const Tensor kOne = test::AsScalar<int64_t>(1);
   return FDH::Define(
       // Name
       "XPlusOneXTimesY",
@@ -490,8 +590,8 @@ FunctionDef XPlusOneXTimesY() {
        {{"t"}, "Mul", {"x", "y"}, {{"T", "$T"}}}});
 }
 
-FunctionDef XYXLessThanOrEqualToN(int64 N) {
-  const Tensor kN = test::AsScalar<int64>(N);
+FunctionDef XYXLessThanOrEqualToN(int64_t N) {
+  const Tensor kN = test::AsScalar<int64_t>(N);
   return FDH::Define(
       // Name
       "XYXLessThanOrEqualToN",
@@ -510,8 +610,8 @@ FunctionDef XYXLessThanOrEqualToN(int64 N) {
 }
 
 FunctionDef RandomUniformLess() {
-  const Tensor kZero = test::AsScalar<int32>(0);
-  const Tensor kOne = test::AsScalar<int32>(1);
+  const Tensor kZero = test::AsScalar<int32_t>(0);
+  const Tensor kOne = test::AsScalar<int32_t>(1);
   const Tensor k005 = test::AsScalar<float>(0.05);
 
   return FDH::Define(
@@ -604,8 +704,8 @@ FunctionDef MakeBatchDataset() {
 }
 
 FunctionDef MakeMapDataset(bool has_other_args) {
-  std::vector<string> args = {"input_dataset: variant"};
-  std::vector<string> inputs = {"input_dataset"};
+  std::vector<std::string> args = {"input_dataset: variant"};
+  std::vector<std::string> inputs = {"input_dataset"};
   if (has_other_args) {
     args.emplace_back("other_arguments: Targuments");
     inputs.emplace_back("other_arguments");

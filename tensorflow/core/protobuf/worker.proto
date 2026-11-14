@@ -81,6 +81,8 @@ message CreateWorkerSessionRequest {
   // worker. To prevent memory leaks, the worker should garbage collect the old
   // WorkerSessions.
   int64 master_incarnation = 6;
+
+  reserved 7;  // Deprecated config that is embedded within server_def now.
 }
 
 message CreateWorkerSessionResponse {}
@@ -545,8 +547,10 @@ message CompleteGroupRequest {
   int32 group_key = 1;
   int32 group_size = 2;
   string device_type = 3;
-  repeated string device_name = 4;
   int32 collective_type = 5;
+  DeviceAttributes device_attributes = 6;
+
+  reserved 4;
 }
 
 // Gives the complete membership of the group identified by group_key.
@@ -555,14 +559,15 @@ message CompleteGroupResponse {
   int32 group_size = 2;
   string device_type = 3;
   int32 num_tasks = 4;  // number of distinct tasks hosting the devices
-  repeated string device_name = 5;
-  repeated string task_name = 6;  // task name prefixes of device_names
   bytes communicator_key = 7;
+  repeated DeviceAttributes device_attributes = 8;
+
+  reserved 5, 6;
 }
 
 // Supplies data about one collective op belonging to the instance identified
-// by instance_key.  Service will respond when all group_size ops have
-// become known.  Most of the data being sent is for correctness checking,
+// by instance_key and step_id.  Service will respond when all group_size ops
+// have become known.  Most of the data being sent is for correctness checking,
 // to ensure that all ops in the instance share common attributes.
 message CompleteInstanceRequest {
   string name = 1;
@@ -576,6 +581,7 @@ message CompleteInstanceRequest {
   repeated int32 subdiv_offset = 9;
   string device = 10;
   bool is_source = 11;
+  int64 step_id = 12;
 }
 
 // Confirms that every op in the instance has consistently declared itself.

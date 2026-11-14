@@ -67,8 +67,9 @@ Tensor GetTestTensor(int batch) {
   return t;
 }
 
-Graph* SetupRegexReplaceGraph(const Tensor& input, const string& input_pattern,
-                              const string& input_rewrite) {
+Graph* SetupRegexReplaceGraph(const Tensor& input,
+                              const std::string& input_pattern,
+                              const std::string& input_rewrite) {
   Graph* g = new Graph(OpRegistry::Global());
   Tensor pattern(DT_STRING, TensorShape({}));
   pattern.flat<tstring>().setConstant(input_pattern);
@@ -84,17 +85,17 @@ Graph* SetupRegexReplaceGraph(const Tensor& input, const string& input_pattern,
   return g;
 }
 
-void BM_RegexReplace(int iters, int batch_size) {
-  testing::StopTiming();
-  testing::ItemsProcessed(static_cast<int64>(iters));
-  testing::UseRealTime();
+static void BM_RegexReplace(::testing::benchmark::State& state) {
+  const int batch_size = state.range(0);
+
   Tensor input = GetTestTensor(batch_size);
   Graph* g = SetupRegexReplaceGraph(input, kRegExPattern, kRewrite);
-  testing::StartTiming();
-  test::Benchmark("cpu", g).Run(iters);
+  test::Benchmark("cpu", g, /*old_benchmark_api*/ false).Run(state);
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()));
 }
 
 BENCHMARK(BM_RegexReplace)
+    ->UseRealTime()
     ->Arg(1)
     ->Arg(8)
     ->Arg(16)
@@ -103,8 +104,8 @@ BENCHMARK(BM_RegexReplace)
     ->Arg(128)
     ->Arg(256);
 
-Graph* SetupStaticGraph(const Tensor& input, const string& input_pattern,
-                        const string& rewrite) {
+Graph* SetupStaticGraph(const Tensor& input, const std::string& input_pattern,
+                        const std::string& rewrite) {
   Graph* g = new Graph(OpRegistry::Global());
 
   TF_CHECK_OK(NodeBuilder("static_regex_replace_op", "StaticRegexReplace")
@@ -115,17 +116,17 @@ Graph* SetupStaticGraph(const Tensor& input, const string& input_pattern,
                   .Finalize(g, nullptr /* node */));
   return g;
 }
-void BM_StaticRegexReplace(int iters, int batch_size) {
-  testing::StopTiming();
-  testing::ItemsProcessed(static_cast<int64>(iters));
-  testing::UseRealTime();
+static void BM_StaticRegexReplace(::testing::benchmark::State& state) {
+  const int batch_size = state.range(0);
+
   Tensor input = GetTestTensor(batch_size);
   Graph* g = SetupStaticGraph(input, kRegExPattern, kRewrite);
-  testing::StartTiming();
-  test::Benchmark("cpu", g).Run(iters);
+  test::Benchmark("cpu", g, /*old_benchmark_api*/ false).Run(state);
+  state.SetItemsProcessed(static_cast<int64_t>(state.iterations()));
 }
 
 BENCHMARK(BM_StaticRegexReplace)
+    ->UseRealTime()
     ->Arg(1)
     ->Arg(8)
     ->Arg(16)

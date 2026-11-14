@@ -34,12 +34,13 @@ namespace {
 
 template <class T, class Toutput>
 void ScalarMultiply(OpKernelContext* context, const T* full_input,
-                    int32 full_input_offset, int64 num_elements, T scalar_input,
-                    int32 scalar_input_offset, Toutput* output) {
-  const int32 scalar_minus_offset =
-      static_cast<int32>(scalar_input) - scalar_input_offset;
+                    int32_t full_input_offset, int64_t num_elements,
+                    T scalar_input, int32_t scalar_input_offset,
+                    Toutput* output) {
+  const int32_t scalar_minus_offset =
+      static_cast<int32_t>(scalar_input) - scalar_input_offset;
   for (int i = 0; i < num_elements; ++i) {
-    output[i] = (static_cast<int32>(full_input[i]) - full_input_offset) *
+    output[i] = (static_cast<int32_t>(full_input[i]) - full_input_offset) *
                 scalar_minus_offset;
   }
 }
@@ -110,12 +111,12 @@ void ScalarMultiply<quint8, qint32>(OpKernelContext* context,
 #endif  // USE_NEON
 
 template <class T, class Toutput>
-void VectorMultiply(OpKernelContext* context, const T* x_data, int32 offset_x,
-                    const T* y_data, int32 offset_y, int64 num_elements,
+void VectorMultiply(OpKernelContext* context, const T* x_data, int32_t offset_x,
+                    const T* y_data, int32_t offset_y, int64_t num_elements,
                     Toutput* output) {
   for (int i = 0; i < num_elements; ++i) {
-    output[i] = (static_cast<int32>(x_data[i]) - offset_x) *
-                (static_cast<int32>(y_data[i]) - offset_y);
+    output[i] = (static_cast<int32_t>(x_data[i]) - offset_x) *
+                (static_cast<int32_t>(y_data[i]) - offset_y);
   }
 }
 
@@ -186,14 +187,14 @@ void VectorMultiply<quint8, qint32>(OpKernelContext* context,
 #endif  // USE_NEON
 
 template <class T, class Toutput>
-void VectorTensorMultiply(const T* vector_data, int32 vector_offset,
-                          int64 vector_num_elements, const T* tensor_data,
-                          int32 tensor_offset, int64 tensor_num_elements,
+void VectorTensorMultiply(const T* vector_data, int32_t vector_offset,
+                          int64_t vector_num_elements, const T* tensor_data,
+                          int32_t tensor_offset, int64_t tensor_num_elements,
                           Toutput* output) {
   for (int i = 0; i < tensor_num_elements; ++i) {
-    const int64 vector_i = i % vector_num_elements;
-    output[i] = (static_cast<int32>(vector_data[vector_i]) - vector_offset) *
-                (static_cast<int32>(tensor_data[i]) - tensor_offset);
+    const int64_t vector_i = i % vector_num_elements;
+    output[i] = (static_cast<int32_t>(vector_data[vector_i]) - vector_offset) *
+                (static_cast<int32_t>(tensor_data[i]) - tensor_offset);
   }
 }
 
@@ -284,16 +285,28 @@ class QuantizedMulOp : public OpKernel {
   void Compute(OpKernelContext* context) override {
     const Tensor& x = context->input(0);
     const Tensor& y = context->input(1);
-    const float min_x = context->input(2).flat<float>()(0);
-    const float max_x = context->input(3).flat<float>()(0);
-    const float min_y = context->input(4).flat<float>()(0);
-    const float max_y = context->input(5).flat<float>()(0);
+    auto& min_x_tensor = context->input(2);
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(min_x_tensor.shape()),
+                absl::InvalidArgumentError("min_x must be a scalar"));
+    const float min_x = min_x_tensor.flat<float>()(0);
+    auto& max_x_tensor = context->input(3);
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(max_x_tensor.shape()),
+                absl::InvalidArgumentError("max_x must be a scalar"));
+    const float max_x = max_x_tensor.flat<float>()(0);
+    auto& min_y_tensor = context->input(4);
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(min_y_tensor.shape()),
+                absl::InvalidArgumentError("min_y must be a scalar"));
+    const float min_y = min_y_tensor.flat<float>()(0);
+    auto& max_y_tensor = context->input(5);
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(max_y_tensor.shape()),
+                absl::InvalidArgumentError("max_y must be a scalar"));
+    const float max_y = max_y_tensor.flat<float>()(0);
 
     BCast bcast(BCast::FromShape(x.shape()), BCast::FromShape(y.shape()));
     if (!bcast.IsValid()) {
-      context->SetStatus(errors::InvalidArgument(
-          "Incompatible shapes: ", x.shape().DebugString(), " vs. ",
-          y.shape().DebugString()));
+      context->SetStatus(absl::InvalidArgumentError(
+          absl::StrCat("Incompatible shapes: ", x.shape().DebugString(),
+                       " vs. ", y.shape().DebugString())));
       return;
     }
     Tensor* z;
@@ -304,11 +317,11 @@ class QuantizedMulOp : public OpKernel {
     // If the difference between the min and max is negative or zero, it makes
     // it hard to do meaningful intermediate operations on the values.
     OP_REQUIRES(context, (max_x > min_x),
-                errors::InvalidArgument("max_x must be larger than min_a."));
+                absl::InvalidArgumentError("max_x must be larger than min_a."));
     OP_REQUIRES(context, (max_y > min_y),
-                errors::InvalidArgument("max_x must be larger than min_b."));
-    const int32 offset_x = FloatToQuantizedUnclamped<T>(0.0f, min_x, max_x);
-    const int32 offset_y = FloatToQuantizedUnclamped<T>(0.0f, min_y, max_y);
+                absl::InvalidArgumentError("max_x must be larger than min_b."));
+    const int32_t offset_x = FloatToQuantizedUnclamped<T>(0.0f, min_x, max_x);
+    const int32_t offset_y = FloatToQuantizedUnclamped<T>(0.0f, min_y, max_y);
     const T* x_data = x.flat<T>().data();
     const T* y_data = y.flat<T>().data();
     Toutput* z_data = z->flat<Toutput>().data();
@@ -327,11 +340,11 @@ class QuantizedMulOp : public OpKernel {
       }
     } else if (ndims == 2) {
       const T* vector_data;
-      int64 vector_num_elements;
-      int32 vector_offset;
+      int64_t vector_num_elements;
+      int32_t vector_offset;
       const T* tensor_data;
-      int64 tensor_num_elements;
-      int32 tensor_offset;
+      int64_t tensor_num_elements;
+      int32_t tensor_offset;
       if (x.NumElements() < y.NumElements()) {
         vector_data = x_data;
         vector_num_elements = x.NumElements();
@@ -347,6 +360,11 @@ class QuantizedMulOp : public OpKernel {
         tensor_num_elements = x.NumElements();
         tensor_offset = offset_x;
       }
+      if (vector_num_elements == 0) {
+        context->SetStatus(
+            absl::InvalidArgumentError("vector must have at least 1 element"));
+        return;
+      }
       VectorTensorMultiply<T, Toutput>(
           vector_data, vector_offset, vector_num_elements, tensor_data,
           tensor_offset, tensor_num_elements, z_data);
@@ -361,10 +379,10 @@ class QuantizedMulOp : public OpKernel {
       LOG(INFO) << "bcast.y_bcast()="
                 << TensorShape(bcast.y_bcast()).DebugString();
 
-      context->SetStatus(errors::Unimplemented(
+      context->SetStatus(absl::UnimplementedError(absl::StrCat(
           "Broadcast between ", context->input(0).shape().DebugString(),
           " and ", context->input(1).shape().DebugString(),
-          " is not supported yet."));
+          " is not supported yet.")));
       return;
     }
 

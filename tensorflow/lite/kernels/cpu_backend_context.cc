@@ -17,10 +17,21 @@ limitations under the License.
 
 #include <memory>
 
+#ifdef TFLITE_KERNEL_USE_XNNPACK
+#include "pthreadpool.h"  // from @pthreadpool
+#endif
+
+#ifdef TFLITE_HAVE_CPUINFO
+#include "include/cpuinfo.h"
+#endif
+
 #include "public/gemmlowp.h"
 #include "ruy/context.h"  // from @ruy
-#include "tensorflow/lite/c/common.h"
+#include "ruy/path.h"  // from @ruy
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/core/macros.h"
 #include "tensorflow/lite/external_cpu_backend_context.h"
+#include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/kernels/op_macros.h"
 
 namespace {
@@ -29,6 +40,67 @@ const int kDefaultNumThreadpoolThreads = 1;
 }  // namespace
 
 namespace tflite {
+
+// Use weak symbols if possible to dispatch to deprecated paths.
+#if TFLITE_HAS_ATTRIBUTE_WEAK && !defined(__APPLE__)
+extern TFLITE_ATTRIBUTE_WEAK bool UseGemmlowpOnX86();
+#endif  // defined(TFLITE_HAS_ATTRIBUTE_WEAK) && !(__APPLE__)
+
+#if defined(TFLITE_HAVE_CPUINFO)
+CpuBackendContext::CpuInfo::~CpuInfo() {
+  if (init_status_ == InitStatus::kInitialized) {
+    cpuinfo_deinitialize();
+  }
+}
+
+bool CpuBackendContext::CpuInfo::EnsureInitialized() {
+  if (init_status_ == InitStatus::kNotYetAttempted) {
+    init_status_ = Initialize();
+  }
+  return init_status_ == InitStatus::kInitialized;
+}
+
+CpuBackendContext::CpuInfo::InitStatus
+CpuBackendContext::CpuInfo::Initialize() {
+  TFLITE_DCHECK_EQ(init_status_, InitStatus::kNotYetAttempted);
+  if (!cpuinfo_initialize()) {
+    return InitStatus::kFailed;
+  }
+  return InitStatus::kInitialized;
+}
+
+bool CpuBackendContext::CpuInfo::Avx2Fma() {
+  return EnsureInitialized() && cpuinfo_has_x86_avx2() &&
+         cpuinfo_has_x86_fma3();
+}
+
+bool CpuBackendContext::CpuInfo::Avx() {
+  return EnsureInitialized() && cpuinfo_has_x86_avx();
+}
+
+bool CpuBackendContext::CpuInfo::Avx512() {
+  return EnsureInitialized() && cpuinfo_has_x86_avx512f() &&
+         cpuinfo_has_x86_avx512dq() && cpuinfo_has_x86_avx512cd() &&
+         cpuinfo_has_x86_avx512bw() && cpuinfo_has_x86_avx512vl();
+}
+#else
+
+CpuBackendContext::CpuInfo::~CpuInfo() {}
+
+bool CpuBackendContext::CpuInfo::EnsureInitialized() {
+  if (init_status_ == InitStatus::kNotYetAttempted) {
+    init_status_ = InitStatus::kInitialized;
+  }
+  TFLITE_DCHECK_EQ(init_status_, InitStatus::kInitialized);
+  return true;
+}
+
+bool CpuBackendContext::CpuInfo::Avx2Fma() { return false; }
+
+bool CpuBackendContext::CpuInfo::Avx() { return false; }
+
+bool CpuBackendContext::CpuInfo::Avx512() { return false; }
+#endif  // TFLITE_HAVE_CPUINFO
 
 CpuBackendContext* CpuBackendContext::GetFromContext(TfLiteContext* context) {
   auto* external_context = static_cast<ExternalCpuBackendContext*>(
@@ -78,5 +150,35 @@ void CpuBackendContext::SetMaxNumThreads(int max_num_threads) {
 }
 
 void CpuBackendContext::SetUseCaching(bool flag) { use_caching_ = flag; }
+
+#ifdef TFLITE_KERNEL_USE_XNNPACK
+pthreadpool_t CpuBackendContext::get_xnnpack_threadpool() {
+  if (!xnnpack_threadpool_ && max_num_threads_ > 1) {
+    xnnpack_threadpool_.reset(
+        pthreadpool_create(static_cast<size_t>(max_num_threads_)));
+  }
+  return xnnpack_threadpool_.get();
+}
+#endif
+
+bool CpuBackendContext::PreferGemmlowpOnX86() {
+  bool use_gemmlowp_on_x86 = false;
+#if defined(TFLITE_X86_PLATFORM) && TFLITE_HAS_ATTRIBUTE_WEAK && \
+    !defined(__APPLE__)
+  if (::tflite::UseGemmlowpOnX86 != nullptr) {
+    use_gemmlowp_on_x86 = ::tflite::UseGemmlowpOnX86();
+  }
+#endif  // TFLITE_X86_PLATFORM && TFLITE_HAS_ATTRIBUTE_WEAK && !(__APPLE__)
+  return use_gemmlowp_on_x86 || !RuyHasAvxOrAbove();
+}
+
+bool CpuBackendContext::RuyHasAvxOrAbove() {
+  // TODO(b/183178387): Use a proper query to detect AVX/optimized paths.
+#if RUY_PLATFORM_X86_ENHANCEMENTS
+  return cpuinfo_.Avx() || cpuinfo_.Avx2Fma() || cpuinfo_.Avx512();
+#else
+  return false;
+#endif
+}
 
 }  // namespace tflite

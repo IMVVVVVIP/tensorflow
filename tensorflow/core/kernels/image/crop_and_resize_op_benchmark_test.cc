@@ -21,15 +21,15 @@ limitations under the License.
 
 namespace tensorflow {
 
-static Graph* BM_CropAndResize(int batches, int width, int height, int depth,
-                               int crop_height, int crop_width) {
+static Graph* CropAndResize(int batches, int width, int height, int depth,
+                            int crop_height, int crop_width) {
   Graph* g = new Graph(OpRegistry::Global());
   Tensor in(DT_FLOAT, TensorShape({batches, height, width, depth}));
   in.flat<float>().setRandom();
   Tensor boxes(DT_FLOAT, TensorShape({batches, 4}));
   auto boxes_tensor = boxes.matrix<float>();
   Tensor box_ind(DT_INT32, TensorShape({batches}));
-  auto box_ind_flat = box_ind.flat<int32>();
+  auto box_ind_flat = box_ind.flat<int32_t>();
   for (int i = 0; i < batches; ++i) {
     boxes_tensor(i, 0) = 0.2;
     boxes_tensor(i, 1) = 0.2;
@@ -38,7 +38,7 @@ static Graph* BM_CropAndResize(int batches, int width, int height, int depth,
     box_ind_flat(i) = i;
   }
   Tensor crop_size(DT_INT32, TensorShape({2}));
-  auto crop_size_flat = crop_size.flat<int32>();
+  auto crop_size_flat = crop_size.flat<int32_t>();
   crop_size_flat(0) = crop_height;
   crop_size_flat(1) = crop_width;
   Node* ret;
@@ -53,9 +53,11 @@ static Graph* BM_CropAndResize(int batches, int width, int height, int depth,
 
 #define BM_CropAndResizeDev(DEVICE, B, W, H, D, CH, CW)                        \
   static void BM_CropAndResize_##DEVICE##_##B##_##W##_##H##_##D##_##CH##_##CW( \
-      int iters) {                                                             \
-    testing::ItemsProcessed(iters* B* W* H* D);                                \
-    test::Benchmark(#DEVICE, BM_CropAndResize(B, W, H, D, CH, CW)).Run(iters); \
+      ::testing::benchmark::State& state) {                                    \
+    test::Benchmark(#DEVICE, CropAndResize(B, W, H, D, CH, CW),                \
+                    /*old_benchmark_api*/ false)                               \
+        .Run(state);                                                           \
+    state.SetItemsProcessed(state.iterations() * B * W * H * D);               \
   }                                                                            \
   BENCHMARK(BM_CropAndResize_##DEVICE##_##B##_##W##_##H##_##D##_##CH##_##CW);
 

@@ -16,10 +16,12 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_GPU_COMMON_QUANTIZATION_UTIL_H_
 #define TENSORFLOW_LITE_DELEGATES_GPU_COMMON_QUANTIZATION_UTIL_H_
 
+#include <stdint.h>
+
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 
 namespace tflite {

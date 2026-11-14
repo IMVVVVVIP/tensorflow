@@ -30,10 +30,6 @@ profiling. Before enabling customized profiling, set the callback flag
 "profile_batches=[]" to disable automatic sampled profiling.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import threading
 
@@ -48,30 +44,37 @@ _profiler_lock = threading.Lock()
 
 @tf_export('profiler.experimental.ProfilerOptions', v1=[])
 class ProfilerOptions(
-    collections.namedtuple(
-        'ProfilerOptions',
-        ['host_tracer_level', 'python_tracer_level', 'device_tracer_level'])):
+    collections.namedtuple('ProfilerOptions', [
+        'host_tracer_level', 'python_tracer_level', 'device_tracer_level',
+        'delay_ms'
+    ])):
   """Options for finer control over the profiler.
 
-  Use `tf.profiler.ProfilerOptions` to control `tf.profiler`
+  Use `tf.profiler.experimental.ProfilerOptions` to control `tf.profiler`
   behavior.
 
   Fields:
-    host_tracer_level: Adjust CPU tracing level. Values are: 1 - critical info
-    only, 2 - info, 3 - verbose. [default value is 2]
-    python_tracer_level: Toggle tracing of Python function calls. Values are: 1
-    - enabled, 0 - disabled [default value is 0]
-    device_tracer_level: Adjust device (TPU/GPU) tracing level. Values are: 1 -
-    enabled, 0 - disabled [default value is 1]
+    host_tracer_level: Adjust CPU tracing level. Values are: `1` - critical info
+      only, `2` - info, `3` - verbose. [default value is `2`]
+    python_tracer_level: Toggle tracing of Python function calls. Values are:
+      `1` - enabled, `0` - disabled [default value is `0`]
+    device_tracer_level: Adjust device (TPU/GPU) tracing level. Values are:
+      `1` - enabled, `0` - disabled [default value is `1`]
+    delay_ms: Requests for all hosts to start profiling at a timestamp that is
+      `delay_ms` away from the current time. `delay_ms` is in milliseconds. If
+      zero, each host will start profiling immediately upon receiving the
+      request. Default value is `None`, allowing the profiler guess the best
+      value.
   """
 
   def __new__(cls,
               host_tracer_level=2,
               python_tracer_level=0,
-              device_tracer_level=1):
+              device_tracer_level=1,
+              delay_ms=None):
     return super(ProfilerOptions,
                  cls).__new__(cls, host_tracer_level, python_tracer_level,
-                              device_tracer_level)
+                              device_tracer_level, delay_ms)
 
 
 @tf_export('profiler.experimental.start', v1=[])
@@ -171,7 +174,7 @@ def start_server(port):
 
   Args:
     port: port profiler server listens to.
-  Example usage: ```python tf.profiler.experimental.server.start('6009') # do
+  Example usage: ```python tf.profiler.experimental.server.start(6009) # do
     your training here.
   """
   _pywrap_profiler.start_server(port)
@@ -196,8 +199,8 @@ class Profile(object):
 
     Args:
       logdir: profile data will save to this directory.
-      options: An optional tf.profiler.ProfilerOptions can be provided to fine
-        tune the profiler's behavior.
+      options: An optional `tf.profiler.experimental.ProfilerOptions` can be
+        provided to fine tune the profiler's behavior.
     """
     self._logdir = logdir
     self._options = options

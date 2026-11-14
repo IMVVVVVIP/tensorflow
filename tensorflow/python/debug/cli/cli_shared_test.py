@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Unit tests for the shared functions and classes for tfdbg CLI."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from collections import namedtuple
 
 from tensorflow.python.debug.cli import cli_shared
@@ -105,7 +101,7 @@ class TimeToReadableStrTest(test_util.TensorFlowTestCase):
       cli_shared.time_to_readable_str(100, force_time_unit="ks")
 
 
-@test_util.run_deprecated_v1
+@test_util.run_v1_only("tfdbg CLI is for tf.Session only")
 class GetRunStartIntroAndDescriptionTest(test_util.TensorFlowTestCase):
 
   def setUp(self):
@@ -319,7 +315,7 @@ class GetRunStartIntroAndDescriptionTest(test_util.TensorFlowTestCase):
     self.assertEqual("run #1: 1 fetch (a:0); 1 feed (foo)", short_description)
 
 
-@test_util.run_deprecated_v1
+@test_util.run_v1_only("tfdbg CLI is for tf.Session only")
 class GetErrorIntroTest(test_util.TensorFlowTestCase):
 
   def setUp(self):

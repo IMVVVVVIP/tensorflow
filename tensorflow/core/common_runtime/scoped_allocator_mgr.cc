@@ -14,30 +14,41 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/common_runtime/scoped_allocator_mgr.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/types/span.h"
 #include "tensorflow/core/common_runtime/scoped_allocator.h"
 #include "tensorflow/core/framework/allocator.h"
+#include "tensorflow/core/framework/types.pb.h"
 
 namespace tensorflow {
 
-Status ScopedAllocatorContainer::AddScopedAllocator(
-    const Tensor& backing_tensor, int32 scope_id, const string& scope_name,
-    const gtl::ArraySlice<ScopedAllocator::Field>& fields,
-    int32 expected_call_count) {
+absl::Status ScopedAllocatorContainer::AddScopedAllocator(
+    const Tensor& backing_tensor, int32_t scope_id,
+    const std::string& scope_name,
+    const absl::Span<const ScopedAllocator::Field>& fields,
+    int32_t expected_call_count) {
   VLOG(1) << "AddScopedAllocator " << mgr_->device_name()
           << " step_id_=" << step_id_ << " scope_id=" << scope_id;
   mutex_lock l(mu_);
   // Ensure none of the new scope_ids are in use.
   auto it = allocators_.find(scope_id);
   if (it != allocators_.end()) {
-    return errors::Internal("Cannot create ScopedAllocator because scope_id ",
-                            scope_id, " for name ", scope_name,
-                            " already exists");
+    return absl::InternalError(
+        absl::StrCat("Cannot create ScopedAllocator because scope_id ",
+                     scope_id, " for name ", scope_name, " already exists"));
   }
   for (auto& f : fields) {
     if (allocators_.find(f.scope_id) != allocators_.end()) {
-      return errors::Internal(
+      return absl::InternalError(absl::StrCat(
           "Cannot create ScopedAllocator because field scope_id ", f.scope_id,
-          " for name ", scope_name, " already exists");
+          " for name ", scope_name, " already exists"));
     }
   }
   VLOG(2) << " container " << this << " step_id " << step_id_;
@@ -53,10 +64,10 @@ Status ScopedAllocatorContainer::AddScopedAllocator(
     allocators_[f.scope_id] = ScopedAllocatorContainer::SAField(
         i, new ScopedAllocatorInstance(sa, i));
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-ScopedAllocator* ScopedAllocatorContainer::GetAllocator(int32 scope_id) {
+ScopedAllocator* ScopedAllocatorContainer::GetAllocator(int32_t scope_id) {
   mutex_lock l(mu_);
   auto it = allocators_.find(scope_id);
   if (it != allocators_.end()) {
@@ -70,7 +81,8 @@ ScopedAllocator* ScopedAllocatorContainer::GetAllocator(int32 scope_id) {
   }
 }
 
-ScopedAllocatorInstance* ScopedAllocatorContainer::GetInstance(int32 scope_id) {
+ScopedAllocatorInstance* ScopedAllocatorContainer::GetInstance(
+    int32_t scope_id) {
   VLOG(2) << "GetInstance " << scope_id << " step " << step_id_ << " on "
           << mgr_->device_name();
   mutex_lock l(mu_);
@@ -83,7 +95,7 @@ ScopedAllocatorInstance* ScopedAllocatorContainer::GetInstance(int32 scope_id) {
   return nullptr;
 }
 
-void ScopedAllocatorContainer::Drop(int32 scope_id, ScopedAllocator* sa) {
+void ScopedAllocatorContainer::Drop(int32_t scope_id, ScopedAllocator* sa) {
   VLOG(2) << "Drop " << scope_id << " from container " << this << " step "
           << step_id_ << " on " << mgr_->device_name();
   mutex_lock l(mu_);
@@ -100,11 +112,10 @@ ScopedAllocatorContainer::~ScopedAllocatorContainer() {
   VLOG(2) << "~ScopedAllocatorContainer " << this << " step " << step_id_
           << " on " << mgr_->device_name();
   mutex_lock l(mu_);
-  // In normal execution the table should be empty and all of its
-  // contents deleted via Drop.  When when a step ends early
-  // (e.g. through abnormal termination) we need to clean up
-  // explicitly.  So long as graph execution of the associated step has
-  // completely terminated this should be safe.
+  // In normal execution the table should be empty and all of its contents
+  // deleted via Drop.  When a step ends early (e.g. through abnormal
+  // termination) we need to clean up explicitly.  So long as graph execution
+  // of the associated step has completely terminated this should be safe.
   for (auto& it : allocators_) {
     if (it.second.field_index == ScopedAllocator::kBackingIndex) {
       delete it.second.scoped_allocator;
@@ -127,7 +138,7 @@ ScopedAllocatorMgr::~ScopedAllocatorMgr() {
   }
 }
 
-void ScopedAllocatorMgr::Cleanup(int64 step_id) {
+void ScopedAllocatorMgr::Cleanup(int64_t step_id) {
   mutex_lock l(mu_);
   auto it = per_step_map_.find(step_id);
   if (it != per_step_map_.end()) {
@@ -136,7 +147,7 @@ void ScopedAllocatorMgr::Cleanup(int64 step_id) {
   }
 }
 
-ScopedAllocatorContainer* ScopedAllocatorMgr::GetContainer(int64 step_id) {
+ScopedAllocatorContainer* ScopedAllocatorMgr::GetContainer(int64_t step_id) {
   VLOG(2) << "GetContainer " << step_id << " on " << device_name();
   ScopedAllocatorContainer* sac = nullptr;
   mutex_lock l(mu_);
@@ -150,11 +161,11 @@ ScopedAllocatorContainer* ScopedAllocatorMgr::GetContainer(int64 step_id) {
   return sac;
 }
 
-Status ScopedAllocatorMgr::AddScopedAllocator(
-    const Tensor& backing_tensor, int64 step_id, int32 scope_id,
-    const string& scope_name,
-    const gtl::ArraySlice<ScopedAllocator::Field>& fields,
-    int32 expected_call_count) {
+absl::Status ScopedAllocatorMgr::AddScopedAllocator(
+    const Tensor& backing_tensor, int64_t step_id, int32_t scope_id,
+    const std::string& scope_name,
+    const absl::Span<const ScopedAllocator::Field>& fields,
+    int32_t expected_call_count) {
   ScopedAllocatorContainer* sac = GetContainer(step_id);
   return sac->AddScopedAllocator(backing_tensor, scope_id, scope_name, fields,
                                  expected_call_count);
@@ -162,15 +173,15 @@ Status ScopedAllocatorMgr::AddScopedAllocator(
 
 /*static*/
 size_t ScopedAllocatorMgr::PopulateFields(
-    int32 scope_id, const gtl::ArraySlice<TensorShape>& shapes,
+    int32_t scope_id, const absl::Span<const TensorShape>& shapes,
     const DataType dtype, std::vector<ScopedAllocator::Field>* fields) {
-  const int32 num_fields = static_cast<int32>(shapes.size());
+  const int32_t num_fields = static_cast<int32_t>(shapes.size());
   fields->resize(num_fields);
   // At the end of iteration `i`, `offset` points to the offset from the start
   // of the backing buffer until the end of `field[i].bytes_allocated`.  This
   // is aligned to `kAllocatorAlignment`.
   size_t offset = 0;
-  for (int32 i = 0; i < num_fields; ++i) {
+  for (int32_t i = 0; i < num_fields; ++i) {
     size_t bytes_requested = shapes[i].num_elements() * DataTypeSize(dtype);
     auto* field = &((*fields)[i]);
     field->scope_id = scope_id + 1 + i;

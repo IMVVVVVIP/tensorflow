@@ -16,11 +16,11 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
+#include "tensorflow/core/data/captured_function.h"
+#include "tensorflow/core/data/dataset_utils.h"
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
 #include "tensorflow/core/kernels/data/window_dataset.h"
 #include "tensorflow/core/lib/random/random.h"
 
@@ -91,9 +91,9 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
     ~Dataset() override { input_->Unref(); }
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
-        const string& prefix) const override {
-      return absl::make_unique<Iterator>(
-          Iterator::Params{this, strings::StrCat(prefix, "::GroupByWindow")});
+        const std::string& prefix) const override {
+      return std::make_unique<Iterator>(
+          Iterator::Params{this, absl::StrCat(prefix, "::GroupByWindow")});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -103,11 +103,25 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
       return output_shapes_;
     }
 
-    string DebugString() const override {
+    std::string DebugString() const override {
       return "GroupByWindowDatasetOp::Dataset";
     }
 
-    Status CheckExternalState() const override {
+    int64_t CardinalityInternal(CardinalityOptions options) const override {
+      int64_t n = input_->Cardinality(options);
+      if (n == kInfiniteCardinality) {
+        return n;
+      }
+      return kUnknownCardinality;
+    }
+
+    absl::Status InputDatasets(
+        std::vector<const DatasetBase*>* inputs) const override {
+      inputs->push_back(input_);
+      return absl::OkStatus();
+    }
+
+    absl::Status CheckExternalState() const override {
       TF_RETURN_IF_ERROR(captured_key_func_->CheckExternalState());
       TF_RETURN_IF_ERROR(captured_reduce_func_->CheckExternalState());
       TF_RETURN_IF_ERROR(captured_window_size_func_->CheckExternalState());
@@ -115,9 +129,9 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
     }
 
    protected:
-    Status AsGraphDefInternal(SerializationContext* ctx,
-                              DatasetGraphDefBuilder* b,
-                              Node** output) const override {
+    absl::Status AsGraphDefInternal(SerializationContext* ctx,
+                                    DatasetGraphDefBuilder* b,
+                                    Node** output) const override {
       Node* input_graph_node = nullptr;
       TF_RETURN_IF_ERROR(b->AddInputDataset(ctx, input_, &input_graph_node));
 
@@ -170,7 +184,7 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
            {"Twindow_size_func_other_arguments",
             window_size_func_other_arguments_types_attr}},
           output));
-      return Status::OK();
+      return absl::OkStatus();
     }
 
    private:
@@ -179,7 +193,7 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
       explicit Iterator(const Params& params)
           : DatasetIterator<Dataset>(params) {}
 
-      Status Initialize(IteratorContext* ctx) override {
+      absl::Status Initialize(IteratorContext* ctx) override {
         TF_RETURN_IF_ERROR(
             dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_));
         TF_RETURN_IF_ERROR(dataset()->captured_key_func_->Instantiate(
@@ -188,12 +202,12 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
             ctx, &instantiated_reduce_func_));
         TF_RETURN_IF_ERROR(dataset()->captured_window_size_func_->Instantiate(
             ctx, &instantiated_window_size_func_));
-        return Status::OK();
+        return absl::OkStatus();
       }
 
-      Status GetNextInternal(IteratorContext* ctx,
-                             std::vector<Tensor>* out_tensors,
-                             bool* end_of_sequence) override {
+      absl::Status GetNextInternal(IteratorContext* ctx,
+                                   std::vector<Tensor>* out_tensors,
+                                   bool* end_of_sequence) override {
         mutex_lock l(mu_);
         do {
           if (current_group_iterator_) {
@@ -201,11 +215,11 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
             // next element.
             bool end_of_group;
             TF_RETURN_IF_ERROR(current_group_iterator_->GetNext(
-                ctx, out_tensors, &end_of_group));
+                MakeNestedIteratorContext(ctx), out_tensors, &end_of_group));
             if (!end_of_group) {
               // Produce the subelement as output.
               *end_of_sequence = false;
-              return Status::OK();
+              return absl::OkStatus();
             }
             // We have reached the end of the current group, so maybe move on
             // to the next group.
@@ -218,49 +232,51 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
           while (!end_of_input_) {
             std::vector<Tensor> next_input_element;
             TF_RETURN_IF_ERROR(
-                input_impl_->GetNext(ctx, &next_input_element, &end_of_input_));
+                input_impl_->GetNext(MakeNestedIteratorContext(ctx),
+                                     &next_input_element, &end_of_input_));
 
             if (!end_of_input_) {
               // Run the key function on the input element to identify its
               // group.
               std::vector<Tensor> key_func_output;
               TF_RETURN_IF_ERROR(instantiated_key_func_->RunWithBorrowedArgs(
-                  ctx, next_input_element, &key_func_output));
+                  ctx, next_input_element, &key_func_output, model_node()));
 
               if (key_func_output.size() != 1 ||
                   key_func_output[0].dtype() != DT_INT64 ||
                   key_func_output[0].NumElements() != 1) {
                 // TODO(b/78665031): Support non-int64 keys.
-                return errors::InvalidArgument(
+                return absl::InvalidArgumentError(
                     "`key_func` must return a scalar int64.");
               }
-              const int64 key = key_func_output[0].scalar<int64>()();
+              const int64_t key = key_func_output[0].scalar<int64_t>()();
 
               if (window_sizes_.find(key) == window_sizes_.end()) {
                 // Run the window size function on the key to identify its
                 // window size.
                 std::vector<Tensor> window_size_func_output;
                 TF_RETURN_IF_ERROR(instantiated_window_size_func_->Run(
-                    ctx, std::move(key_func_output), &window_size_func_output));
+                    ctx, std::move(key_func_output), &window_size_func_output,
+                    model_node()));
 
                 if (window_size_func_output.size() != 1 ||
                     window_size_func_output[0].dtype() != DT_INT64 ||
                     window_size_func_output[0].NumElements() != 1) {
                   // TODO(mrry): Support non-int64 window sizes.
-                  return errors::InvalidArgument(
+                  return absl::InvalidArgumentError(
                       "`window_size_func` must return a scalar int64.");
                 }
-                const int64 window_size =
-                    window_size_func_output[0].scalar<int64>()();
+                const int64_t window_size =
+                    window_size_func_output[0].scalar<int64_t>()();
                 if (window_size <= 0) {
-                  return errors::InvalidArgument(
+                  return absl::InvalidArgumentError(absl::StrCat(
                       "Window size must be greater than zero, but got ",
-                      window_size, ".");
+                      window_size, "."));
                 }
                 window_sizes_[key] = window_size;
               }
 
-              const int64 window_size = window_sizes_[key];
+              const int64_t window_size = window_sizes_[key];
 
               std::vector<std::vector<Tensor>>& group = groups_[key];
               group.push_back(std::move(next_input_element));
@@ -285,7 +301,7 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
         } while (current_group_iterator_ || !end_of_input_);
 
         *end_of_sequence = true;
-        return Status::OK();
+        return absl::OkStatus();
       }
 
      protected:
@@ -294,8 +310,8 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
         return model::MakeUnknownRatioNode(std::move(args));
       }
 
-      Status SaveInternal(SerializationContext* ctx,
-                          IteratorStateWriter* writer) override {
+      absl::Status SaveInternal(SerializationContext* ctx,
+                                IteratorStateWriter* writer) override {
         TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
             dataset()->captured_key_func_->CheckExternalState()));
         TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
@@ -316,12 +332,12 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
               writer->WriteScalar(full_name("groups_size"), groups_.size()));
           int idx = 0;
           for (auto it = groups_.begin(); it != groups_.end(); it++) {
-            int64 key = it->first;
+            int64_t key = it->first;
             TF_RETURN_IF_ERROR(writer->WriteScalar(
-                full_name(strings::StrCat("groups_[", idx, "]->key")), key));
-            TF_RETURN_IF_ERROR(SaveGroup(
-                writer, full_name(strings::StrCat("groups_[", idx, "]")),
-                it->second));
+                full_name(absl::StrCat("groups_[", idx, "]->key")), key));
+            TF_RETURN_IF_ERROR(
+                SaveGroup(writer, full_name(absl::StrCat("groups_[", idx, "]")),
+                          it->second));
             idx++;
           }
         }
@@ -334,10 +350,10 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
           for (auto it = window_sizes_.begin(); it != window_sizes_.end();
                it++) {
             TF_RETURN_IF_ERROR(writer->WriteScalar(
-                full_name(strings::StrCat("window_sizes_[", idx, "]->key")),
+                full_name(absl::StrCat("window_sizes_[", idx, "]->key")),
                 it->first));
             TF_RETURN_IF_ERROR(writer->WriteScalar(
-                full_name(strings::StrCat("window_sizes_[", idx, "]->value")),
+                full_name(absl::StrCat("window_sizes_[", idx, "]->value")),
                 it->second));
             idx++;
           }
@@ -355,11 +371,11 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
         }
         TF_RETURN_IF_ERROR(writer->WriteScalar(full_name("group_counter"),
                                                group_counter_ - 1));
-        return Status::OK();
+        return absl::OkStatus();
       }
 
-      Status RestoreInternal(IteratorContext* ctx,
-                             IteratorStateReader* reader) override {
+      absl::Status RestoreInternal(IteratorContext* ctx,
+                                   IteratorStateReader* reader) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
 
@@ -367,16 +383,16 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
 
         // Restoring groups_
         if (reader->Contains(full_name("groups_size"))) {
-          int64 size;
+          int64_t size;
           TF_RETURN_IF_ERROR(
               reader->ReadScalar(full_name("groups_size"), &size));
           for (int idx = 0; idx < size; idx++) {
-            int64 key;
+            int64_t key;
             TF_RETURN_IF_ERROR(reader->ReadScalar(
-                full_name(strings::StrCat("groups_[", idx, "]->key")), &key));
+                full_name(absl::StrCat("groups_[", idx, "]->key")), &key));
             std::vector<std::vector<Tensor>> group;
             TF_RETURN_IF_ERROR(RestoreGroup(
-                reader, full_name(strings::StrCat("groups_[", idx, "]")),
+                ctx, reader, full_name(absl::StrCat("groups_[", idx, "]")),
                 &group));
             groups_[key] = group;
           }
@@ -384,16 +400,16 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
 
         // Restoring window_sizes_
         if (reader->Contains(full_name("window_sizes_size"))) {
-          int64 size;
+          int64_t size;
           TF_RETURN_IF_ERROR(
               reader->ReadScalar(full_name("window_sizes_size"), &size));
           for (int idx = 0; idx < size; idx++) {
-            int64 key;
+            int64_t key;
             TF_RETURN_IF_ERROR(reader->ReadScalar(
-                full_name(strings::StrCat("window_sizes_[", idx, "]->key")),
+                full_name(absl::StrCat("window_sizes_[", idx, "]->key")),
                 &key));
             TF_RETURN_IF_ERROR(reader->ReadScalar(
-                full_name(strings::StrCat("window_sizes_[", idx, "]->value")),
+                full_name(absl::StrCat("window_sizes_[", idx, "]->value")),
                 &window_sizes_[key]));
           }
         }
@@ -415,55 +431,59 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
           TF_RETURN_IF_ERROR(
               RestoreInput(ctx, reader, current_group_iterator_));
         }
-        return Status::OK();
+        return absl::OkStatus();
       }
 
      private:
-      Status SaveGroup(IteratorStateWriter* writer, const string& name,
-                       const std::vector<std::vector<Tensor>>& group)
+      absl::Status SaveGroup(IteratorStateWriter* writer,
+                             const std::string& name,
+                             const std::vector<std::vector<Tensor>>& group)
           TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
         TF_RETURN_IF_ERROR(
-            writer->WriteScalar(strings::StrCat(name, "_size"), group.size()));
+            writer->WriteScalar(absl::StrCat(name, "_size"), group.size()));
         for (int i = 0; i < group.size(); i++) {
           TF_RETURN_IF_ERROR(writer->WriteScalar(
-              strings::StrCat(name, "[", i, "]_size"), group[i].size()));
+              absl::StrCat(name, "[", i, "]_size"), group[i].size()));
           for (int j = 0; j < group[i].size(); j++) {
             TF_RETURN_IF_ERROR(writer->WriteTensor(
                 strings::StrCat(name, "[", i, "][", j, "]"), group[i][j]));
           }
         }
-        return Status::OK();
+        return absl::OkStatus();
       }
 
-      Status RestoreGroup(IteratorStateReader* reader, const string& name,
-                          std::vector<std::vector<Tensor>>* group)
+      absl::Status RestoreGroup(IteratorContext* ctx,
+                                IteratorStateReader* reader,
+                                const std::string& name,
+                                std::vector<std::vector<Tensor>>* group)
           TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-        int64 group_size;
+        int64_t group_size;
         TF_RETURN_IF_ERROR(
-            reader->ReadScalar(strings::StrCat(name, "_size"), &group_size));
+            reader->ReadScalar(absl::StrCat(name, "_size"), &group_size));
         group->resize(group_size);
         for (int i = 0; i < group_size; i++) {
-          int64 vector_size;
+          int64_t vector_size;
           TF_RETURN_IF_ERROR(reader->ReadScalar(
-              strings::StrCat(name, "[", i, "]_size"), &vector_size));
+              absl::StrCat(name, "[", i, "]_size"), &vector_size));
           group->at(i).resize(vector_size);
           for (int j = 0; j < vector_size; j++) {
             TF_RETURN_IF_ERROR(reader->ReadTensor(
-                strings::StrCat(name, "[", i, "][", j, "]"), &group->at(i)[j]));
+                ctx->flr(), strings::StrCat(name, "[", i, "][", j, "]"),
+                &group->at(i)[j]));
           }
         }
-        return Status::OK();
+        return absl::OkStatus();
       }
 
-      Status StartFlushingGroup(IteratorContext* ctx, int64 key)
+      absl::Status StartFlushingGroup(IteratorContext* ctx, int64_t key)
           TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
         DatasetBase* group_dataset;
-        TF_RETURN_IF_ERROR(NewWindowDataset(
-            groups_[key], dataset()->input_->output_dtypes(),
-            dataset()->input_->output_shapes(), &group_dataset));
+        TF_RETURN_IF_ERROR(
+            NewWindow(groups_[key], dataset()->input_->output_dtypes(),
+                      dataset()->input_->output_shapes(), &group_dataset));
 
         Tensor key_arg(DT_INT64, TensorShape({}));
-        key_arg.scalar<int64>()() = key;
+        key_arg.scalar<int64_t>()() = key;
 
         Tensor group_dataset_arg(DT_VARIANT, TensorShape({}));
         TF_RETURN_IF_ERROR(
@@ -472,13 +492,26 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
         std::vector<Tensor> args(
             {std::move(key_arg), std::move(group_dataset_arg)});
         std::vector<Tensor> return_values;
-        TF_RETURN_IF_ERROR(instantiated_reduce_func_->Run(ctx, std::move(args),
-                                                          &return_values));
+        // If not restoring, pass the model node of this iterator in order to
+        // exclude captured function run time from being added to the processing
+        // time of the node. If restoring, pass nullptr to not record processing
+        // time because iterator modeling is only used to model Iterator's
+        // GetNext() resource usage.
+        auto status = instantiated_reduce_func_->Run(
+            ctx, std::move(args), &return_values,
+            ctx->is_restoring() ? nullptr : model_node());
+        if (!status.ok()) {
+          return absl::InternalError(absl::StrFormat(
+              "Got error code %s and message: {\n%s\n} \nfrom running "
+              "user-defined function %s: ",
+              absl::StatusCodeToString(status.code()), status.message(),
+              instantiated_reduce_func_->func_name()));
+        }
 
         if (!(return_values.size() == 1 &&
               return_values[0].dtype() == DT_VARIANT &&
               TensorShapeUtils::IsScalar(return_values[0].shape()))) {
-          return errors::InvalidArgument(
+          return absl::InvalidArgumentError(
               "`reduce_func` must return a single scalar of dtype "
               "DT_VARIANT.");
         }
@@ -491,20 +524,21 @@ class GroupByWindowDatasetOp : public UnaryDatasetOpKernel {
 
         // Create an iterator for the dataset that was returned by `f`.
         return returned_dataset->MakeIterator(
-            ctx, this, strings::StrCat(prefix(), "[", group_counter_++, "]"),
+            MakeNestedIteratorContext(ctx), this,
+            absl::StrCat(prefix(), "[", group_counter_++, "]"),
             &current_group_iterator_);
       }
 
       mutex mu_;
-      int64 group_counter_ TF_GUARDED_BY(mu_) = 0;
+      int64_t group_counter_ TF_GUARDED_BY(mu_) = 0;
       std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
       // TODO(mrry): Optimize for dense key space if appropriate.
       bool end_of_input_ TF_GUARDED_BY(mu_) = false;
-      int64 current_key_ TF_GUARDED_BY(mu_);
-      std::map<int64, std::vector<std::vector<Tensor>>> groups_
+      int64_t current_key_ TF_GUARDED_BY(mu_);
+      std::map<int64_t, std::vector<std::vector<Tensor>>> groups_
           TF_GUARDED_BY(mu_);
       std::unique_ptr<IteratorBase> current_group_iterator_ TF_GUARDED_BY(mu_);
-      std::map<int64, int64> window_sizes_ TF_GUARDED_BY(mu_);
+      std::map<int64_t, int64_t> window_sizes_ TF_GUARDED_BY(mu_);
       std::unique_ptr<InstantiatedCapturedFunction> instantiated_key_func_;
       std::unique_ptr<InstantiatedCapturedFunction> instantiated_reduce_func_;
       std::unique_ptr<InstantiatedCapturedFunction>

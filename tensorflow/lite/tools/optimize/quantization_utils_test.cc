@@ -14,21 +14,30 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/tools/optimize/quantization_utils.h"
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "absl/memory/memory.h"
+#include "tensorflow/compiler/mlir/lite/quantization/lite/test_util.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/init_main.h"
 #include "tensorflow/core/util/command_line_flags.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/core/model.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/schema/schema_utils.h"
 #include "tensorflow/lite/testing/util.h"
-#include "tensorflow/lite/tools/optimize/test_util.h"
 
 namespace {
-tensorflow::string* g_test_model_dir = nullptr;
+std::string* g_test_model_dir = nullptr;
 }  // namespace
 
 namespace tflite {
@@ -42,7 +51,7 @@ std::unique_ptr<FlatBufferModel> ReadModel(const char* model) {
 }
 
 std::unique_ptr<FlatBufferModel> ReadConvModel() {
-  return ReadModel(internal::kConvModelWith0Plus10Weights);
+  return ReadModel(mlir::lite::internal::kConvModelWith0Plus10Weights);
 }
 
 using ::testing::ElementsAreArray;
@@ -119,7 +128,7 @@ TEST_F(QuantizationUtilsTest,
 
 TEST_F(QuantizationUtilsTest,
        AsymmetricQuantizationParamsWithAllNegativeRange) {
-  // The min should get nudged to include 0, so the effective range is [-6, 0].
+  // The max should get nudged to include 0, so the effective range is [-6, 0].
   const float float_min = -6.0;
   const float float_max = -1.0;
   const int quant_min = -128;
@@ -231,7 +240,7 @@ TEST_F(QuantizationUtilsTest, SymmetricPerChannelQuantization) {
 
   // Initialize pointer to quantization parameters
   TensorT tensor = TensorT();
-  tensor.quantization = absl::make_unique<QuantizationParametersT>();
+  tensor.quantization = std::make_unique<QuantizationParametersT>();
   tensor.shape = {3, 2, 2, 2};
   FillPerChannelMinMax(input.data(), tensor.shape, channel_index,
                        tensor.quantization.get(), &error_reporter_);
@@ -253,6 +262,51 @@ TEST_F(QuantizationUtilsTest, SymmetricPerChannelQuantization) {
       76, 51, 127, -51, 76,  51,  127,  -51,   // Channel 1.
       16, 32, 48,  64,  79,  95,  111,  127,   // Channel 2.
       21, 0,  -21, -42, -64, -85, -106, -127,  // Channel 3.
+  };
+  EXPECT_THAT(output_scales, ElementsAreArray(expected_output_scales));
+  EXPECT_THAT(output_data, ElementsAreArray(expected_output_data));
+}
+
+TEST_F(QuantizationUtilsTest, SymmetricPerChannelQuantization2DTensor) {
+  // Set up an input with [3, 8] size and 0 is the channel index.
+  const std::vector<float> input = {
+      3.0, 2.0, 5.0,  -2.0, 3.0,  2.0,  5.0,  -2.0,  // Batch 1.
+      1.0, 2.0, 3.0,  4.0,  5.0,  6.0,  7.0,  8.0,   // Batch 2.
+      1.0, 0.0, -1.0, -2.0, -3.0, -4.0, -5.0, -6.0,  // Batch 3.
+  };
+  const int32_t channel_index = 1;
+
+  // Create holder for output scale and data.
+  std::vector<float> output_scales(8);
+  std::vector<int8_t> output_data(3 * 8);
+
+  // Initialize pointer to quantization parameters
+  TensorT tensor = TensorT();
+  tensor.quantization = std::make_unique<QuantizationParametersT>();
+  tensor.shape = {3, 8};
+  FillPerChannelMinMax(input.data(), tensor.shape, channel_index,
+                       tensor.quantization.get(), &error_reporter_);
+
+  // Test that FillPerChanneMinMax worked
+  const std::vector<float> expected_mins = {1.0,  0.0,  -1.0, -2.0,
+                                            -3.0, -4.0, -5.0, -6.0};
+  const std::vector<float> expected_maxs = {3.0, 2.0, 5.0, 4.0,
+                                            5.0, 6.0, 7.0, 8.0};
+  EXPECT_THAT(tensor.quantization->min, ElementsAreArray(expected_mins));
+  EXPECT_THAT(tensor.quantization->max, ElementsAreArray(expected_maxs));
+
+  // Call SymmetricPerChannelQuantization with quant_params as a null pointer
+  // and verify the result.
+  SymmetricPerChannelQuantization(&tensor, input.data(), channel_index,
+                                  &output_scales, &output_data,
+                                  &error_reporter_);
+  const std::vector<float> expected_output_scales = {
+      0.02362204724, 0.01574803149, 0.03937007874, 0.03149606299,
+      0.03937007874, 0.04724409448, 0.05511811023, 0.06299212598};
+  const std::vector<int8_t> expected_output_data = {
+      127, 127, 127, -64, 76,  42,  91,  -32,  // Batch 1.
+      42,  127, 76,  127, 127, 127, 127, 127,  // Batch 2.
+      42,  0,   -25, -64, -76, -85, -91, -95,  // Batch 3.
   };
   EXPECT_THAT(output_scales, ElementsAreArray(expected_output_scales));
   EXPECT_THAT(output_data, ElementsAreArray(expected_output_data));
@@ -328,6 +382,28 @@ TEST_F(QuantizationUtilsTest, FillPerChannelMinMaxFillDim3) {
   EXPECT_EQ(quantization_params.quantized_dimension, channel_dim_idx);
 }
 
+TEST_F(QuantizationUtilsTest, FillPerChannelMinMax2DTensor) {
+  // Set up an input with [3, 2] size.
+  const std::vector<float> input = {
+      // Channel 1, Channel 2
+      13.0, 21.0, 21.0, 22.0, 31.0, 40.0,
+  };
+
+  // Initialize pointer to quantization parameters.
+  QuantizationParametersT quantization_params = QuantizationParametersT();
+  std::vector<int> dimension = {3, 2};
+  int32_t channel_dim_idx = 1;
+  const std::vector<float> expected_mins = {13.0, 21.0};
+  const std::vector<float> expected_maxs = {31.0, 40.0};
+
+  FillPerChannelMinMax(input.data(), dimension, channel_dim_idx,
+                       &quantization_params, &error_reporter_);
+
+  EXPECT_EQ(quantization_params.min, expected_mins);
+  EXPECT_EQ(quantization_params.max, expected_maxs);
+  EXPECT_EQ(quantization_params.quantized_dimension, channel_dim_idx);
+}
+
 TEST_F(QuantizationUtilsTest, FillSingleMinMax) {
   // Set up an input with [3, 1, 1, 2] size.
   const std::vector<float> input = {
@@ -355,7 +431,7 @@ TEST_F(QuantizationUtilsTest, GetSymmetricScalesFromMaxMin) {
   const int8_t kMaxQuantizedValue = 127;
   tflite::TestErrorReporter error_reporter_;
   // Create data.
-  auto quantization = absl::make_unique<QuantizationParametersT>();
+  auto quantization = std::make_unique<QuantizationParametersT>();
   quantization->min = {-0.00001, -7.0, -2.0};
   quantization->max = {0.00001, 1.0, -1.0};
   std::vector<float> scales = std::vector<float>(quantization->min.size());
@@ -375,7 +451,7 @@ TEST_F(QuantizationUtilsTest, AdjustWeightScaleForBiasPerChannel) {
   tflite::TestErrorReporter error_reporter_;
 
   // Create data.
-  auto quant_params = absl::make_unique<QuantizationParametersT>();
+  auto quant_params = std::make_unique<QuantizationParametersT>();
   const float small_val = 0.0000001;
   const std::vector<float> orig_mins = {-small_val, -7.0};
   quant_params->min = orig_mins;
@@ -423,7 +499,7 @@ TEST_F(QuantizationUtilsTest, AdjustWeightScaleForBiasPerLayer) {
   tflite::TestErrorReporter error_reporter_;
 
   // Create data.
-  auto quant_params = absl::make_unique<QuantizationParametersT>();
+  auto quant_params = std::make_unique<QuantizationParametersT>();
   float small_val = 0.0000001;
   const std::vector<float> orig_mins = {-small_val};
   quant_params->min = orig_mins;
@@ -471,8 +547,9 @@ TEST_F(QuantizationUtilsTest, SymmetricQuantizeTensorFromMinMax) {
   readonly_model->UnPackTo(&model);
   auto subgraph = model.subgraphs[0].get();
   auto conv_op = subgraph->operators.at(0).get();
-  ASSERT_EQ(model.operator_codes.at(conv_op->opcode_index)->builtin_code,
-            BuiltinOperator_CONV_2D);
+  ASSERT_EQ(
+      GetBuiltinCode(model.operator_codes.at(conv_op->opcode_index).get()),
+      BuiltinOperator_CONV_2D);
   int32_t weights_tensor_idx = conv_op->inputs[1];
   TensorT* weights_tensor = subgraph->tensors.at(weights_tensor_idx).get();
 
@@ -520,12 +597,13 @@ TEST_F(QuantizationUtilsTest, SymmetricQuantizeTensorNullQuantParams) {
   readonly_model->UnPackTo(&model);
   auto subgraph = model.subgraphs[0].get();
   auto conv_op = subgraph->operators.at(0).get();
-  ASSERT_EQ(model.operator_codes.at(conv_op->opcode_index)->builtin_code,
-            BuiltinOperator_CONV_2D);
+  ASSERT_EQ(
+      GetBuiltinCode(model.operator_codes.at(conv_op->opcode_index).get()),
+      BuiltinOperator_CONV_2D);
   int32_t weights_tensor_idx = conv_op->inputs[1];
   TensorT* weights_tensor = subgraph->tensors.at(weights_tensor_idx).get();
   // Empty quantization parameters.
-  weights_tensor->quantization = absl::make_unique<QuantizationParametersT>();
+  weights_tensor->quantization = std::make_unique<QuantizationParametersT>();
 
   EXPECT_EQ(weights_tensor->type, TensorType_FLOAT32);
   size_t float_buffer_size =
@@ -554,8 +632,9 @@ TEST_F(QuantizationUtilsTest, SymmetricQuantizeTensor) {
   readonly_model->UnPackTo(&model);
   auto subgraph = model.subgraphs[0].get();
   auto conv_op = subgraph->operators.at(0).get();
-  ASSERT_EQ(model.operator_codes.at(conv_op->opcode_index)->builtin_code,
-            BuiltinOperator_CONV_2D);
+  ASSERT_EQ(
+      GetBuiltinCode(model.operator_codes.at(conv_op->opcode_index).get()),
+      BuiltinOperator_CONV_2D);
   int32_t weights_tensor_idx = conv_op->inputs[1];
   TensorT* weights_tensor = subgraph->tensors.at(weights_tensor_idx).get();
 
@@ -569,6 +648,41 @@ TEST_F(QuantizationUtilsTest, SymmetricQuantizeTensor) {
       model.buffers.at(weights_tensor->buffer)->data.size();
   EXPECT_EQ(weights_tensor->type, TensorType_INT8);
   EXPECT_EQ(quant_buffer_size * 4, float_buffer_size);
+}
+
+TEST_F(QuantizationUtilsTest, QuantizeFloat16Clamp) {
+  // Create data.
+  auto model = std::make_unique<ModelT>();
+  auto subgraph = std::make_unique<tflite::SubGraphT>();
+  auto tensor = std::make_unique<TensorT>();
+  auto buffer = std::make_unique<tflite::BufferT>();
+  constexpr int kNumElements = 6;
+  const std::vector<float> weights = {2.0, 1.0, 65504., 65505, -65504., -99999};
+  auto weights_reinterpreted_data =
+      reinterpret_cast<const unsigned char*>(weights.data());
+  buffer->data.assign(weights_reinterpreted_data,
+                      weights_reinterpreted_data + weights.size() * 4);
+  tensor->buffer = 0;
+  tensor->shape = {1, kNumElements};
+
+  // Wire the model.
+  model->subgraphs.push_back(std::move(subgraph));
+  model->subgraphs[0]->tensors.push_back(std::move(tensor));
+  model->buffers.push_back(std::move(buffer));
+
+  // Call and verify.
+  EXPECT_EQ(
+      QuantizeTensorFloat16(model.get(), model->subgraphs[0]->tensors[0].get()),
+      kTfLiteOk);
+  auto weightsf16 = reinterpret_cast<Eigen::half*>(
+      model->buffers[model->subgraphs[0]->tensors[0]->buffer]->data.data());
+  std::vector<float> wf32(kNumElements);
+  std::transform(weightsf16, weightsf16 + 6, wf32.begin(),
+                 [](Eigen::half a) { return static_cast<float>(a); });
+
+  EXPECT_THAT(wf32,
+              ElementsAreArray({2.0, 1.0, 65504., 65504., -65504., -65504.}));
+  EXPECT_EQ(model->subgraphs[0]->tensors[0]->type, TensorType_FLOAT16);
 }
 
 TEST_F(QuantizationUtilsTest, QuantizeFloat16) {
@@ -586,8 +700,9 @@ TEST_F(QuantizationUtilsTest, QuantizeFloat16) {
   readonly_model->UnPackTo(&model);
   auto subgraph = model.subgraphs[0].get();
   auto conv_op = subgraph->operators.at(0).get();
-  ASSERT_EQ(model.operator_codes.at(conv_op->opcode_index)->builtin_code,
-            BuiltinOperator_CONV_2D);
+  ASSERT_EQ(
+      GetBuiltinCode(model.operator_codes.at(conv_op->opcode_index).get()),
+      BuiltinOperator_CONV_2D);
   int32_t weights_tensor_idx = conv_op->inputs[1];
   TensorT* weights_tensor = subgraph->tensors.at(weights_tensor_idx).get();
 
@@ -605,10 +720,10 @@ TEST_F(QuantizationUtilsTest, QuantizeFloat16) {
 
 TEST_F(QuantizationUtilsTest, AddQuantizationParams) {
   // Create data.
-  auto model = absl::make_unique<ModelT>();
-  auto subgraph = absl::make_unique<tflite::SubGraphT>();
-  auto tensor = absl::make_unique<TensorT>();
-  auto buffer = absl::make_unique<tflite::BufferT>();
+  auto model = std::make_unique<ModelT>();
+  auto subgraph = std::make_unique<tflite::SubGraphT>();
+  auto tensor = std::make_unique<TensorT>();
+  auto buffer = std::make_unique<tflite::BufferT>();
   const std::vector<float> scales = {0.5, 1.0, 1.5};
   const std::vector<int64_t> zero_points = {5, 10, 15};
   const int32_t quantizated_dimension = 3;
@@ -638,10 +753,10 @@ TEST_F(QuantizationUtilsTest, AddQuantizationParams) {
 
 TEST_F(QuantizationUtilsTest, SymmetricQuantizeFloatsToInt16Test) {
   // Create data.
-  auto model = absl::make_unique<ModelT>();
-  auto subgraph = absl::make_unique<tflite::SubGraphT>();
-  auto tensor = absl::make_unique<TensorT>();
-  auto buffer = absl::make_unique<tflite::BufferT>();
+  auto model = std::make_unique<ModelT>();
+  auto subgraph = std::make_unique<tflite::SubGraphT>();
+  auto tensor = std::make_unique<TensorT>();
+  auto buffer = std::make_unique<tflite::BufferT>();
   const float weight_scale = 0.5;
   const float input_scale = 0.5;
   std::vector<float> layer_norm_data = {4.0, 1.0, -1.0, 8.0};
@@ -652,7 +767,7 @@ TEST_F(QuantizationUtilsTest, SymmetricQuantizeFloatsToInt16Test) {
       layer_norm_reinterpreted_data + layer_norm_data.size() * 4);
   tensor->buffer = 0;
   tensor->shape = {4};
-  tensor->quantization = absl::make_unique<QuantizationParametersT>();
+  tensor->quantization = std::make_unique<QuantizationParametersT>();
 
   // Wire the model.
   model->subgraphs.push_back(std::move(subgraph));
@@ -680,10 +795,10 @@ TEST_F(QuantizationUtilsTest, SymmetricQuantizeFloatsToInt16Test) {
 
 TEST_F(QuantizationUtilsTest, SymmetricPerLayerBiasQuantize) {
   // Create data.
-  auto model = absl::make_unique<ModelT>();
-  auto subgraph = absl::make_unique<tflite::SubGraphT>();
-  auto tensor = absl::make_unique<TensorT>();
-  auto buffer = absl::make_unique<tflite::BufferT>();
+  auto model = std::make_unique<ModelT>();
+  auto subgraph = std::make_unique<tflite::SubGraphT>();
+  auto tensor = std::make_unique<TensorT>();
+  auto buffer = std::make_unique<tflite::BufferT>();
   const float weight_scale = 0.5;
   const float input_scale = 0.5;
   std::vector<float> bias_data = {4.0, 1.0};
@@ -693,7 +808,7 @@ TEST_F(QuantizationUtilsTest, SymmetricPerLayerBiasQuantize) {
                       bias_reinterpreted_data + bias_data.size() * 4);
   tensor->buffer = 0;
   tensor->shape = {2, 1, 1, 1};
-  tensor->quantization = absl::make_unique<QuantizationParametersT>();
+  tensor->quantization = std::make_unique<QuantizationParametersT>();
 
   // Wire the model.
   model->subgraphs.push_back(std::move(subgraph));
@@ -710,18 +825,21 @@ TEST_F(QuantizationUtilsTest, SymmetricPerLayerBiasQuantize) {
               weight_scale * input_scale);
   EXPECT_THAT(model->subgraphs[0]->tensors[0]->quantization->zero_point[0], 0);
 
-  EXPECT_THAT(model->buffers[model->subgraphs[0]->tensors[0]->buffer]->data,
-              ElementsAreArray({16, 0, 0, 0, 4, 0, 0, 0}));
+  const uint32_t* d1 = reinterpret_cast<const uint32_t*>(
+      model->buffers[model->subgraphs[0]->tensors[0]->buffer]->data.data());
+  EXPECT_EQ(d1[0], 0x00000010);
+  EXPECT_EQ(d1[1], 0x00000004);
+
   EXPECT_EQ(model->subgraphs[0]->tensors[0]->type, TensorType_INT32);
 }
 
 TEST_F(QuantizationUtilsTest, GetEffectiveScale) {
   // Create data.
-  auto model = absl::make_unique<ModelT>();
-  auto subgraph = absl::make_unique<SubGraphT>();
-  auto tensor = absl::make_unique<TensorT>();
-  auto op = absl::make_unique<OperatorT>();
-  tensor->quantization = absl::make_unique<QuantizationParametersT>();
+  auto model = std::make_unique<ModelT>();
+  auto subgraph = std::make_unique<SubGraphT>();
+  auto tensor = std::make_unique<TensorT>();
+  auto op = std::make_unique<OperatorT>();
+  tensor->quantization = std::make_unique<QuantizationParametersT>();
   tensor->quantization->scale.push_back(3.0);
   op->inputs.push_back(0);
 
@@ -738,10 +856,10 @@ TEST_F(QuantizationUtilsTest, GetEffectiveScale) {
 
 TEST_F(QuantizationUtilsTest, SymmetricPerChannelBiasQuantize) {
   // Create data.
-  auto model = absl::make_unique<ModelT>();
-  auto subgraph = absl::make_unique<tflite::SubGraphT>();
-  auto tensor = absl::make_unique<TensorT>();
-  auto buffer = absl::make_unique<tflite::BufferT>();
+  auto model = std::make_unique<ModelT>();
+  auto subgraph = std::make_unique<tflite::SubGraphT>();
+  auto tensor = std::make_unique<TensorT>();
+  auto buffer = std::make_unique<tflite::BufferT>();
   const std::vector<float> weight_scales = {0.5, 1.0};
   const float input_scale = 0.5;
   std::vector<float> bias_data = {4.0, 1.0};
@@ -751,7 +869,7 @@ TEST_F(QuantizationUtilsTest, SymmetricPerChannelBiasQuantize) {
                       bias_reinterpreted_data + bias_data.size() * 4);
   tensor->buffer = 0;
   tensor->shape = {2, 1, 1, 1};
-  tensor->quantization = absl::make_unique<QuantizationParametersT>();
+  tensor->quantization = std::make_unique<QuantizationParametersT>();
 
   // Wire the model.
   model->subgraphs.push_back(std::move(subgraph));
@@ -763,8 +881,12 @@ TEST_F(QuantizationUtilsTest, SymmetricPerChannelBiasQuantize) {
                 model.get(), model->subgraphs[0]->tensors[0].get(), input_scale,
                 weight_scales.data(), 2, &error_reporter_),
             kTfLiteOk);
-  EXPECT_THAT(model->buffers[model->subgraphs[0]->tensors[0]->buffer]->data,
-              ElementsAreArray({16, 0, 0, 0, 2, 0, 0, 0}));
+
+  const uint32_t* d1 = reinterpret_cast<const uint32_t*>(
+      model->buffers[model->subgraphs[0]->tensors[0]->buffer]->data.data());
+  EXPECT_EQ(d1[0], 0x00000010);
+  EXPECT_EQ(d1[1], 0x00000002);
+
   EXPECT_EQ(model->subgraphs[0]->tensors[0]->type, TensorType_INT32);
 }
 
@@ -780,7 +902,7 @@ TEST_F(QuantizationUtilsTest, ExtendToPowerOfTwo) {
 }  // namespace tflite
 
 int main(int argc, char** argv) {
-  tensorflow::string model_file;
+  std::string model_file;
   const std::vector<tensorflow::Flag> flag_list = {
       tensorflow::Flag("test_model_file", &model_file,
                        "Path to test tflite model file."),
@@ -791,8 +913,7 @@ int main(int argc, char** argv) {
     std::cerr << "Required test_model_file\n";
     std::abort();
   }
-  g_test_model_dir =
-      new tensorflow::string(tensorflow::io::Dirname(model_file));
+  g_test_model_dir = new std::string(tensorflow::io::Dirname(model_file));
   ::tensorflow::port::InitMain(argv[0], &argc, &argv);
   return RUN_ALL_TESTS();
 }

@@ -14,10 +14,6 @@
 # ==============================================================================
 """Script to test TF-TensorRT integration."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.compiler.tensorrt.test import tf_trt_integration_test_base as trt_test
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
@@ -50,7 +46,7 @@ class ConstBroadcastTest(trt_test.TfTrtIntegrationTestBase):
 
   def ExpectedEnginesToBuild(self, run_params):
     """Return the expected engines to build."""
-    return ['TRTEngineOp_0']
+    return ['TRTEngineOp_000']
 
   def ExpectedAbsoluteTolerance(self, run_params):
     """The absolute tolerance to compare floating point results."""
@@ -59,12 +55,6 @@ class ConstBroadcastTest(trt_test.TfTrtIntegrationTestBase):
   def ExpectedRelativeTolerance(self, run_params):
     """The relative tolerance to compare floating point results."""
     return 1.e-04 if run_params.precision_mode == 'FP32' else 1.e-02
-
-  def ShouldRunTest(self, run_params):
-    # TODO(b/162448349): Enable the test for TRT 7.1.3.
-    if trt_test.IsTensorRTVersionGreaterEqual(7, 1, 3):
-      return (False, 'Skip test due to b/162448349')
-    return super().ShouldRunTest(run_params)
 
 
 if __name__ == '__main__':

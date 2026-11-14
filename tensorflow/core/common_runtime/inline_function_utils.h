@@ -22,6 +22,7 @@ limitations under the License.
 #include "absl/types/optional.h"
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/function_body.h"
+#include "tensorflow/core/common_runtime/lower_function_call_inline_policy.h"
 #include "tensorflow/core/framework/function.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/protobuf/config.pb.h"
@@ -40,14 +41,18 @@ class InlinedFunctionBodyPlacer {
  public:
   virtual ~InlinedFunctionBodyPlacer() = default;
 
-  virtual absl::optional<string> InputNodeDevice(int input_index) const = 0;
-  virtual absl::optional<string> OutputNodeDevice(int output_index) const = 0;
+  virtual absl::optional<std::string> InputNodeDevice(
+      int input_index) const = 0;
+  virtual absl::optional<std::string> OutputNodeDevice(
+      int output_index) const = 0;
   // Returns true if the added input/output identity nodes should be colocated
   // with the corresponding input/output from the function body.
   virtual bool ColocateInputOutputIdentities() const = 0;
-  virtual absl::optional<string> ControlNodeDevice() const = 0;
-  virtual absl::optional<string> BodyNodeDevice(const NodeDef& ndef) const = 0;
+  virtual absl::optional<std::string> ControlNodeDevice() const = 0;
+  virtual absl::optional<std::string> BodyNodeDevice(
+      const NodeDef& ndef) const = 0;
 
+  // LINT.IfChange
   // Place input nodes on the same device as the corresponding caller input
   // node. Do not specify any placement for all other nodes.
   static std::unique_ptr<InlinedFunctionBodyPlacer> DefaultPlacer(
@@ -59,16 +64,18 @@ class InlinedFunctionBodyPlacer {
 
   // Place input nodes on the same device as the corresponding caller input
   // node. Do not place output node. Place control nodes on the same device as
-  // caller node. For all function body nodes overrides job, replica and task
-  // parts of the device assignment to match function caller node.
+  // caller node. For all function body nodes set job, replica and task
+  // parts of the device assignment to match function caller node where those
+  // are unspecified.
   static std::unique_ptr<InlinedFunctionBodyPlacer> MultiDevicePlacer(
       const Graph& graph, const Node& caller);
+  // LINT.ThenChange(lower_function_call_inline_policy.h)
 
   using Factory = std::function<std::unique_ptr<InlinedFunctionBodyPlacer>(
       const Graph&, const Node&)>;
 
   struct Config {
-    string name;
+    std::string name;
     Factory get;
   };
 
@@ -143,10 +150,10 @@ struct InlineFunctionBodyOptions {
   bool uniquify_frame_names = true;
 
   // A human-readable debug string for this options.
-  string DebugString() const;
+  std::string DebugString() const;
 };
 
-// Returns 'Status::OK()' iff the function '*fbody' can be inlined at 'node'
+// Returns 'OkStatus()' iff the function '*fbody' can be inlined at 'node'
 // based on the type signature of 'node' and 'fbody':
 //
 // (1) Caller node has the same number of inputs and outputs as the function.
@@ -156,20 +163,21 @@ struct InlineFunctionBodyOptions {
 //
 // If function can't be safely inlined, returns error message with details why
 // inlining is not possible or safe.
-Status ValidateInlining(const Node* node, const FunctionBody* fbody,
-                        const InlineFunctionBodyOptions& options);
+absl::Status ValidateInlining(const Node* node, const FunctionBody* fbody,
+                              const InlineFunctionBodyOptions& options);
 
 // Given a "caller" in graph "g", which is a function call of a function
 // to "fbody". Replaces the "caller" with fbody->graph and connects
 // edges properly. "override_device" specifies whether inlining should replace
 // explicitly specified devices inside fbody with the callee's device.
 //
-// Returns 'Status::OK()' if function was successfully inlined into the graph.
+// Returns 'OkStatus()' if function was successfully inlined into the graph.
 // If function inlining is not possible returns an error with a reason, and
 // leaves the graph in unmodified state.
-Status InlineFunctionBody(const FunctionLibraryDefinition& flib_def, Graph* g,
-                          Node* caller, const FunctionBody* fbody,
-                          const InlineFunctionBodyOptions& options);
+absl::Status InlineFunctionBody(const FunctionLibraryDefinition& flib_def,
+                                Graph* g, Node* caller,
+                                const FunctionBody* fbody,
+                                const InlineFunctionBodyOptions& options);
 
 // There are three types of function calls that could be invoked during
 // *Tensorflow graph execution*:
@@ -230,13 +238,6 @@ bool ExpandInlineFunctions(FunctionLibraryRuntime* lib, Graph* graph,
 inline bool ExpandInlineFunctions(FunctionLibraryRuntime* lib, Graph* graph) {
   return ExpandInlineFunctions(lib, graph, ExpandInlineFunctionsOptions());
 }
-
-struct LowerFunctionalOpsConstants {
-  static constexpr const char* const kLowerUsingSwitchMergeAttr =
-      "_lower_using_switch_merge";
-  static constexpr const char* const kLowerAsMultiDeviceFunctionAttr =
-      "_lower_as_multi_device_function";
-};
 
 }  // end namespace tensorflow
 

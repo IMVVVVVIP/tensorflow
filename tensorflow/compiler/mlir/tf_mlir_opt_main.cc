@@ -13,81 +13,57 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/InitLLVM.h"
-#include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/ToolOutputFile.h"
-#include "mlir/IR/AsmState.h"  // from @llvm-project
-#include "mlir/Pass/Pass.h"  // from @llvm-project
-#include "mlir/Pass/PassManager.h"  // from @llvm-project
-#include "mlir/Support/FileUtilities.h"  // from @llvm-project
-#include "mlir/Support/MlirOptMain.h"  // from @llvm-project
+#include "mlir/InitAllPasses.h"  // from @llvm-project
+#include "mlir/Support/LogicalResult.h"  // from @llvm-project
+#include "mlir/Tools/mlir-opt/MlirOptMain.h"  // from @llvm-project
+#include "mlir/Transforms/Passes.h"  // from @llvm-project
+#include "tensorflow//compiler/mlir/tensorflow/transforms/tf_saved_model_passes.h"
 #include "tensorflow/compiler/mlir/init_mlir.h"
-#include "tensorflow/core/platform/init_main.h"
-#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/compiler/mlir/quantization/stablehlo/passes/bridge/passes.h"
+#include "tensorflow/compiler/mlir/register_common_dialects.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/host_runtime/lower_cluster_to_runtime_ops.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/host_runtime/runtime_passes.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/sparsecore/sparsecore_passes.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/test_passes.h"
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_graph_optimization_pass.h"
+#include "tensorflow/compiler/mlir/tensorflow/utils/mlprogram_util.h"
+#include "tensorflow/compiler/mlir/tf2xla/api/v1/compile_mlir_util.h"
+#include "tensorflow/compiler/mlir/tf2xla/internal/passes/clustering_passes.h"
+#include "tensorflow/compiler/mlir/tf2xla/internal/passes/mlir_to_graph_passes.h"
+#include "tensorflow/compiler/mlir/tf2xla/transforms/passes.h"
+#include "xla/mlir_hlo/mhlo/transforms/passes.h"
 
-// NOLINTNEXTLINE
-static llvm::cl::opt<std::string> input_filename(llvm::cl::Positional,
-                                                 llvm::cl::desc("<input file>"),
-                                                 llvm::cl::init("-"));
-
-// NOLINTNEXTLINE
-static llvm::cl::opt<std::string> output_filename(
-    "o", llvm::cl::desc("Output filename"), llvm::cl::value_desc("filename"),
-    llvm::cl::init("-"));
-
-// NOLINTNEXTLINE
-static llvm::cl::opt<bool> split_input_file(
-    "split-input-file",
-    llvm::cl::desc("Split the input file into pieces and process each "
-                   "chunk independently"),
-    llvm::cl::init(false));
-
-// NOLINTNEXTLINE
-static llvm::cl::opt<bool> verify_diagnostics(
-    "verify-diagnostics",
-    llvm::cl::desc("Check that emitted diagnostics match "
-                   "expected-* lines on the corresponding line"),
-    llvm::cl::init(false));
-
-// NOLINTNEXTLINE
-static llvm::cl::opt<bool> verify_passes(
-    "verify-each",
-    llvm::cl::desc("Run the verifier after each transformation pass"),
-    llvm::cl::init(true));
-
-// NOLINTNEXTLINE
-static llvm::cl::opt<bool> allowUnregisteredDialects(
-    "allow-unregistered-dialect",
-    llvm::cl::desc("Allow operation with no registered dialects"),
-    llvm::cl::init(false));
-
-int main(int argc, char **argv) {
+int main(int argc, char** argv) {
   tensorflow::InitMlir y(&argc, &argv);
 
-  // Register various MLIR command line options.
-  mlir::registerAsmPrinterCLOptions();
-  mlir::registerMLIRContextCLOptions();
-  mlir::registerPassManagerCLOptions();
+  mlir::registerAllPasses();
+  mlir::registerTransformsPasses();
+  mlir::registerTensorFlowPasses();
+  mlir::TFDevice::registerTensorFlowDevicePasses();
+  mlir::tf_saved_model::registerTensorFlowSavedModelPasses();
+  mlir::mhlo::registerAllMhloPasses();
 
-  // Parse pass names in main to ensure static initialization completed.
-  mlir::PassPipelineCLParser pass_pipeline("", "Compiler passes to run");
+  // These are in compiler/mlir/tf2xla and not part of the above MHLO passes.
+  mlir::mhlo::registerLegalizeTfPasses();
+  mlir::mhlo::registerTfXlaPasses();
+  mlir::quant::stablehlo::registerBridgePasses();
+  tensorflow::tf2xla::internal::registerTFXLABridgeClusteringPasses();
+  tensorflow::tf2xla::internal::registerTFXLABridgeMlirToGraphPasses();
+  mlir::tf_test::registerTensorFlowTestPasses();
+  tensorflow::RegisterConvertMlirToXlaHloPipelineWithDefaults();
+  tensorflow::RegisterGraphOptimizationPasses();
+  tensorflow::RegisterMlProgramPasses();
+  mlir::TFTPU::registerRuntimeLoweringPasses();
+  mlir::TFDevice::registerSparseCorePasses();
 
-  llvm::cl::ParseCommandLineOptions(argc, argv,
-                                    "TF MLIR modular optimizer driver\n");
+  tensorflow::tfrt_compiler::RegisterTPULowerClusterToRuntimeOpsPassPipeline();
+  tensorflow::tfrt_compiler::
+      RegisterNonTPULowerClusterToRuntimeOpsPassPipeline();
 
-  // Set up the input file.
-  std::string error_message;
-  auto file = mlir::openInputFile(input_filename, &error_message);
-  QCHECK(file) << error_message;
+  mlir::DialectRegistry registry;
+  mlir::RegisterCommonToolingDialects(registry);
 
-  auto output = mlir::openOutputFile(output_filename, &error_message);
-  QCHECK(output) << error_message;
-
-  if (failed(mlir::MlirOptMain(output->os(), std::move(file), pass_pipeline,
-                               split_input_file, verify_diagnostics,
-                               verify_passes, allowUnregisteredDialects)))
-    return 1;
-  output->keep();
-  return 0;
+  return failed(
+      mlir::MlirOptMain(argc, argv, "TensorFlow pass driver\n", registry));
 }

@@ -15,6 +15,8 @@ limitations under the License.
 
 #include "tensorflow/core/grappler/clusters/single_machine.h"
 
+#include <memory>
+
 #include "tensorflow/cc/framework/scope.h"
 #include "tensorflow/cc/ops/resource_variable_ops.h"
 #include "tensorflow/cc/ops/standard_ops.h"
@@ -27,7 +29,6 @@ limitations under the License.
 #include "tensorflow/core/grappler/utils.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/test.h"
-#include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tensorflow/core/protobuf/queue_runner.pb.h"
 
 namespace tensorflow {
@@ -49,9 +50,11 @@ class SingleMachineTest : public ::testing::Test {
 #ifdef THREAD_SANITIZER
     timeout_s *= 5;
 #endif
-    cluster_.reset(
-        new SingleMachine(timeout_s, 3 /* num_cpu_cores */, 0 /* num_gpus */));
+    cluster_ = std::make_unique<SingleMachine>(timeout_s, 3 /* num_cpu_cores */,
+                                               0 /* num_gpus */);
+#if !defined(__APPLE__)
     TF_CHECK_OK(cluster_->EnablePeakMemoryStats());
+#endif
     TF_CHECK_OK(cluster_->Provision());
   }
 
@@ -79,9 +82,10 @@ TEST_F(SingleMachineTest, CostModel) {
   TF_CHECK_OK(cluster_->Initialize(item));
 
   RunMetadata metadata;
-  const int64 start_micros = Env::Default()->NowMicros();
+  const int64_t start_micros = Env::Default()->NowMicros();
   TF_CHECK_OK(cluster_->Run(item.graph, item.feed, item.fetch, &metadata));
-  const int64 run_duration_micros = Env::Default()->NowMicros() - start_micros;
+  const int64_t run_duration_micros =
+      Env::Default()->NowMicros() - start_micros;
 
   // There should be at least 4 nodes corresponding to the 4 stages we created
   // in the fake input.
@@ -89,7 +93,7 @@ TEST_F(SingleMachineTest, CostModel) {
   for (const auto& node : metadata.cost_graph().node()) {
     // Skip the special nodes inserted by TF: these are prefixed with an
     // underscore.
-    if (node.name()[0] == '_' || node.name().find("/_") != string::npos) {
+    if (node.name()[0] == '_' || node.name().find("/_") != std::string::npos) {
       continue;
     }
 #ifndef INTEL_MKL
@@ -136,7 +140,8 @@ TEST_F(SingleMachineTest, MultipleItems) {
     // in the fake input, plus 1 enqueue and 1 dequeue node.
     EXPECT_LE(6, metadata1.cost_graph().node_size());
     for (const auto& node : metadata1.cost_graph().node()) {
-      if (node.name()[0] == '_' || node.name().find("/_") != string::npos ||
+      if (node.name()[0] == '_' ||
+          node.name().find("/_") != std::string::npos ||
           node.name() == "queue") {
         continue;
       }
@@ -157,9 +162,9 @@ TEST_F(SingleMachineTest, MultipleItems) {
       metadata2.mutable_cost_graph()->mutable_node(i)->set_compute_cost(0);
       metadata2.clear_step_stats();
     }
-    string s1;
+    std::string s1;
     ::tensorflow::protobuf::TextFormat::PrintToString(metadata1, &s1);
-    string s2;
+    std::string s2;
     ::tensorflow::protobuf::TextFormat::PrintToString(metadata2, &s2);
     EXPECT_EQ(s1, s2);
   }
@@ -207,7 +212,7 @@ TEST_F(SingleMachineTest, GraphOptimizations) {
   RunMetadata metadata;
   TF_CHECK_OK(cluster_->Initialize(item));
   TF_CHECK_OK(cluster_->Run(item.graph, item.feed, item.fetch, &metadata));
-  std::set<string> cost_nodes;
+  std::set<std::string> cost_nodes;
   for (const auto& node : metadata.cost_graph().node()) {
 #ifdef INTEL_MKL
     // Skip the special nodes inserted by TF (and MKL): these are either
@@ -223,7 +228,7 @@ TEST_F(SingleMachineTest, GraphOptimizations) {
     }
 #endif
   }
-  const std::set<string> expected_cost_nodes = {
+  const std::set<std::string> expected_cost_nodes = {
       "zero",      "one",      "add",         "square",
       "new_shape", "reshaped", "final_shape", "expected_shape",
       "valid",     "all_dims", "all_valid",   "assert_valid"};
@@ -244,10 +249,10 @@ TEST_F(SingleMachineTest, TimeOuts) {
 
   TF_CHECK_OK(cluster_->Initialize(item));
   RunMetadata metadata;
-  Status s1 = cluster_->Run(item.graph, item.feed, item.fetch, &metadata);
-  EXPECT_TRUE(errors::IsDeadlineExceeded(s1));
-  Status s2 = cluster_->Run(item.graph, item.feed, item.fetch, &metadata);
-  EXPECT_TRUE(errors::IsDeadlineExceeded(s2));
+  absl::Status s1 = cluster_->Run(item.graph, item.feed, item.fetch, &metadata);
+  EXPECT_TRUE(absl::IsDeadlineExceeded(s1));
+  absl::Status s2 = cluster_->Run(item.graph, item.feed, item.fetch, &metadata);
+  EXPECT_TRUE(absl::IsDeadlineExceeded(s2));
 }
 
 static void RunInfiniteTFLoop() {
@@ -259,7 +264,7 @@ static void RunInfiniteTFLoop() {
   shp->set_op("Const");
   (*shp->mutable_attr())["dtype"].set_type(DT_INT32);
   Tensor shp_tensor(DT_INT32, TensorShape({1}));
-  shp_tensor.flat<int32>()(0) = 1;
+  shp_tensor.flat<int32_t>()(0) = 1;
   shp_tensor.AsProtoTensorContent(
       (*shp->mutable_attr())["value"].mutable_tensor());
 
@@ -332,16 +337,16 @@ static void RunInfiniteTFLoop() {
   TF_CHECK_OK(cluster.Provision());
   TF_CHECK_OK(cluster.Initialize(item));
 
-  Status s1 = cluster.Run(item.graph, item.feed, item.fetch, nullptr);
-  if (!errors::IsDeadlineExceeded(s1)) {
+  absl::Status s1 = cluster.Run(item.graph, item.feed, item.fetch, nullptr);
+  if (!absl::IsDeadlineExceeded(s1)) {
     LOG(ERROR) << "Expected 'deadline exceeded' error, got " << s1;
     // Exit to break the infinite loop
     _exit(1);
   }
 
   // Attempt to shutdown the cluster and make sure we get the proper error code.
-  Status s2 = cluster.Shutdown();
-  if (!errors::IsUnavailable(s2)) {
+  absl::Status s2 = cluster.Shutdown();
+  if (!absl::IsUnavailable(s2)) {
     LOG(ERROR) << "Expected 'unavailable' error, got " << s2;
     // Exit to break the infinite loop
     _exit(2);
@@ -390,14 +395,14 @@ TEST_F(SingleMachineTest, InitializationMemory) {
 namespace {
 
 template <class T>
-inline void SetNodeAttr(const string& key, const T& value, NodeDef* node) {
+inline void SetNodeAttr(const std::string& key, const T& value, NodeDef* node) {
   AttrValue attr_value;
   SetAttrValue(value, &attr_value);
   auto* attr_map = node->mutable_attr();
   (*attr_map)[key] = attr_value;
 }
 template <>
-inline void SetNodeAttr(const string& key, const Tensor& tensor,
+inline void SetNodeAttr(const std::string& key, const Tensor& tensor,
                         NodeDef* node) {
   TensorProto tensor_proto;
   tensor.AsProtoTensorContent(&tensor_proto);
@@ -424,8 +429,8 @@ TEST_F(SingleMachineTest, PersistentMemory) {
   keys_node->set_name("table_keys");
   SetNodeAttr("dtype", key_dtype, keys_node);
   Tensor keys(key_dtype, TensorShape{2});
-  keys.vec<int64>()(0) = 123;
-  keys.vec<int64>()(1) = 321;
+  keys.vec<int64_t>()(0) = 123;
+  keys.vec<int64_t>()(1) = 321;
   SetNodeAttr("value", keys, keys_node);
 
   NodeDef* values_node = item.graph.add_node();
@@ -433,8 +438,8 @@ TEST_F(SingleMachineTest, PersistentMemory) {
   values_node->set_name("table_values");
   SetNodeAttr("dtype", data_dtype, values_node);
   Tensor values(data_dtype, TensorShape{2});
-  values.vec<int64>()(0) = 789;
-  values.vec<int64>()(1) = 987;
+  values.vec<int64_t>()(0) = 789;
+  values.vec<int64_t>()(1) = 987;
   SetNodeAttr("value", values, values_node);
 
   // InitializeTable node
@@ -454,7 +459,7 @@ TEST_F(SingleMachineTest, PersistentMemory) {
   query_node->set_name("query");
   SetNodeAttr("dtype", key_dtype, query_node);
   Tensor query(key_dtype, TensorShape({}));
-  query.flat<int64>()(0) = 0;
+  query.flat<int64_t>()(0) = 0;
   SetNodeAttr("value", query, query_node);
 
   // Default return value of hashtable lookup
@@ -463,7 +468,7 @@ TEST_F(SingleMachineTest, PersistentMemory) {
   default_value_node->set_name("default_table_value");
   SetNodeAttr("dtype", data_dtype, default_value_node);
   Tensor dflt(data_dtype, TensorShape({}));
-  dflt.flat<int64>()(0) = 456;
+  dflt.flat<int64_t>()(0) = 456;
   SetNodeAttr("value", dflt, default_value_node);
 
   // HashTable lookup node
@@ -494,7 +499,7 @@ TEST_F(SingleMachineTest, PersistentMemory) {
     } else if (node.name() == "initialize_table") {
       found_table_init = true;
       // Persistent memory should hold 2 keys and 2 values.
-      EXPECT_LE(4 * sizeof(int64), node.persistent_memory_size());
+      EXPECT_LE(4 * sizeof(int64_t), node.persistent_memory_size());
     }
   }
   EXPECT_TRUE(found_table_init);
@@ -524,7 +529,7 @@ GrapplerItem CreateGrapplerItemWithResourceMemory() {
   // Add a queue.
   ops::FIFOQueue queue(s.WithOpName("queue"), {DataType::DT_STRING});
   Output some_string =
-      ops::Const(s.WithOpName("some_string"), string("nothing"));
+      ops::Const(s.WithOpName("some_string"), std::string("nothing"));
   ops::QueueEnqueue enqueue(s.WithOpName("enqueue"), queue, {some_string});
   ops::QueueDequeue dequeue(s.WithOpName("dequeue"), queue,
                             {DataType::DT_STRING});
@@ -556,7 +561,7 @@ TEST_F(SingleMachineTest, ReleaseMemoryAfterDestruction) {
   GrapplerItem item = CreateGrapplerItemWithResourceMemory();
   TF_CHECK_OK(cluster_->Initialize(item));
 
-  std::unordered_map<string, uint64> device_peak_memory_before;
+  std::unordered_map<std::string, uint64_t> device_peak_memory_before;
   TF_CHECK_OK(cluster_->GetPeakMemoryUsage(&device_peak_memory_before));
   EXPECT_EQ(device_peak_memory_before.size(), 1);
   // There might be a bit memory used before session's running anything.
@@ -566,7 +571,7 @@ TEST_F(SingleMachineTest, ReleaseMemoryAfterDestruction) {
   TF_CHECK_OK(cluster_->Run(item.graph, item.feed, item.fetch, &metadata));
 
   // Check there is memory that is not released.
-  std::unordered_map<string, uint64> device_peak_memory;
+  std::unordered_map<std::string, uint64_t> device_peak_memory;
   TF_CHECK_OK(cluster_->GetPeakMemoryUsage(&device_peak_memory));
   EXPECT_EQ(device_peak_memory.size(), 1);
   EXPECT_GT(device_peak_memory.begin()->second, 0);
@@ -574,7 +579,7 @@ TEST_F(SingleMachineTest, ReleaseMemoryAfterDestruction) {
   // Reprovisioning the cluster would release all memory.
   TF_CHECK_OK(cluster_->Shutdown());
   TF_CHECK_OK(cluster_->Provision());
-  std::unordered_map<string, uint64> device_peak_memory_after;
+  std::unordered_map<std::string, uint64_t> device_peak_memory_after;
   TF_CHECK_OK(cluster_->GetPeakMemoryUsage(&device_peak_memory_after));
   TF_CHECK_OK(cluster_->Shutdown());
 
@@ -592,12 +597,12 @@ TEST_F(SingleMachineTest, PeakMemory) {
   RunMetadata metadata;
   TF_CHECK_OK(cluster_->Run(item.graph, item.feed, item.fetch, &metadata));
 
-  std::unordered_map<string, uint64> device_peak_memory;
+  std::unordered_map<std::string, uint64_t> device_peak_memory;
   TF_CHECK_OK(cluster_->GetPeakMemoryUsage(&device_peak_memory));
   ASSERT_NE(
       device_peak_memory.find("/job:localhost/replica:0/task:0/device:CPU:0"),
       device_peak_memory.end());
-  uint64 cpu_memory =
+  uint64_t cpu_memory =
       device_peak_memory["/job:localhost/replica:0/task:0/device:CPU:0"];
   EXPECT_GT(cpu_memory, 0);
 
@@ -625,11 +630,11 @@ TEST_F(SingleMachineTest, PeakMemoryStatsNotEnabled) {
   TF_CHECK_OK(cluster.Provision());
   TF_CHECK_OK(cluster.Initialize(item));
 
-  std::unordered_map<string, uint64> device_peak_memory;
-  Status s = cluster.GetPeakMemoryUsage(&device_peak_memory);
+  std::unordered_map<std::string, uint64_t> device_peak_memory;
+  absl::Status s = cluster.GetPeakMemoryUsage(&device_peak_memory);
   TF_CHECK_OK(cluster.Shutdown());
   ASSERT_FALSE(s.ok());
-  EXPECT_EQ(s.code(), errors::Code::INVALID_ARGUMENT);
+  EXPECT_TRUE(absl::IsInvalidArgument(s));
 }
 #endif
 

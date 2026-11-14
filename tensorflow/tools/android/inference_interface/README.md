@@ -3,12 +3,12 @@
 This directory defines components (a native `.so` library and a Java JAR)
 geared towards supporting TensorFlow on Android. This includes:
 
-- The [TensorFlow Java API](../../java/README.md)
+- The [TensorFlow Java API](../../../java/README.md)
 - A `TensorFlowInferenceInterface` class that provides a smaller API
   surface suitable for inference and summarizing performance of model execution.
 
-For example usage, see [TensorFlowImageClassifier.java](../../examples/android/src/org/tensorflow/demo/TensorFlowImageClassifier.java)
-in the [TensorFlow Android Demo](../../examples/android).
+For example usage, see [TensorFlowImageClassifier.java](../test/src/org/tensorflow/demo/TensorFlowImageClassifier.java)
+in the [TensorFlow Android Demo](../test).
 
 For prebuilt libraries, see the
 [nightly Android build artifacts](https://ci.tensorflow.org/view/Nightly/job/nightly-android/)
@@ -44,7 +44,7 @@ TensorFlow operators), pick your preferred approach below:
 ### Bazel
 
 First follow the Bazel setup instructions described in
-[tensorflow/examples/android/README.md](../../examples/android/README.md)
+[tensorflow/tools/android/test/README.md](../test/README.md)
 
 Then, to build the native TF library:
 
@@ -75,17 +75,6 @@ You will find the JAR file at:
 ```
 bazel-bin/tensorflow/tools/android/inference_interface/libandroid_tensorflow_inference_java.jar
 ```
-
-### CMake
-
-For documentation on building a self-contained AAR file with cmake, see
-[tensorflow/tools/android/inference_interface/cmake](cmake).
-
-
-### Makefile
-
-For documentation on building native TF libraries with make, including a CUDA-enabled variant for devices like the Nvidia Shield TV, see [tensorflow/contrib/makefile/README.md](../makefile/README.md)
-
 
 ## AssetManagerFileSystem
 

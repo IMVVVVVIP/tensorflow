@@ -44,7 +44,8 @@ class ShaderCodegen {
 
  private:
   const CompilationOptions options_;
-  const GpuType gpu_type_;
+  const GpuVendor gpu_type_;
+  bool inline_parameters_;
 };
 
 }  // namespace gl

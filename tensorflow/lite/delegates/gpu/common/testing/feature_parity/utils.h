@@ -16,14 +16,25 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_GPU_COMMON_TESTING_FEATURE_PARITY_UTILS_H_
 #define TENSORFLOW_LITE_DELEGATES_GPU_COMMON_TESTING_FEATURE_PARITY_UTILS_H_
 
+#include <stddef.h>
+
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <ostream>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
+#include <gtest/gtest.h>
 #include "absl/status/status.h"
-#include "tensorflow/lite/model.h"
+#include "absl/types/span.h"
+#include "tensorflow/lite/core/model.h"
+#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/string_type.h"
 
 namespace tflite {
 
@@ -31,9 +42,9 @@ namespace tflite {
 // and coordinates. By default dimensions are interpreted depending on the size:
 // 1:Linear, 2:HW, 3: HWC, 4:BHWC. If there are more than 4 dimensions,
 // absl::nullopt will be returned.
-absl::optional<std::string> ShapeToString(TfLiteIntArray* shape);
-absl::optional<std::string> CoordinateToString(TfLiteIntArray* shape,
-                                               int linear);
+std::optional<std::string> ShapeToString(TfLiteIntArray* shape);
+std::optional<std::string> CoordinateToString(TfLiteIntArray* shape,
+                                              int linear);
 
 template <typename TupleMatcher>
 class TensorEqMatcher {
@@ -67,7 +78,7 @@ class TensorEqMatcher {
     // Define what gtest framework will print for the Expected field.
     void DescribeTo(std::ostream* os) const override {
       std::string shape;
-      absl::optional<std::string> result = ShapeToString(rhs_.dims);
+      std::optional<std::string> result = ShapeToString(rhs_.dims);
       if (result.has_value()) {
         shape = std::move(result.value());
       } else {
@@ -105,7 +116,7 @@ class TensorEqMatcher {
       }
       if (!dims_are_equal) {
         std::string shape;
-        absl::optional<std::string> result = ShapeToString(rhs_.dims);
+        std::optional<std::string> result = ShapeToString(rhs_.dims);
         if (result.has_value()) {
           shape = std::move(result.value());
         } else {
@@ -133,8 +144,7 @@ class TensorEqMatcher {
             *listener << ", ";
             testing::internal::UniversalPrint(*right, listener->stream());
             std::string coordinate;
-            absl::optional<std::string> result =
-                CoordinateToString(lhs.dims, i);
+            std::optional<std::string> result = CoordinateToString(lhs.dims, i);
             if (result.has_value()) {
               coordinate = std::move(result.value());
             } else {
@@ -181,7 +191,7 @@ void InitializeInputs(int left, int right,
 // Invokes a prebuilt interpreter.
 absl::Status Invoke(std::unique_ptr<Interpreter>* interpreter);
 
-// Usability structure, which is used to pass parameters data to parametrized
+// Usability structure, which is used to pass parameters data to parameterized
 // tests.
 struct TestParams {
   // A gtest name, which will be used for a generated tests.

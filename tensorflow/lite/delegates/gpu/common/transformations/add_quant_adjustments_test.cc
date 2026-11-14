@@ -15,20 +15,27 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/common/transformations/add_quant_adjustments.h"
 
-#include <gmock/gmock.h>
+#include <any>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
+#include "absl/status/status.h"
 #include "absl/types/any.h"
-#include "absl/types/optional.h"
+#include "tensorflow/lite/delegates/gpu/common/data_type.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
 #include "tensorflow/lite/delegates/gpu/common/model_transformer.h"
 #include "tensorflow/lite/delegates/gpu/common/operations.h"
 #include "tensorflow/lite/delegates/gpu/common/shape.h"
+#include "tensorflow/lite/delegates/gpu/common/tensor.h"
 
 namespace tflite {
 namespace gpu {
 namespace {
 
-void AddQuantParams(absl::optional<QuantizationParams>* params, float min,
+void AddQuantParams(std::optional<QuantizationParams>* params, float min,
                     float max, float scale) {
   params->emplace();
   params->value().min = min;
@@ -59,7 +66,7 @@ TEST(AddQuantAdjustments, OneNode) {
 
   ASSERT_TRUE(graph.AddConsumer(add_node->id, input->id).ok());
 
-  Value* output;
+  Value* output = nullptr;
   AddQuantParams(&input->quant_params, /*min=*/0.0, /*max=*/2.0,
                  /*scale=*/0.008);
   ASSERT_TRUE(AddOutput(&graph, add_node, &output).ok());
@@ -69,7 +76,7 @@ TEST(AddQuantAdjustments, OneNode) {
   ASSERT_EQ(2, graph.values().size());
 
   auto transformation = NewAddQuantAdjustments();
-  ModelTransformer transformer(&graph, nullptr);
+  ModelTransformer transformer(&graph);
   transformer.Apply("add_quant_adjustments", transformation.get());
 
   EXPECT_EQ(1, graph.nodes().size());
@@ -114,18 +121,18 @@ TEST(AddQuantAdjustments, GeneralCase) {
 
   // Connections.
   ASSERT_TRUE(graph.AddConsumer(add1_node->id, input->id).ok());
-  Value* link1;
+  Value* link1 = nullptr;
   ASSERT_TRUE(ConnectTwoNodes(&graph, add1_node, quant_node, &link1).ok());
   AddQuantParams(&link1->quant_params, /*min=*/0.0, /*max=*/2.0,
                  /*scale=*/0.008);
   link1->tensor.shape = BHWC(1, 4, 4, 8);
   ASSERT_TRUE(graph.AddConsumer(add2_node->id, link1->id).ok());
-  Value* link2;
+  Value* link2 = nullptr;
   ASSERT_TRUE(ConnectTwoNodes(&graph, quant_node, add2_node, &link2).ok());
   AddQuantParams(&link2->quant_params, /*min=*/-1.0, /*max=*/1.0,
                  /*scale=*/0.008);
   link2->tensor.shape = BHWC(1, 4, 4, 8);
-  Value* output;
+  Value* output = nullptr;
   ASSERT_TRUE(AddOutput(&graph, add2_node, &output).ok());
   AddQuantParams(&output->quant_params, /*min=*/-1.0, /*max=*/1.0,
                  /*scale=*/0.008);
@@ -135,7 +142,7 @@ TEST(AddQuantAdjustments, GeneralCase) {
   ASSERT_EQ(4, graph.values().size());
 
   auto transformation = NewAddQuantAdjustments();
-  ModelTransformer transformer(&graph, nullptr);
+  ModelTransformer transformer(&graph);
   transformer.Apply("add_quant_adjustments", transformation.get());
 
   EXPECT_EQ(4, graph.nodes().size());
@@ -148,7 +155,7 @@ TEST(AddQuantAdjustments, GeneralCase) {
             graph.nodes()[2]->operation.type);
   EXPECT_EQ(quant_node->id, graph.nodes()[2]->id);
   EXPECT_EQ(ToString(OperationType::ADD), graph.nodes()[3]->operation.type);
-  auto new_quant_attr = absl::any_cast<QuantizeAndDequantizeAttributes>(
+  auto new_quant_attr = std::any_cast<QuantizeAndDequantizeAttributes>(
       graph.nodes()[1]->operation.attributes);
   EXPECT_EQ(0.0, new_quant_attr.min);
   EXPECT_EQ(2.0, new_quant_attr.max);

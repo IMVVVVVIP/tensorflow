@@ -13,6 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
+
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/Attributes.h"  // from @llvm-project
@@ -23,15 +25,13 @@ limitations under the License.
 #include "mlir/IR/Visitors.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
 #include "mlir/Pass/PassRegistry.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_device.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
 
 namespace mlir {
 namespace TFTPU {
-
-// This pass expands outside compilation attributes to Identity/Cast ops
-// at the head of TPU computation if it's only used by outside compiled ops.
 
 namespace {
 
@@ -44,7 +44,7 @@ bool HasOutsideCompilationAttribute(Operation* op) {
 // Finds op that created a given value. If the value is a BlockArgument, this
 // returns the owner of the Block.
 Operation* GetOpOfValue(Value value) {
-  if (auto block_arg = value.dyn_cast<BlockArgument>())
+  if (auto block_arg = mlir::dyn_cast<BlockArgument>(value))
     return block_arg.getOwner()->getParentOp();
 
   return value.getDefiningOp();
@@ -64,7 +64,7 @@ bool IsTrivialUnaryOperation(Operation* op) {
 // TODO(b/158691733): Also handle ops inside function calls/control flows.
 void ExpandHeadOutsideCompiledOps(tf_device::ClusterOp cluster,
                                   OpBuilder* builder) {
-  Region* cluster_region = &cluster.body();
+  Region* cluster_region = &cluster.getBody();
   llvm::SmallSetVector<Operation*, 4> head_outside_compiled_ops;
 
   // Traverse the graph in topological order to find all outside compiled ops
@@ -112,27 +112,28 @@ void ExpandHeadOutsideCompiledOps(tf_device::ClusterOp cluster,
   }
 }
 
-struct TPUHostComputationExpansion
-    : public PassWrapper<TPUHostComputationExpansion, FunctionPass> {
-  void runOnFunction() override;
+#define GEN_PASS_DEF_TPUHOSTCOMPUTATIONEXPANSIONPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_passes.h.inc"
+
+struct TPUHostComputationExpansionPass
+    : public impl::TPUHostComputationExpansionPassBase<
+          TPUHostComputationExpansionPass> {
+  void runOnOperation() override;
 };
 
-void TPUHostComputationExpansion::runOnFunction() {
+void TPUHostComputationExpansionPass::runOnOperation() {
   OpBuilder builder(&getContext());
-  getFunction().walk([&](tf_device::ClusterOp cluster) {
+  getOperation().walk([&](tf_device::ClusterOp cluster) {
     ExpandHeadOutsideCompiledOps(cluster, &builder);
   });
 }
 
 }  // anonymous namespace
 
-std::unique_ptr<OperationPass<FuncOp>> CreateTPUHostComputationExpansionPass() {
-  return std::make_unique<TPUHostComputationExpansion>();
+std::unique_ptr<OperationPass<func::FuncOp>>
+CreateTPUHostComputationExpansionPass() {
+  return std::make_unique<TPUHostComputationExpansionPass>();
 }
-
-static PassRegistration<TPUHostComputationExpansion> pass(
-    "tf-tpu-host-computation-expansion",
-    "Expands host computation before and after TPU computation.");
 
 }  // namespace TFTPU
 }  // namespace mlir

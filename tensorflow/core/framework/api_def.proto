@@ -1,15 +1,32 @@
+// Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
+
 // Defines the text format for including per-op API definition and
 // overrides for client language op code generators.
 
 syntax = "proto3";
 
 package tensorflow;
+
+import "tensorflow/core/framework/attr_value.proto";
+
 option cc_enable_arenas = true;
 option java_outer_classname = "ApiDefProtos";
 option java_multiple_files = true;
 option java_package = "org.tensorflow.framework";
 option go_package = "github.com/tensorflow/tensorflow/tensorflow/go/core/framework/api_def_go_proto";
-import "tensorflow/core/framework/attr_value.proto";
 
 // Used to specify and override the default API & behavior in the
 // generated code for client languages, from what you would get from
@@ -19,7 +36,7 @@ import "tensorflow/core/framework/attr_value.proto";
 // common ApiDefs which it can either replace or modify.
 //
 // We separate the API definition from the OpDef so we can evolve the
-// API while remaining backwards compatible when interpretting old
+// API while remaining backwards compatible when interpreting old
 // graphs.  Overrides go in an "api_def.pbtxt" file with a text-format
 // ApiDefs message.
 //

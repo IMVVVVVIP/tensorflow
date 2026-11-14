@@ -39,7 +39,7 @@ class SegmentTest : public ::testing::Test {
       const std::set<string>& node_names) {
     return [node_names](const Node* node) -> Status {
       if (node_names.find(node->name()) != node_names.end()) {
-        return Status::OK();
+        return OkStatus();
       }
       return errors::NotFound("Not a user specified candidate");
     };
@@ -65,7 +65,7 @@ class SegmentTest : public ::testing::Test {
                const std::set<string>& input_candidates,
                const std::set<string>& output_candidates,
                const std::vector<std::set<string>>& expected_segments) {
-    SegmentNodesVector segments;
+    SegmentVector segments;
     TF_EXPECT_OK(SegmentGraph(graph, graph_properties,
                               MakeCandidateFn(candidates),
                               MakeInputEdgeCandidateFn(input_candidates),
@@ -82,12 +82,12 @@ class SegmentTest : public ::testing::Test {
             expected_segments);
   }
 
-  void ValidateSegment(const SegmentNodesVector& segments,
+  void ValidateSegment(const SegmentVector& segments,
                        const std::vector<std::set<string>>& expected_segments) {
     EXPECT_EQ(expected_segments.size(), segments.size());
     for (int i = 0; i < segments.size(); ++i) {
       std::set<string> segment_node_names;
-      for (const Node* node : segments[i]) {
+      for (const Node* node : segments[i].nodes) {
         segment_node_names.insert(node->name());
       }
       const auto& expected = expected_segments[i];
@@ -108,8 +108,9 @@ class SegmentTest : public ::testing::Test {
     segment_options_.allow_dynamic_non_batch_dim = true;
   }
 
-  void EnableImplicitBatchModeForStaticEngine() {
+  void EnableImplicitBatchModeForStaticEngine(int maximum_batch_size = 1000) {
     segment_options_.use_implicit_batch = true;
+    segment_options_.maximum_batch_size = maximum_batch_size;
     segment_options_.allow_dynamic_non_batch_dim = false;
   }
 
@@ -231,7 +232,7 @@ TEST_F(SegmentTest, WithDeviceAssignments) {
   }
 
   {
-    // Assigning the operations to two compatibile GPU devices resulting in
+    // Assigning the operations to two compatible GPU devices resulting in
     // one cluster with all operations.
     constexpr char kGpuAny[] = "/device:GPU:*";
     add3.node()->set_assigned_device_name(kGpuAny);
@@ -487,7 +488,12 @@ TEST_F(SegmentTest, TwoChainsDiffBatchSizes) {
   const std::set<string> all_nodes = {"const-scalar", "output-0", "output-1"};
   EnableImplicitBatchModeForStaticEngine();
   RunTest(&g, &static_graph_properties, all_nodes, all_nodes, all_nodes,
-          {{"output-0", "const-scalar"}});
+          /*expected_segments=*/{{"output-0", "const-scalar"}});
+
+  // Converter will create engines based on the static batch size
+  EnableImplicitBatchModeForStaticEngine(1);
+  RunTest(&g, &static_graph_properties, all_nodes, all_nodes, all_nodes,
+          /*expected_segments=*/{{"output-0", "const-scalar"}});
 }
 
 TEST_F(SegmentTest, SameRankImplicitBroadcastingStaticBatchSize) {

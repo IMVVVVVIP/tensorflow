@@ -12,22 +12,25 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #define EIGEN_USE_THREADS
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define EIGEN_USE_GPU
 #endif
 
-#include "tensorflow/core/kernels/image/adjust_saturation_op.h"
-
-#include <memory>
-
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/kernels/image/adjust_saturation_op.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/util/work_sharder.h"
@@ -46,7 +49,7 @@ class AdjustSaturationOpBase : public OpKernel {
     const Tensor* input;
     const Tensor* scale;
     Tensor* output;
-    int64 channel_count;
+    int64_t channel_count;
   };
 
   virtual void DoCompute(OpKernelContext* context,
@@ -56,23 +59,24 @@ class AdjustSaturationOpBase : public OpKernel {
     const Tensor& input = context->input(0);
     const Tensor& scale = context->input(1);
     OP_REQUIRES(context, input.dims() >= 3,
-                errors::InvalidArgument("input must be at least 3-D, got shape",
-                                        input.shape().DebugString()));
+                absl::InvalidArgumentError(
+                    absl::StrCat("input must be at least 3-D, got shape",
+                                 input.shape().DebugString())));
     OP_REQUIRES(context, TensorShapeUtils::IsScalar(scale.shape()),
-                errors::InvalidArgument("scale must be scalar: ",
-                                        scale.shape().DebugString()));
+                absl::InvalidArgumentError(absl::StrCat(
+                    "scale must be scalar: ", scale.shape().DebugString())));
     auto channels = input.dim_size(input.dims() - 1);
-    OP_REQUIRES(
-        context, channels == 3,
-        errors::InvalidArgument("input must have 3 channels but instead has ",
-                                channels, " channels."));
+    OP_REQUIRES(context, channels == 3,
+                absl::InvalidArgumentError(
+                    absl::StrCat("input must have 3 channels but instead has ",
+                                 channels, " channels.")));
 
     Tensor* output = nullptr;
     OP_REQUIRES_OK(context,
                    context->allocate_output(0, input.shape(), &output));
 
     if (input.NumElements() > 0) {
-      const int64 channel_count = input.NumElements() / channels;
+      const int64_t channel_count = input.NumElements() / channels;
       ComputeOptions options;
       options.input = &input;
       options.scale = &scale;
@@ -110,6 +114,11 @@ static void rgb_to_hsv(float r, float g, float b, float* h, float* s,
   }
   if (hh < 0.0) {
     hh = hh + 1;
+  }
+  // A hue just below zero can round up to exactly 1, which hsv_to_rgb would
+  // read as a seventh sector and turn into gray.
+  if (hh >= 1.0f) {
+    hh = 0.0f;
   }
   *v = vv;
   *h = hh;
@@ -185,7 +194,7 @@ class AdjustSaturationOp<CPUDevice, float> : public AdjustSaturationOpBase {
     const Tensor* input = options.input;
     const Tensor* scale = options.scale;
     Tensor* output = options.output;
-    const int64 channel_count = options.channel_count;
+    const int64_t channel_count = options.channel_count;
     static const int kChannelSize = 3;
     auto input_data = input->shaped<float, 2>({channel_count, kChannelSize});
     const float scale_h = scale->scalar<float>()();
@@ -195,8 +204,8 @@ class AdjustSaturationOp<CPUDevice, float> : public AdjustSaturationOpBase {
         *context->device()->tensorflow_cpu_worker_threads();
     Shard(worker_threads.num_threads, worker_threads.workers, channel_count,
           kCostPerChannel,
-          [&input_data, &output_data, scale_h](int64 start_channel,
-                                               int64 end_channel) {
+          [&input_data, &output_data, scale_h](int64_t start_channel,
+                                               int64_t end_channel) {
             const float* p = input_data.data() + start_channel * kChannelSize;
             float* q = output_data.data() + start_channel * kChannelSize;
             for (int i = start_channel; i < end_channel; i++) {
@@ -229,10 +238,11 @@ class AdjustSaturationOp<GPUDevice, T> : public AdjustSaturationOpBase {
     const Tensor* input = options.input;
     const Tensor* scale = options.scale;
     Tensor* output = options.output;
-    const int64 number_of_elements = input->NumElements();
+    const int64_t number_of_elements = input->NumElements();
     GPUDevice device = context->eigen_gpu_device();
     const auto stream = device.stream();
-    OP_REQUIRES(context, stream, errors::Internal("No GPU stream available."));
+    OP_REQUIRES(context, stream,
+                absl::InternalError("No GPU stream available."));
     if (number_of_elements > 0) {
       const T* input_data = input->flat<T>().data();
       const float* scale_data = scale->flat<float>().data();

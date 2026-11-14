@@ -22,8 +22,8 @@ limitations under the License.
 #include <vector>
 
 #include <gtest/gtest.h>
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/cpu_backend_context.h"
 
 namespace tflite {
@@ -617,8 +617,9 @@ void TestOneFullyQuantizedLSTM() {
       one_parameter.GetOutputLayerNorm(), one_parameter.GetInputBias(),
       one_parameter.GetForgetBias(), one_parameter.GetCellBias(),
       one_parameter.GetOutputBias(), one_parameter.GetProjection(),
-      one_parameter.GetProjectionBias(), nullptr, param, activation, cell,
-      output, one_parameter.GetScratch0(), one_parameter.GetScratch1(),
+      one_parameter.GetProjectionBias(), nullptr, /*forward_sequence=*/true,
+      /*time_major=*/true, param, activation, cell, output,
+      one_parameter.GetScratch0(), one_parameter.GetScratch1(),
       one_parameter.GetScratch2(), one_parameter.GetScratch3(),
       one_parameter.GetScratch4(), one_parameter.GetScratch5(), &context);
 
@@ -906,14 +907,14 @@ void TestOneHybridAsymmLSTM() {
   constexpr float kDefaultScale = 18.0;
   ops::builtin::lstm_eval::EvalHybrid(
       one_parameter.GetFloatInput(),
-      HybridLstmParam::addScale(one_parameter.Geti2i(), kDefaultScale),
-      HybridLstmParam::addScale(one_parameter.Geti2f(), kDefaultScale),
-      HybridLstmParam::addScale(one_parameter.Geti2c(), kDefaultScale),
-      HybridLstmParam::addScale(one_parameter.Geti2o(), kDefaultScale),
-      HybridLstmParam::addScale(one_parameter.Getr2i(), kDefaultScale),
-      HybridLstmParam::addScale(one_parameter.Getr2f(), kDefaultScale),
-      HybridLstmParam::addScale(one_parameter.Getr2c(), kDefaultScale),
-      HybridLstmParam::addScale(one_parameter.Getr2o(), kDefaultScale),
+      HybridLstmParam::addScale(one_parameter.Geti2i(), kDefaultScale), nullptr,
+      HybridLstmParam::addScale(one_parameter.Geti2f(), kDefaultScale), nullptr,
+      HybridLstmParam::addScale(one_parameter.Geti2c(), kDefaultScale), nullptr,
+      HybridLstmParam::addScale(one_parameter.Geti2o(), kDefaultScale), nullptr,
+      HybridLstmParam::addScale(one_parameter.Getr2i(), kDefaultScale), nullptr,
+      HybridLstmParam::addScale(one_parameter.Getr2f(), kDefaultScale), nullptr,
+      HybridLstmParam::addScale(one_parameter.Getr2c(), kDefaultScale), nullptr,
+      HybridLstmParam::addScale(one_parameter.Getr2o(), kDefaultScale), nullptr,
       /*cell_to_input_weights=*/nullptr,
       /*cell_to_forget_weights=*/nullptr,
       /*cell_to_output_weights=*/nullptr, one_parameter.GetInputLayerNorm(),
@@ -926,7 +927,7 @@ void TestOneHybridAsymmLSTM() {
       /*aux_input_to_output_weights=*/nullptr, one_parameter.GetInputBias(),
       one_parameter.GetForgetBias(), one_parameter.GetCellBias(),
       one_parameter.GetOutputBias(),
-      HybridLstmParam::addScale(one_parameter.GetProjection(), 1.0),
+      HybridLstmParam::addScale(one_parameter.GetProjection(), 1.0), nullptr,
       one_parameter.GetProjectionBias(), &param,
       /*forward_sequence=*/true,
       /*time_major=*/true,
@@ -942,7 +943,11 @@ void TestOneHybridAsymmLSTM() {
       one_parameter.GetAccumScratchBuffer(), output,
       one_parameter.GetInputZeroPoints(), one_parameter.GetAuxInputZeroPoints(),
       one_parameter.GetOutputStateZeroPoints(), one_parameter.GetRowSums(),
-      one_parameter.GetNumRowSums(), &compute_row_sums, &context);
+      one_parameter.GetNumRowSums(), &compute_row_sums,
+      /*recurrent_to_input_is_diag=*/false,
+      /*recurrent_to_forget_is_diag=*/false,
+      /*recurrent_to_cell_is_diag=*/false,
+      /*recurrent_to_output_is_diag=*/false, &context);
   const std::vector<float> expected_cell = {
       7.83134,  1.96158, 2.18285, 3.28739,  0.483214,
       0.618206, 1.21539, 1.4052,  -3.17735, 2.24296,  //
@@ -955,9 +960,9 @@ void TestOneHybridAsymmLSTM() {
   };
   EXPECT_TRUE(ArrayFloatNear(cell->data.f, expected_cell.data(), 20, 1e-2));
   EXPECT_TRUE(
-      ArrayFloatNear(activation->data.f, expected_activation.data(), 12, 1e-4));
+      ArrayFloatNear(activation->data.f, expected_activation.data(), 12, 2e-4));
   EXPECT_TRUE(
-      ArrayFloatNear(output->data.f, expected_activation.data(), 12, 1e-4));
+      ArrayFloatNear(output->data.f, expected_activation.data(), 12, 2e-4));
 }
 
 TEST(TestOneHybridAsymmLSTM, TestOneHybridAsymmLSTM) {

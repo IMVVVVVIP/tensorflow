@@ -1,7 +1,22 @@
-// RUN: tf-opt %s -tf-layout-optimization=force-data-format=NHWC -verify-diagnostics | FileCheck %s --dump-input=always
+// Copyright 2026 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
+// RUN: tf-opt %s -tf-layout-optimization=force-data-format=NHWC -verify-diagnostics | FileCheck %s
+// RUN: tf-opt %s -tf-layout-optimization="force-data-format=NHWC skip-fold-transpose-in-ops=true" -verify-diagnostics | FileCheck %s --check-prefix=NOFOLD
 
 // CHECK-LABEL: func @transpose_resnet_layer
-func @transpose_resnet_layer(%arg0: tensor<?x224x224x3xf32>, // input
+func.func @transpose_resnet_layer(%arg0: tensor<?x224x224x3xf32>, // input
                              %arg1: tensor<64xf32>,          // batch_norm args
                              %arg2: tensor<256xf32>,          // batch_norm args
                              %arg3: tensor<7x7x3x64xf32>,    // conv filter #0
@@ -29,11 +44,15 @@ func @transpose_resnet_layer(%arg0: tensor<?x224x224x3xf32>, // input
   %4 = "tf.Pad"(%3, %0) : (tensor<?x3x224x224xf32>, tensor<4x2xi32>) -> tensor<?x3x230x230xf32>
 
   // Shuffled paddings.
-  // CHECK: %[[PADDINGS:[0-9]*]] = "tf.Const"(){{.*}}[0, 0], [3, 3], [3, 3], [0, 0]
+  // CHECK: %[[PADDINGS:.*]] = "tf.Const"(){{.*}}[0, 0], [3, 3], [3, 3], [0, 0]
+  // NOFOLD: %[[PADDING:.*]] = "tf.Const"(){{.*}}[0, 0], [0, 0], [3, 3], [3, 3]
+  // NOFOLD: %[[CST:.*]] = "tf.Const"() <{value = dense<[0, 3, 1, 2]> : tensor<4xi32>}> : () -> tensor<4xi32>
+  // NOFOLD: %[[TRANSPOSE:[0-9]*]] = "tf.Transpose"(%arg0, %[[CST]]) : (tensor<?x224x224x3xf32>, tensor<4xi32>) -> tensor<?x3x224x224xf32>
 
   // Pad input with new paddings.
   // CHECK: %[[PAD:[0-9]*]] = "tf.Pad"(%arg0, %[[PADDINGS]])
   // CHECK-SAME: (tensor<?x224x224x3xf32>, tensor<4x2xi32>) -> tensor<?x230x230x3xf32>
+  // NOFOLD: %[[PAD:[0-9]*]] = "tf.Pad"(%[[TRANSPOSE]], %[[PADDING]])
 
   // ------------------------------------------------------------------------ //
   // Convolution layer #0.
@@ -146,11 +165,11 @@ func @transpose_resnet_layer(%arg0: tensor<?x224x224x3xf32>, // input
   %16 = "tf.Mean"(%15, %1) : (tensor<?x256x56x56xf32>, tensor<2xi32>) -> tensor<?x256xf32>
 
   // Mean should compute reduction over NHWC spatial dimensions.
-  // CHECK: %[[MEAN_DIMS:[0-9]*]] = "tf.Const"() {value = dense<[1, 2]> : tensor<2xi32>}
+  // CHECK: %[[MEAN_DIMS:.*]] = "tf.Const"() <{value = dense<[1, 2]> : tensor<2xi32>}>
   // CHECK: %[[MEAN:[0-9]*]] = "tf.Mean"(%[[RELU]], %[[MEAN_DIMS]])
   // CHECK-SAME: (tensor<?x56x56x256xf32>, tensor<2xi32>) -> tensor<?x256xf32>
   // CHECK: return %[[MEAN]] : tensor<?x256xf32>
 
-  return %16 : tensor<?x256xf32>
+  func.return %16 : tensor<?x256xf32>
 }
 

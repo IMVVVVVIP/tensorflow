@@ -43,7 +43,7 @@ REGISTER_OP("DenseToDenseSetOperation")
     .Output("result_shape: int64")
     .SetShapeFn([](InferenceContext* c) {
       if (c->num_inputs() != 2) {
-        return errors::InvalidArgument("len(inputs) != 2.");
+        return absl::InvalidArgumentError("len(inputs) != 2.");
       }
       // The following should stay in sync with `ComputeDenseToDense` shape
       // assertions in kernels/set_kernels.cc.
@@ -54,13 +54,13 @@ REGISTER_OP("DenseToDenseSetOperation")
       ShapeHandle input0_shape = c->input(0);
       TF_RETURN_IF_ERROR(c->WithRankAtLeast(input0_shape, 2, &input0_shape));
       if (c->RankKnown(input0_shape)) {
-        const int32 input0_rank = c->Rank(input0_shape);
+        const int32_t input0_rank = c->Rank(input0_shape);
         ShapeHandle input1_shape = c->input(1);
         TF_RETURN_IF_ERROR(
             c->WithRank(input1_shape, input0_rank, &input1_shape));
         if (c->RankKnown(input1_shape)) {
           // If both ranks are specified, the first n-1 dims must be compatible.
-          const int32 rank = c->Rank(input1_shape);
+          const int32_t rank = c->Rank(input1_shape);
           ShapeHandle group0_shape;
           TF_RETURN_IF_ERROR(
               c->Subshape(input0_shape, 0, rank - 1, &group0_shape));
@@ -85,7 +85,7 @@ REGISTER_OP("DenseToDenseSetOperation")
       c->set_output(0, c->Matrix(c->UnknownDim(), output_rank));
       c->set_output(1, c->Vector(c->UnknownDim()));
       c->set_output(2, c->Vector(output_rank));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("DenseToSparseSetOperation")
@@ -101,7 +101,7 @@ REGISTER_OP("DenseToSparseSetOperation")
     .Output("result_shape: int64")
     .SetShapeFn([](InferenceContext* c) {
       if (c->num_inputs() != 4) {
-        return errors::InvalidArgument("len(inputs) != 4.");
+        return absl::InvalidArgumentError("len(inputs) != 4.");
       }
       // The following should stay in sync with `ComputeDenseToSparse` shape
       // assertions in kernels/set_kernels.cc.
@@ -116,7 +116,7 @@ REGISTER_OP("DenseToSparseSetOperation")
       ShapeHandle input0_shape = c->input(0);
       TF_RETURN_IF_ERROR(c->WithRankAtLeast(input0_shape, 2, &input0_shape));
       if (c->RankKnown(input0_shape)) {
-        const int32 input0_rank = c->Rank(input0_shape);
+        const int32_t input0_rank = c->Rank(input0_shape);
         TF_RETURN_IF_ERROR(
             c->WithValue(input1_rank_dim, input0_rank, &input1_rank_dim));
         output_rank_dim = c->MakeDim(input0_rank);
@@ -129,7 +129,7 @@ REGISTER_OP("DenseToSparseSetOperation")
       c->set_output(0, c->Matrix(c->UnknownDim(), output_rank_dim));
       c->set_output(1, c->Vector(c->UnknownDim()));
       c->set_output(2, c->Vector(output_rank_dim));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("SparseToSparseSetOperation")
@@ -147,7 +147,7 @@ REGISTER_OP("SparseToSparseSetOperation")
     .Output("result_shape: int64")
     .SetShapeFn([](InferenceContext* c) {
       if (c->num_inputs() != 6) {
-        return errors::InvalidArgument("len(inputs) != 6.");
+        return absl::InvalidArgumentError("len(inputs) != 6.");
       }
       // The following should stay in sync with `ComputeSparseToSparse` shape
       // assertions in kernels/set_kernels.cc.
@@ -163,19 +163,19 @@ REGISTER_OP("SparseToSparseSetOperation")
       DimensionHandle input1_rank_dim = c->Dim(input1_shape_shape, 0);
       DimensionHandle output_rank_dim;
       if (c->ValueKnown(input0_rank_dim)) {
-        const int64 input0_rank = c->Value(input0_rank_dim);
+        const int64_t input0_rank = c->Value(input0_rank_dim);
         if (input0_rank < 2) {
-          return errors::InvalidArgument("Input 0, expected rank >= 2, got ",
-                                         input0_rank, ".");
+          return absl::InvalidArgumentError(absl::StrCat(
+              "Input 0, expected rank >= 2, got ", input0_rank, "."));
         }
         TF_RETURN_IF_ERROR(
             c->WithValue(input1_rank_dim, input0_rank, &input1_rank_dim));
         output_rank_dim = input0_rank_dim;
       } else if (c->ValueKnown(input1_rank_dim)) {
-        const int64 input1_rank = c->Value(input1_rank_dim);
+        const int64_t input1_rank = c->Value(input1_rank_dim);
         if (input1_rank < 2) {
-          return errors::InvalidArgument("Input 1, expected rank >= 2, got ",
-                                         input1_rank, ".");
+          return absl::InvalidArgumentError(absl::StrCat(
+              "Input 1, expected rank >= 2, got ", input1_rank, "."));
         }
         output_rank_dim = input1_rank_dim;
       } else {
@@ -185,7 +185,7 @@ REGISTER_OP("SparseToSparseSetOperation")
       c->set_output(0, c->Matrix(c->UnknownDim(), output_rank_dim));
       c->set_output(1, c->Vector(c->UnknownDim()));
       c->set_output(2, c->Vector(output_rank_dim));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 }  // namespace tensorflow

@@ -13,6 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <string>
+
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #define EIGEN_USE_THREADS
 
 #if GOOGLE_CUDA
@@ -33,12 +38,13 @@ namespace functor {
 // Explicit instantiation of the CPU functor.
 typedef Eigen::ThreadPoolDevice CPUDevice;
 
-template struct FillProjectiveTransform<CPUDevice, uint8>;
-template struct FillProjectiveTransform<CPUDevice, int32>;
-template struct FillProjectiveTransform<CPUDevice, int64>;
+template struct FillProjectiveTransform<CPUDevice, uint8_t>;
+template struct FillProjectiveTransform<CPUDevice, int32_t>;
+template struct FillProjectiveTransform<CPUDevice, int64_t>;
 template struct FillProjectiveTransform<CPUDevice, Eigen::half>;
 template struct FillProjectiveTransform<CPUDevice, float>;
 template struct FillProjectiveTransform<CPUDevice, double>;
+template struct FillProjectiveTransform<CPUDevice, bfloat16>;
 
 }  // end namespace functor
 
@@ -49,6 +55,73 @@ using generator::Interpolation;
 using generator::Mode;
 
 template <typename Device, typename T>
+void DoImageProjectiveTransformOp(OpKernelContext* ctx,
+                                  const Interpolation& interpolation,
+                                  const Mode& fill_mode) {
+  const Tensor& images_t = ctx->input(0);
+  const Tensor& transform_t = ctx->input(1);
+  OP_REQUIRES(ctx, images_t.shape().dims() == 4,
+              absl::InvalidArgumentError("Input images must have rank 4"));
+  OP_REQUIRES(ctx,
+              (TensorShapeUtils::IsMatrix(transform_t.shape()) &&
+               (transform_t.dim_size(0) == images_t.dim_size(0) ||
+                transform_t.dim_size(0) == 1) &&
+               transform_t.dim_size(1) == 8),
+              absl::InvalidArgumentError(
+                  "Input transform should be num_images x 8 or 1 x 8"));
+
+  int32_t out_height, out_width;
+  // Kernel is shared by legacy "ImageProjectiveTransform" op with 2 args.
+  if (ctx->num_inputs() >= 3) {
+    const Tensor& shape_t = ctx->input(2);
+    OP_REQUIRES(ctx, shape_t.dims() == 1,
+                absl::InvalidArgumentError(
+                    absl::StrCat("output shape must be 1-dimensional",
+                                 shape_t.shape().DebugString())));
+    OP_REQUIRES(ctx, shape_t.NumElements() == 2,
+                absl::InvalidArgumentError(
+                    absl::StrCat("output shape must have two elements",
+                                 shape_t.shape().DebugString())));
+    auto shape_vec = shape_t.vec<int32_t>();
+    out_height = shape_vec(0);
+    out_width = shape_vec(1);
+    OP_REQUIRES(
+        ctx, out_height > 0 && out_width > 0,
+        absl::InvalidArgumentError("output dimensions must be positive"));
+  } else {
+    // Shape is N (batch size), H (height), W (width), C (channels).
+    out_height = images_t.shape().dim_size(1);
+    out_width = images_t.shape().dim_size(2);
+  }
+
+  T fill_value(0);
+  // Kernel is shared by "ImageProjectiveTransformV2" with 3 args.
+  if (ctx->num_inputs() >= 4) {
+    const Tensor& fill_value_t = ctx->input(3);
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(fill_value_t.shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("fill_value must be a scalar",
+                                 fill_value_t.shape().DebugString())));
+    fill_value = static_cast<T>(*(fill_value_t.scalar<float>().data()));
+  }
+
+  Tensor* output_t;
+  TensorShape output_shape;
+  OP_REQUIRES_OK(
+      ctx, TensorShape::BuildTensorShape({images_t.dim_size(0), out_height,
+                                          out_width, images_t.dim_size(3)},
+                                         &output_shape));
+  OP_REQUIRES_OK(ctx, ctx->allocate_output(0, output_shape, &output_t));
+  auto output = output_t->tensor<T, 4>();
+  auto images = images_t.tensor<T, 4>();
+  auto transform = transform_t.matrix<float>();
+
+  (FillProjectiveTransform<Device, T>(interpolation))(
+      ctx->eigen_device<Device>(), &output, images, transform, fill_mode,
+      fill_value);
+}
+
+template <typename Device, typename T>
 class ImageProjectiveTransformV2 : public OpKernel {
  private:
   Interpolation interpolation_;
@@ -57,7 +130,7 @@ class ImageProjectiveTransformV2 : public OpKernel {
  public:
   explicit ImageProjectiveTransformV2(OpKernelConstruction* ctx)
       : OpKernel(ctx) {
-    string interpolation_str;
+    std::string interpolation_str;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("interpolation", &interpolation_str));
     if (interpolation_str == "NEAREST") {
       interpolation_ = Interpolation::NEAREST;
@@ -67,7 +140,7 @@ class ImageProjectiveTransformV2 : public OpKernel {
       LOG(ERROR) << "Invalid interpolation " << interpolation_str
                  << ". Supported types: NEAREST, BILINEAR";
     }
-    string mode_str;
+    std::string mode_str;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("fill_mode", &mode_str));
     if (mode_str == "REFLECT") {
       fill_mode_ = Mode::FILL_REFLECT;
@@ -84,52 +157,7 @@ class ImageProjectiveTransformV2 : public OpKernel {
   }
 
   void Compute(OpKernelContext* ctx) override {
-    const Tensor& images_t = ctx->input(0);
-    const Tensor& transform_t = ctx->input(1);
-    OP_REQUIRES(ctx, images_t.shape().dims() == 4,
-                errors::InvalidArgument("Input images must have rank 4"));
-    OP_REQUIRES(ctx,
-                (TensorShapeUtils::IsMatrix(transform_t.shape()) &&
-                 (transform_t.dim_size(0) == images_t.dim_size(0) ||
-                  transform_t.dim_size(0) == 1) &&
-                 transform_t.dim_size(1) == 8),
-                errors::InvalidArgument(
-                    "Input transform should be num_images x 8 or 1 x 8"));
-
-    int32 out_height, out_width;
-    // Kernel is shared by legacy "ImageProjectiveTransform" op with 2 args.
-    if (ctx->num_inputs() >= 3) {
-      const Tensor& shape_t = ctx->input(2);
-      OP_REQUIRES(ctx, shape_t.dims() == 1,
-                  errors::InvalidArgument("output shape must be 1-dimensional",
-                                          shape_t.shape().DebugString()));
-      OP_REQUIRES(ctx, shape_t.NumElements() == 2,
-                  errors::InvalidArgument("output shape must have two elements",
-                                          shape_t.shape().DebugString()));
-      auto shape_vec = shape_t.vec<int32>();
-      out_height = shape_vec(0);
-      out_width = shape_vec(1);
-      OP_REQUIRES(
-          ctx, out_height > 0 && out_width > 0,
-          errors::InvalidArgument("output dimensions must be positive"));
-    } else {
-      // Shape is N (batch size), H (height), W (width), C (channels).
-      out_height = images_t.shape().dim_size(1);
-      out_width = images_t.shape().dim_size(2);
-    }
-
-    Tensor* output_t;
-    OP_REQUIRES_OK(ctx, ctx->allocate_output(
-                            0,
-                            TensorShape({images_t.dim_size(0), out_height,
-                                         out_width, images_t.dim_size(3)}),
-                            &output_t));
-    auto output = output_t->tensor<T, 4>();
-    auto images = images_t.tensor<T, 4>();
-    auto transform = transform_t.matrix<float>();
-
-    (FillProjectiveTransform<Device, T>(interpolation_))(
-        ctx->eigen_device<Device>(), &output, images, transform, fill_mode_);
+    DoImageProjectiveTransformOp<Device, T>(ctx, interpolation_, fill_mode_);
   }
 };
 
@@ -145,6 +173,31 @@ TF_CALL_int64(REGISTER);
 TF_CALL_half(REGISTER);
 TF_CALL_float(REGISTER);
 TF_CALL_double(REGISTER);
+TF_CALL_bfloat16(REGISTER);
+
+#undef REGISTER
+
+template <typename Device, typename T>
+class ImageProjectiveTransformV3
+    : public ImageProjectiveTransformV2<Device, T> {
+ public:
+  explicit ImageProjectiveTransformV3(OpKernelConstruction* ctx)
+      : ImageProjectiveTransformV2<Device, T>(ctx) {}
+};
+
+#define REGISTER(TYPE)                                        \
+  REGISTER_KERNEL_BUILDER(Name("ImageProjectiveTransformV3")  \
+                              .Device(DEVICE_CPU)             \
+                              .TypeConstraint<TYPE>("dtype"), \
+                          ImageProjectiveTransformV3<CPUDevice, TYPE>)
+
+TF_CALL_uint8(REGISTER);
+TF_CALL_int32(REGISTER);
+TF_CALL_int64(REGISTER);
+TF_CALL_half(REGISTER);
+TF_CALL_float(REGISTER);
+TF_CALL_double(REGISTER);
+TF_CALL_bfloat16(REGISTER);
 
 #undef REGISTER
 
@@ -161,7 +214,8 @@ namespace functor {
   template <>                                                               \
   void FillProjectiveTransform<GPUDevice, TYPE>::operator()(                \
       const GPUDevice& device, OutputType* output, const InputType& images, \
-      const TransformsType& transform, const Mode fill_mode) const;         \
+      const TransformsType& transform, const Mode fill_mode,                \
+      const TYPE fill_value) const;                                         \
   extern template struct FillProjectiveTransform<GPUDevice, TYPE>
 
 TF_CALL_uint8(DECLARE_PROJECT_FUNCTOR);
@@ -194,6 +248,23 @@ DECLARE_MAP_FUNCTOR(Mode::FILL_NEAREST);
                               .TypeConstraint<TYPE>("dtype") \
                               .HostMemory("output_shape"),   \
                           ImageProjectiveTransformV2<GPUDevice, TYPE>)
+
+TF_CALL_uint8(REGISTER);
+TF_CALL_int32(REGISTER);
+TF_CALL_int64(REGISTER);
+TF_CALL_half(REGISTER);
+TF_CALL_float(REGISTER);
+TF_CALL_double(REGISTER);
+
+#undef REGISTER
+
+#define REGISTER(TYPE)                                       \
+  REGISTER_KERNEL_BUILDER(Name("ImageProjectiveTransformV3") \
+                              .Device(DEVICE_GPU)            \
+                              .TypeConstraint<TYPE>("dtype") \
+                              .HostMemory("output_shape")    \
+                              .HostMemory("fill_value"),     \
+                          ImageProjectiveTransformV3<GPUDevice, TYPE>)
 
 TF_CALL_uint8(REGISTER);
 TF_CALL_int32(REGISTER);

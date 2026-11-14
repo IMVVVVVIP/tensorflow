@@ -15,18 +15,11 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_EXPERIMENTAL_ACCELERATION_CONFIGURATION_PROTO_TO_FLATBUFFER_H_
 #define TENSORFLOW_LITE_EXPERIMENTAL_ACCELERATION_CONFIGURATION_PROTO_TO_FLATBUFFER_H_
 
-#include "flatbuffers/idl.h"  // from @flatbuffers
-#include "tensorflow/lite/experimental/acceleration/configuration/configuration.pb.h"
-#include "tensorflow/lite/experimental/acceleration/configuration/configuration_generated.h"
+// This header file is no longer experimental.
+// Please use the non-experimental file instead.
 
-namespace tflite {
+#include "tensorflow/lite/acceleration/configuration/proto_to_flatbuffer.h"  // IWYU pragma: export
 
-// Converts the protobuf version ComputeSettings to the flatbuffer version, via
-// json. The parser is used for state - the returned pointer is valid only as
-// long as the parser is kept alive and unmutated.
-const ComputeSettings* ConvertFromProto(
-    flatbuffers::Parser* parser, const proto::ComputeSettings& proto_settings);
-
-}  // namespace tflite
+// IWYU pragma: private, include "third_party/tensorflow/lite/acceleration/configuration/proto_to_flatbuffer.h"
 
 #endif  // TENSORFLOW_LITE_EXPERIMENTAL_ACCELERATION_CONFIGURATION_PROTO_TO_FLATBUFFER_H_

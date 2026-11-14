@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include <regex>  // NOLINT
+#include <string>
 
 #include "tensorflow/c/eager/c_api.h"
 #include "tensorflow/c/eager/c_api_experimental.h"
@@ -121,25 +122,6 @@ string AddVariablesFunction() {
   return def.SerializeAsString();
 }
 
-void VarIsInitialized(TFE_Context* ctx, TFE_TensorHandle* var_handle) {
-  TF_Status* status = TF_NewStatus();
-  TFE_Op* op = TFE_NewOp(ctx, "VarIsInitializedOp", status);
-  EXPECT_EQ(TF_GetCode(status), TF_OK) << TF_Message(status);
-  TFE_OpAddInput(op, var_handle, status);
-  TFE_TensorHandle* is_initialized[1] = {nullptr};
-  int num_retvals = 1;
-  TFE_Execute(op, &is_initialized[0], &num_retvals, status);
-  CHECK_EQ(1, num_retvals);
-  TF_Tensor* t = TFE_TensorHandleResolve(is_initialized[0], status);
-  bool initialized = false;
-  memcpy(&initialized, TF_TensorData(t), TF_TensorByteSize(t));
-  EXPECT_EQ(initialized, true);
-  TF_DeleteTensor(t);
-  TFE_DeleteTensorHandle(is_initialized[0]);
-  TFE_DeleteOp(op);
-  delete status;
-}
-
 void TestFunctionWithPackedInput(const bool remote) {
   tensorflow::ServerDef server_def = GetServerDef(3);
 
@@ -180,11 +162,10 @@ void TestFunctionWithPackedInput(const bool remote) {
   TFE_TensorHandle* h1 = TestVariable(ctx, 2.0, task2_name);
   TFE_TensorHandle* h2 = TestVariable(ctx, 3.0, task0_name);
 
-  // Add a sync point in order to make sure that variables have been initialized
+  // Add a sync point to make sure that variables have been initialized
   // before the function execution starts.
-  // TODO(b/155789951): Remove once b/155789951 is fixed.
-  VarIsInitialized(ctx, h1);
-  VarIsInitialized(ctx, h2);
+  TFE_ContextAsyncWait(ctx, status);
+  EXPECT_EQ(TF_OK, TF_GetCode(status)) << TF_Message(status);
 
   // Pack 3 variable handles into one TFE_TensorHandle.
   // When remote is false, function device is placed on task0. Handle types are
@@ -329,18 +310,18 @@ string VariableAddFunction() {
 class GraphErrorInjectionPass : public tensorflow::GraphOptimizationPass {
  public:
   static bool enabled_;
-  GraphErrorInjectionPass() {}
+  GraphErrorInjectionPass() = default;
 
-  tensorflow::Status Run(
+  absl::Status Run(
       const tensorflow::GraphOptimizationPassOptions& options) override {
     if (!enabled_) {
-      return tensorflow::Status::OK();
+      return absl::OkStatus();
     }
     if (first_call_) {
       first_call_ = false;
-      return tensorflow::Status::OK();
+      return absl::OkStatus();
     }
-    return tensorflow::errors::Internal("Graph pass runs for more than once!");
+    return absl::InternalError("Graph pass runs for more than once!");
   }
 
  private:
@@ -396,6 +377,8 @@ TEST(CAPI, DistributedFunctionGraphPassOnlyOnce) {
 
   TFE_TensorHandle* var_handle = TestVariable(ctx, 2.0, dev2_name);
   EXPECT_NE(var_handle, nullptr);
+  TFE_ContextAsyncWait(ctx, status);
+  EXPECT_EQ(TF_OK, TF_GetCode(status)) << TF_Message(status);
 
   const string function_def = VariableAddFunction();
   TFE_ContextAddFunctionDef(ctx, function_def.data(), function_def.size(),
@@ -448,21 +431,23 @@ class FunctionErrorInjectionPass : public tensorflow::FunctionOptimizationPass {
  public:
   FunctionErrorInjectionPass(string error_node, string error_device)
       : error_node_(error_node), error_device_(error_device) {}
-  tensorflow::Status Run(const tensorflow::DeviceSet& device_set,
-                         const tensorflow::ConfigProto& config_proto,
-                         std::unique_ptr<tensorflow::Graph>* graph,
-                         tensorflow::FunctionLibraryDefinition* flib_def,
-                         std::vector<std::string>* control_ret_node_names,
-                         bool* control_rets_updated) override {
+  absl::Status Run(const std::string& function_name,
+                   const tensorflow::DeviceSet& device_set,
+                   const tensorflow::ConfigProto& config_proto,
+                   const FunctionOptions& function_options,
+                   std::unique_ptr<tensorflow::Graph>* graph,
+                   tensorflow::FunctionLibraryDefinition* flib_def,
+                   std::vector<std::string>* control_ret_node_names,
+                   bool* control_rets_updated) override {
     // Inject failure to function instantiation if finding a node that contains
     // the given node name (error_node_) and requested device (error_device_).
     for (const auto node : graph->get()->nodes()) {
       if (node->name().find(error_node_) != string::npos &&
           node->requested_device() == error_device_) {
-        return tensorflow::errors::Internal("Injected graph pass error.");
+        return absl::InternalError("Injected graph pass error.");
       }
     }
-    return tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
  private:
@@ -517,6 +502,8 @@ void TestDistributedFunctionCancellation(bool inject_error) {
 
   TFE_TensorHandle* var_handle = TestVariable(ctx, 2.0, dev2_name);
   EXPECT_NE(var_handle, nullptr);
+  TFE_ContextAsyncWait(ctx, status);
+  EXPECT_EQ(TF_OK, TF_GetCode(status)) << TF_Message(status);
 
   const string function_def = inject_error ? VariableAddFunctionWithGraphError()
                                            : VariableAddFunction();
@@ -561,7 +548,9 @@ TEST(CAPI, DistributedFunctionNoError) {
   TestDistributedFunctionCancellation(false);
 }
 
-TEST(CAPI, DistributedFunctionCancelledOnError) {
+// TODO(b/170399182): Update test once an alternative to using the function
+// optimization hook is in place.
+TEST(CAPI, DISABLED_DistributedFunctionCancelledOnError) {
   TestDistributedFunctionCancellation(true);
 }
 

@@ -18,7 +18,7 @@ limitations under the License.
 
 #include <cstdint>
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
@@ -56,11 +56,13 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
 
   OpContext op_context(context, node);
 
+  TF_LITE_ENSURE(context, op_context.input != nullptr);
   TF_LITE_ENSURE(context, op_context.input->type != kTfLiteString);
   TF_LITE_ENSURE(context, IsConstantTensor(op_context.input));
   TF_LITE_ENSURE(context, op_context.input->sparsity != nullptr);
 
   op_context.output->type = op_context.input->type;
+  op_context.output->name = "Densify_output";
   op_context.output->allocation_type = kTfLiteArenaRwPersistent;
 
   return context->ResizeTensor(context, op_context.output,
@@ -80,26 +82,26 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
                              GetTensorShape(op_context.input),
                              GetTensorData<float>(op_context.input),
                              GetTensorShape(op_context.output),
-                             GetTensorData<float>(op_context.output));
+                             GetTensorData<float>(op_context.output), context);
       break;
     case kTfLiteFloat16:
-      reference_ops::Densify(op_context.input->sparsity,
-                             GetTensorShape(op_context.input),
-                             GetTensorData<Eigen::half>(op_context.input),
-                             GetTensorShape(op_context.output),
-                             GetTensorData<Eigen::half>(op_context.output));
+      reference_ops::Densify(
+          op_context.input->sparsity, GetTensorShape(op_context.input),
+          GetTensorData<Eigen::half>(op_context.input),
+          GetTensorShape(op_context.output),
+          GetTensorData<Eigen::half>(op_context.output), context);
       break;
     case kTfLiteInt8:
       reference_ops::Densify(op_context.input->sparsity,
                              GetTensorShape(op_context.input),
                              GetTensorData<int8_t>(op_context.input),
                              GetTensorShape(op_context.output),
-                             GetTensorData<int8_t>(op_context.output));
+                             GetTensorData<int8_t>(op_context.output), context);
       break;
 
     default:
-      context->ReportError(context, "Type %d not supported.",
-                           op_context.input->type);
+      TF_LITE_KERNEL_LOG(context, "Type %d not supported.",
+                         op_context.input->type);
       return kTfLiteError;
   }
 

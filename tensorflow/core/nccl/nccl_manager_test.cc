@@ -13,9 +13,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#include <atomic>
+#include <cstdint>
+#include <cstdlib>
+#include <memory>
+#include <string>
+#include <utility>
 
-#include "tensorflow/core/nccl/nccl_manager.h"
+#include <gtest/gtest.h>
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
+#include "tensorflow/core/framework/types.pb.h"
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 #include <algorithm>
 #include <random>
@@ -25,6 +37,7 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/gpu/gpu_device.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
+#include "tensorflow/core/nccl/nccl_manager.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/unbounded_work_queue.h"
 
@@ -59,7 +72,7 @@ class NcclManagerTest : public ::testing::Test {
     const int num_ranks_per_node;
 
     mutex mu;
-    Status final_status;
+    absl::Status final_status;
     int num_completed TF_GUARDED_BY(mu) = 0;
     condition_variable done_cv;
   };
@@ -80,7 +93,7 @@ class NcclManagerTest : public ::testing::Test {
     ASSERT_NE(work_queue_, nullptr);
   }
 
-  static int32 NumGPUs() { return static_cast<int32>(devices_->size()); }
+  static int32_t NumGPUs() { return static_cast<int32_t>(devices_->size()); }
 
   // Let N = #GPUs.  When N is even, num_nodes=2 and num_ranks_per_node=N/2.
   // When N is odd, num_nodes=2 and num_ranks_per_node=(N-1)/2.
@@ -123,7 +136,7 @@ class NcclManagerTest : public ::testing::Test {
     for (int node = 0; node < num_nodes; ++node) {
       for (int local_rank = 0; local_rank < num_ranks_per_node; ++local_rank) {
         auto* device = GetDevice(num_ranks_per_node, node, local_rank);
-        auto* stream = device->tensorflow_gpu_device_info()->stream;
+        auto* stream = device->tensorflow_accelerator_device_info()->stream;
 
         Tensor in_cpu(data_type_, shape);
         test::FillFn<Scalar>(&in_cpu, [&](int index) {
@@ -153,8 +166,8 @@ class NcclManagerTest : public ::testing::Test {
 
         const Tensor& in_gpu = test_case->ins.back();
         auto in_gpu_mem = AsDeviceMemory(in_gpu.flat<Scalar>().data());
-        stream->ThenMemcpy(&in_gpu_mem, in_cpu.flat<Scalar>().data(),
-                           in_cpu.TotalBytes());
+        TF_CHECK_OK(stream->Memcpy(&in_gpu_mem, in_cpu.flat<Scalar>().data(),
+                                   in_cpu.TotalBytes()));
       }
     }
 
@@ -172,14 +185,14 @@ class NcclManagerTest : public ::testing::Test {
     for (int node = 0; node < num_nodes; ++node) {
       for (int i = 0; i < num_ranks_per_node; ++i) {
         auto* device = GetDevice(num_ranks_per_node, node, i);
-        auto* stream = device->tensorflow_gpu_device_info()->stream;
+        auto* stream = device->tensorflow_accelerator_device_info()->stream;
 
         Tensor in_cpu(data_type_, in_shape);
         test::FillFn<Scalar>(&in_cpu, [&](int index) {
           return static_cast<Scalar>((index + 1) * value_scale);
         });
         // Starting index for this rank's tensor in the all-gathered output.
-        int32 gather_idx =
+        int32_t gather_idx =
             (node * num_ranks_per_node + i) * in_shape.num_elements();
         for (int j = 0; j < in_shape.num_elements(); ++j) {
           auto in_val = in_cpu.flat<Scalar>()(j);
@@ -194,8 +207,8 @@ class NcclManagerTest : public ::testing::Test {
 
         const Tensor& in_gpu = test_case->ins.back();
         auto in_gpu_mem = AsDeviceMemory(in_gpu.flat<Scalar>().data());
-        stream->ThenMemcpy(&in_gpu_mem, in_cpu.flat<Scalar>().data(),
-                           in_cpu.TotalBytes());
+        TF_CHECK_OK(stream->Memcpy(&in_gpu_mem, in_cpu.flat<Scalar>().data(),
+                                   in_cpu.TotalBytes()));
       }
     }
 
@@ -230,9 +243,9 @@ class NcclManagerTest : public ::testing::Test {
                                [](int) { return static_cast<Scalar>(1); });
           const Tensor& in_gpu = test_case->ins.back();
           auto in_gpu_mem = AsDeviceMemory(in_gpu.flat<Scalar>().data());
-          auto* stream = device->tensorflow_gpu_device_info()->stream;
-          stream->ThenMemcpy(&in_gpu_mem, in_cpu.flat<Scalar>().data(),
-                             in_cpu.TotalBytes());
+          auto* stream = device->tensorflow_accelerator_device_info()->stream;
+          TF_CHECK_OK(stream->Memcpy(&in_gpu_mem, in_cpu.flat<Scalar>().data(),
+                                     in_cpu.TotalBytes()));
         } else {
           test_case->ins.emplace_back(Tensor());
           test_case->outs.emplace_back(GpuAllocator(device), data_type_, shape);
@@ -260,15 +273,15 @@ class NcclManagerTest : public ::testing::Test {
            ++local_rank) {
         auto* device =
             GetDevice(test_case->num_ranks_per_node, node, local_rank);
-        auto* stream = device->tensorflow_gpu_device_info()->stream;
+        auto* stream = device->tensorflow_accelerator_device_info()->stream;
         const int global_rank =
             GlobalRank(test_case->num_ranks_per_node, node, local_rank);
         const Tensor& out_gpu = test_case->outs[global_rank];
         Tensor out_cpu(data_type_, out_gpu.shape());
         auto out_gpu_mem = AsDeviceMemory(out_gpu.flat<Scalar>().data());
-        stream->ThenMemcpy(out_cpu.flat<Scalar>().data(), out_gpu_mem,
-                           out_cpu.TotalBytes());
-        SE_ASSERT_OK(stream->BlockHostUntilDone());
+        TF_CHECK_OK(stream->Memcpy(out_cpu.flat<Scalar>().data(), out_gpu_mem,
+                                   out_cpu.TotalBytes()));
+        TF_ASSERT_OK(stream->BlockHostUntilDone());
         VLOG(1) << "Verifying rank " << global_rank << " expected shape "
                 << test_case->expected.shape() << " out shape "
                 << out_cpu.shape();
@@ -284,7 +297,7 @@ class NcclManagerTest : public ::testing::Test {
   }
 
   NcclManager::DoneCallback CreateDoneCallback(TestCase* test_case) {
-    return [this, test_case](Status s) {
+    return [this, test_case](absl::Status s) {
       mutex_lock l(test_case->mu);
       test_case->final_status.Update(s);
       if (++test_case->num_completed == test_case->outs.size()) {
@@ -300,16 +313,22 @@ class NcclManagerTest : public ::testing::Test {
 
   void RunMultiNodeAllReduceTest(const int num_nodes,
                                  const int num_ranks_per_node) {
-    const int num_global_ranks = num_nodes * num_ranks_per_node;
     std::vector<NodeState> node_states(num_nodes);
-    const string collective_key = "allreduce";
+    RunMultiNodeAllReduceTest(node_states, num_ranks_per_node);
+  }
+
+  void RunMultiNodeAllReduceTest(std::vector<NodeState>& node_states,
+                                 const int num_ranks_per_node) {
+    const int num_nodes = node_states.size();
+    const int num_global_ranks = num_nodes * num_ranks_per_node;
+    const std::string collective_key = "allreduce";
     // The NcclManagers in this test synchronize in real-time, so we need to run
     // each node's code in a separate thread.
     // Specifically, the call to ncclGroupEnd() after calling ncclCommInitRank
     // waits for all communicators before returning.
 
     // First, initialize the communicator_key used for this collective.
-    const string communicator_key =
+    const std::string communicator_key =
         node_states[0].nccl_manager.GenerateCommunicatorKey();
 
     for (int op = 0; op < 4; ++op) {
@@ -324,8 +343,8 @@ class NcclManagerTest : public ::testing::Test {
           for (int local_rank = 0; local_rank < num_ranks_per_node;
                ++local_rank) {
             auto* device = GetDevice(num_ranks_per_node, node, local_rank);
-            auto* info = device->tensorflow_gpu_device_info();
-            auto* stream = device->tensorflow_gpu_device_info()->stream;
+            auto* info = device->tensorflow_accelerator_device_info();
+            auto* stream = device->tensorflow_accelerator_device_info()->stream;
             const int global_rank =
                 GlobalRank(num_ranks_per_node, node, local_rank);
             auto participant = absl::make_unique<NcclManager::Participant>(
@@ -358,9 +377,9 @@ class NcclManagerTest : public ::testing::Test {
                                  const bool in_place) {
     const int num_global_ranks = num_nodes * num_ranks_per_node;
     const int src_global_rank = src_node * num_ranks_per_node + src_local_rank;
-    const string collective_key = "broadcast";
+    const std::string collective_key = "broadcast";
     std::vector<NodeState> node_states(num_nodes);
-    const string communicator_key =
+    const std::string communicator_key =
         node_states[0].nccl_manager.GenerateCommunicatorKey();
     std::unique_ptr<TestCase> test_case(this->MakeBroadcastTestCase(
         num_nodes, num_ranks_per_node, TensorShape({5, 6}), src_node,
@@ -373,8 +392,8 @@ class NcclManagerTest : public ::testing::Test {
                         src_global_rank, local_rank, &node_states,
                         &collective_key, &communicator_key, &test_case]() {
           auto* device = GetDevice(num_ranks_per_node, node, local_rank);
-          auto* info = device->tensorflow_gpu_device_info();
-          auto* stream = device->tensorflow_gpu_device_info()->stream;
+          auto* info = device->tensorflow_accelerator_device_info();
+          auto* stream = device->tensorflow_accelerator_device_info()->stream;
           const int global_rank =
               GlobalRank(num_ranks_per_node, node, local_rank);
           auto* input = global_rank == src_global_rank
@@ -430,7 +449,8 @@ class NcclManagerTest : public ::testing::Test {
   }
 
   static se::DeviceMemory<Scalar> AsDeviceMemory(const Scalar* cuda_memory) {
-    se::DeviceMemoryBase wrapped(const_cast<Scalar*>(cuda_memory));
+    stream_executor::DeviceAddressBase wrapped(
+        const_cast<Scalar*>(cuda_memory));
     se::DeviceMemory<Scalar> typed(wrapped);
     return typed;
   }
@@ -468,8 +488,8 @@ TYPED_TEST(NcclManagerTest, BasicSumReduction) {
     for (int rank = 0; rank < num_ranks; ++rank) {
       auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
       VLOG(2) << "rank " << rank << " device " << device->name();
-      auto* info = device->tensorflow_gpu_device_info();
-      auto* stream = device->tensorflow_gpu_device_info()->stream;
+      auto* info = device->tensorflow_accelerator_device_info();
+      auto* stream = device->tensorflow_accelerator_device_info()->stream;
       auto participant = absl::make_unique<NcclManager::Participant>(
           device->executor(), stream, info, &test_case->ins[rank],
           &test_case->outs[rank], /*global_rank=*/-1,
@@ -497,7 +517,7 @@ TYPED_TEST(NcclManagerTest, MultipleCallers) {
   const int num_collectives_per_iteration = 10;
   const int time_limit_micros = 1 * 1000 * 1000;  // 1 second
 
-  int64 start = Env::Default()->NowMicros();
+  int64_t start = Env::Default()->NowMicros();
   srand(Env::Default()->NowMicros());
 
   for (;;) {
@@ -514,8 +534,8 @@ TYPED_TEST(NcclManagerTest, MultipleCallers) {
 
     for (int rank = 0; rank < num_ranks; ++rank) {
       auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
-      auto* stream = device->tensorflow_gpu_device_info()->stream;
-      SE_ASSERT_OK(stream->BlockHostUntilDone());
+      auto* stream = device->tensorflow_accelerator_device_info()->stream;
+      TF_ASSERT_OK(stream->BlockHostUntilDone());
     }
 
     std::shuffle(case_and_rank.begin(), case_and_rank.end(),
@@ -534,8 +554,8 @@ TYPED_TEST(NcclManagerTest, MultipleCallers) {
           case_and_rank.pop_back();
         }
         auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
-        auto* info = device->tensorflow_gpu_device_info();
-        auto* stream = device->tensorflow_gpu_device_info()->stream;
+        auto* info = device->tensorflow_accelerator_device_info();
+        auto* stream = device->tensorflow_accelerator_device_info()->stream;
         typename TestFixture::TestCase* test_case = test_cases[test_num].get();
         auto participant = absl::make_unique<NcclManager::Participant>(
             device->executor(), stream, info, &test_case->ins[rank],
@@ -543,7 +563,7 @@ TYPED_TEST(NcclManagerTest, MultipleCallers) {
             this->CreateDoneCallback(test_case));
         NcclManager::instance()->AddToAllReduce(
             std::move(participant),
-            {strings::StrCat("allreduce", test_num),
+            {absl::StrCat("allreduce", test_num),
              /*num_local_devices=*/num_ranks,
              /*num_global_devices=*/num_ranks,
              /*communicator_key=*/"", /*source_rank=*/-1},
@@ -558,7 +578,7 @@ TYPED_TEST(NcclManagerTest, MultipleCallers) {
       this->VerifyResults(test_cases[i].get());
     }
 
-    int64 delta = Env::Default()->NowMicros() - start;
+    int64_t delta = Env::Default()->NowMicros() - start;
     if (delta > time_limit_micros) {
       LOG(INFO) << "Ran for " << delta << " microsecs, now quitting";
       break;
@@ -577,8 +597,8 @@ TYPED_TEST(NcclManagerTest, BasicAllGather) {
     for (int rank = 0; rank < num_ranks; ++rank) {
       auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
       VLOG(2) << "rank " << rank << " device " << device->name();
-      auto* info = device->tensorflow_gpu_device_info();
-      auto* stream = device->tensorflow_gpu_device_info()->stream;
+      auto* info = device->tensorflow_accelerator_device_info();
+      auto* stream = device->tensorflow_accelerator_device_info()->stream;
       auto participant = absl::make_unique<NcclManager::Participant>(
           device->executor(), stream, info, &test_case->ins[rank],
           &test_case->outs[rank], rank,
@@ -626,12 +646,16 @@ TYPED_TEST(NcclManagerTest, BroadcastWithDifferentRanks) {
 // Multi-node NCCL tests.
 
 TEST(NcclManagerTest, CommunicatorKey) {
-  const string communicator_key =
+  const std::string communicator_key =
       NcclManager::instance()->GenerateCommunicatorKey();
   EXPECT_EQ(communicator_key.size(), NCCL_UNIQUE_ID_BYTES);
 }
 
 #if !TENSORFLOW_USE_ROCM
+// ROCm platform currently does not support simulating a multi-node
+// environment, on a single node with multiple GPUS. So tests that rely
+// upon such simulation need to be skipped on the ROCm platform
+
 // This test creates `num_nodes` NcclManagers to simulate a multi-node
 // environment.  It works on a single node with multiple GPUs.  It enqueues NCCL
 // kernels on separate stream per rank.
@@ -653,6 +677,10 @@ TYPED_TEST(NcclManagerTest, MultiNodeSingle) {
 }
 
 #if !TENSORFLOW_USE_ROCM
+// ROCm platform currently does not support simulating a multi-node
+// environment, on a single node with multiple GPUS. So tests that rely
+// upon such simulation need to be skipped on the ROCm platform
+
 // Multi-node broadcast.
 TYPED_TEST(NcclManagerTest, MultiNodeBroadcast) {
   int num_nodes;
@@ -676,8 +704,8 @@ TYPED_TEST(NcclManagerTest, ConsistentCollectiveType) {
                                   TensorShape({2, 3}), 0.0f));
   for (int rank = 0; rank < num_ranks; ++rank) {
     auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
-    auto* info = device->tensorflow_gpu_device_info();
-    auto* stream = device->tensorflow_gpu_device_info()->stream;
+    auto* info = device->tensorflow_accelerator_device_info();
+    auto* stream = device->tensorflow_accelerator_device_info()->stream;
     auto participant = absl::make_unique<NcclManager::Participant>(
         device->executor(), stream, info, &test_case->ins[rank],
         &test_case->outs[rank], /*global_rank=*/-1,
@@ -713,8 +741,8 @@ TYPED_TEST(NcclManagerTest, ConsistentCommunicatorKey) {
                                   TensorShape({2, 3}), 0.0f));
   for (int rank = 0; rank < num_ranks; ++rank) {
     auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
-    auto* info = device->tensorflow_gpu_device_info();
-    auto* stream = device->tensorflow_gpu_device_info()->stream;
+    auto* info = device->tensorflow_accelerator_device_info();
+    auto* stream = device->tensorflow_accelerator_device_info()->stream;
     auto participant = absl::make_unique<NcclManager::Participant>(
         device->executor(), stream, info, &test_case->ins[rank],
         &test_case->outs[rank], /*global_rank=*/-1,
@@ -742,8 +770,8 @@ TYPED_TEST(NcclManagerTest, ConsistentNumberOfDevices) {
                                   TensorShape({2, 3}), 0.0f));
   for (int rank = 0; rank < num_ranks; ++rank) {
     auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
-    auto* info = device->tensorflow_gpu_device_info();
-    auto* stream = device->tensorflow_gpu_device_info()->stream;
+    auto* info = device->tensorflow_accelerator_device_info();
+    auto* stream = device->tensorflow_accelerator_device_info()->stream;
     int num_devices = rank == 0 ? num_ranks : num_ranks + 1;
     auto participant = absl::make_unique<NcclManager::Participant>(
         device->executor(), stream, info, &test_case->ins[rank],
@@ -771,8 +799,8 @@ TYPED_TEST(NcclManagerTest, BroadcastNoSource) {
                                   /*src_rank=*/-1, false));
   for (int rank = 0; rank < num_ranks; ++rank) {
     auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
-    auto* info = device->tensorflow_gpu_device_info();
-    auto* stream = device->tensorflow_gpu_device_info()->stream;
+    auto* info = device->tensorflow_accelerator_device_info();
+    auto* stream = device->tensorflow_accelerator_device_info()->stream;
     auto participant = absl::make_unique<NcclManager::Participant>(
         device->executor(), stream, info, nullptr, &test_case->outs[rank], rank,
         this->CreateDoneCallback(test_case.get()));
@@ -797,8 +825,8 @@ TYPED_TEST(NcclManagerTest, BroadcastMultipleSends) {
                                   /*src_rank=*/-1, false));
   for (int rank = 0; rank < num_ranks; ++rank) {
     auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
-    auto* info = device->tensorflow_gpu_device_info();
-    auto* stream = device->tensorflow_gpu_device_info()->stream;
+    auto* info = device->tensorflow_accelerator_device_info();
+    auto* stream = device->tensorflow_accelerator_device_info()->stream;
     auto participant = absl::make_unique<NcclManager::Participant>(
         device->executor(), stream, info, &test_case->outs[rank],
         &test_case->outs[rank], rank,
@@ -825,8 +853,8 @@ TYPED_TEST(NcclManagerTest, BroadcastInconsistentSource) {
                                   /*src_rank=*/-1, false));
   for (int rank = 0; rank < num_ranks; ++rank) {
     auto* device = this->GetDevice(num_ranks, /*node=*/0, rank);
-    auto* info = device->tensorflow_gpu_device_info();
-    auto* stream = device->tensorflow_gpu_device_info()->stream;
+    auto* info = device->tensorflow_accelerator_device_info();
+    auto* stream = device->tensorflow_accelerator_device_info()->stream;
     auto participant = absl::make_unique<NcclManager::Participant>(
         device->executor(), stream, info, &test_case->outs[rank],
         &test_case->outs[rank], rank,
@@ -841,6 +869,103 @@ TYPED_TEST(NcclManagerTest, BroadcastInconsistentSource) {
 
   this->VerifyError(test_case.get());
 }
+
+#if !TENSORFLOW_USE_ROCM
+// ROCm platform currently does not support simulating a multi-node
+// environment, on a single node with multiple GPUS. So tests that rely
+// upon such simulation need to be skipped on the ROCm platform
+
+TYPED_TEST(NcclManagerTest, AbortThenReset) {
+  using NodeState = typename TestFixture::NodeState;
+  using TestCase = typename TestFixture::TestCase;
+  const int num_nodes = 2;
+  std::vector<NodeState> nodes(num_nodes);
+  // First do a normal all-reduce to simulate the case when there're
+  // multiple communicators.
+  this->RunMultiNodeAllReduceTest(nodes, /* num_ranks_per_node */ 1);
+
+  const std::string collective_key = "allreduce";
+  ncclRedOp_t reduction_op = static_cast<ncclRedOp_t>(0);
+  auto node_fn = [&](TestCase* test_case, int node,
+                     const std::string& communicator_key) {
+    auto* device = this->GetDevice(/* num_ranks_per_node */ 1, node,
+                                   /* local_rank */ 0);
+    auto* info = device->tensorflow_accelerator_device_info();
+    auto* stream = device->tensorflow_accelerator_device_info()->stream;
+    auto participant = absl::make_unique<NcclManager::Participant>(
+        device->executor(), stream, info, &test_case->ins[node],
+        &test_case->outs[node], /* global_rank */ node,
+        this->CreateDoneCallback(test_case));
+    nodes[node].nccl_manager.AddToAllReduce(
+        std::move(participant),
+        {collective_key, /* num_local_devices */ 1,
+         /* num_global_devices */ num_nodes, communicator_key,
+         /*source_rank=*/-1},
+        reduction_op);
+    nodes[node].nccl_manager.SignalMultiNodeReady(collective_key);
+  };
+
+  // Use a new communicator_key, which uses a new set of ncclComm underneath.
+  std::string communicator_key =
+      nodes[0].nccl_manager.GenerateCommunicatorKey();
+  // Do a normal all-reduce with this communicator key to initialize ncclComm.
+  // This is because ncclCommInitRank waits for all ranks and is blocking.
+  {
+    std::unique_ptr<typename TestFixture::TestCase> test_case(
+        this->MakeReductionTestCase(
+            /* num_nodes */ num_nodes, /* num_ranks_per_node */ 1, reduction_op,
+            TensorShape({2, 3}), 0.0f));
+    for (int i = 0; i < num_nodes; ++i) {
+      this->work_queue_->Schedule(
+          [&node_fn, &test_case, i, communicator_key]() {
+            node_fn(test_case.get(), i, communicator_key);
+          });
+    }
+    this->VerifyResults(test_case.get());
+  }
+
+  // A hanging all-reduce.
+  ASSERT_GT(num_nodes, 1);
+  std::unique_ptr<typename TestFixture::TestCase> test_case(
+      this->MakeReductionTestCase(
+          /* num_nodes */ num_nodes, /* num_ranks_per_node */ 1, reduction_op,
+          TensorShape({2, 3}), 0.0f));
+  node_fn(test_case.get(), 0, communicator_key);
+  Env::Default()->SleepForMicroseconds(1000000);
+  for (auto& node : nodes) {
+    node.nccl_manager.StartAbort(absl::UnavailableError("peer down"));
+  }
+  {
+    mutex_lock l(test_case->mu);
+    while (test_case->num_completed != 1) {
+      test_case->done_cv.wait(l);
+    }
+  }
+
+  // Reset the aborted NcclManager and then run another all-reduce with the
+  // resetted NcclManagers.
+  for (auto& node : nodes) {
+    node.nccl_manager.Reset();
+  }
+  // Regenerate the communicator_key, because this is needed to create new
+  // communicators.
+  communicator_key = nodes[0].nccl_manager.GenerateCommunicatorKey();
+  {
+    std::unique_ptr<typename TestFixture::TestCase> test_case(
+        this->MakeReductionTestCase(
+            /* num_nodes */ num_nodes, /* num_ranks_per_node */ 1, reduction_op,
+            TensorShape({2, 3}), 0.0f));
+    for (int i = 0; i < num_nodes; ++i) {
+      this->work_queue_->Schedule(
+          [&node_fn, &test_case, i, communicator_key]() {
+            node_fn(test_case.get(), i, communicator_key);
+          });
+    }
+    this->VerifyResults(test_case.get());
+  }
+}
+
+#endif
 
 }  // namespace tensorflow
 

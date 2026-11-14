@@ -29,21 +29,21 @@ namespace {
 
 // Adds output shapes for dense tensors in Parse*Example ops.
 template <typename TensorShapeType>  // TensorShape or PartialTensorShape
-Status AddDenseOutputShapes(const std::vector<TensorShapeType>& dense_shapes,
-                            const ShapeHandle& prefix, InferenceContext* c,
-                            int* output_idx) {
+absl::Status AddDenseOutputShapes(
+    const std::vector<TensorShapeType>& dense_shapes, const ShapeHandle& prefix,
+    InferenceContext* c, int* output_idx) {
   for (const auto& dense_shape : dense_shapes) {
     ShapeHandle s;
     TF_RETURN_IF_ERROR(c->MakeShapeFromPartialTensorShape(dense_shape, &s));
     TF_RETURN_IF_ERROR(c->Concatenate(prefix, s, &s));
     c->set_output((*output_idx)++, s);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Adds output shapes for sparse tensors in Parse*Example ops.
 void AddSparseOutputShapes(int num_sparse, const ShapeHandle input_shape,
-                           int64 rank_delta, InferenceContext* c,
+                           int64_t rank_delta, InferenceContext* c,
                            int* output_idx) {
   // Rank of SparseTensor is rank of input tensor plus rank_delta.
   shape_inference::DimensionOrConstant rank(c->UnknownDim());
@@ -62,9 +62,9 @@ void AddSparseOutputShapes(int num_sparse, const ShapeHandle input_shape,
 }
 
 // Adds output shapes for ragged tensors in Parse*Example ops.
-Status AddRaggedOutputShapes(int num_ragged, bool ragged_rank_2,
-                             const DimensionHandle& num_examples,
-                             InferenceContext* c, int* output_idx) {
+absl::Status AddRaggedOutputShapes(int num_ragged, bool ragged_rank_2,
+                                   const DimensionHandle& num_examples,
+                                   InferenceContext* c, int* output_idx) {
   DimensionHandle num_splits;
   TF_RETURN_IF_ERROR(c->Add(num_examples, 1, &num_splits));
   // Values
@@ -81,7 +81,7 @@ Status AddRaggedOutputShapes(int num_ragged, bool ragged_rank_2,
       c->set_output((*output_idx)++, c->Vector(c->UnknownDim()));
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Adds output shapes for dense_lengths tensors in Parse*Example ops.
@@ -100,7 +100,7 @@ REGISTER_OP("DecodeRaw")
     .Attr(
         "out_type: "
         "{half,float,double,int32,uint16,uint8,int16,int8,int64,complex64,"
-        "complex128,bool}")
+        "complex128,bool,bfloat16}")
     .Attr("little_endian: bool = true")
     .SetShapeFn([](InferenceContext* c) {
       // Note: last dimension is data dependent.
@@ -108,14 +108,16 @@ REGISTER_OP("DecodeRaw")
       TF_RETURN_IF_ERROR(c->Concatenate(
           c->input(0), c->Vector(InferenceContext::kUnknownDim), &out));
       c->set_output(0, out);
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("DecodePaddedRaw")
     .Input("input_bytes: string")
     .Input("fixed_length: int32")
     .Output("output: out_type")
-    .Attr("out_type: {half,float,double,int32,uint16,uint8,int16,int8,int64}")
+    .Attr(
+        "out_type: {half,float,double,int32,uint16,uint8,int16,int8,int64,"
+        "bfloat16}")
     .Attr("little_endian: bool = true")
     .SetShapeFn([](InferenceContext* c) {
       DimensionHandle fixed_length;
@@ -124,7 +126,7 @@ REGISTER_OP("DecodePaddedRaw")
       DataType out_type;
       TF_RETURN_IF_ERROR(c->GetAttr("out_type", &out_type));
 
-      int32 data_type_size = DataTypeSize(out_type);
+      int32_t data_type_size = DataTypeSize(out_type);
 
       DimensionHandle width;
       TF_RETURN_IF_ERROR(c->Divide(fixed_length, data_type_size, true, &width));
@@ -133,7 +135,7 @@ REGISTER_OP("DecodePaddedRaw")
       TF_RETURN_IF_ERROR(c->Concatenate(c->input(0), c->Vector(width), &out));
 
       c->set_output(0, out);
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("DecodeCompressed")
@@ -170,7 +172,7 @@ REGISTER_OP("ParseExample")
       AddSparseOutputShapes(attrs.num_sparse, input, 1, c, &output_idx);
       TF_RETURN_IF_ERROR(
           AddDenseOutputShapes(attrs.dense_shapes, input, c, &output_idx));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 // Differences between ParseExample and ParseExampleV2:
@@ -221,7 +223,7 @@ REGISTER_OP("ParseExampleV2")
       TF_RETURN_IF_ERROR(AddRaggedOutputShapes(attrs.num_ragged, false,
                                                num_examples, c, &output_idx));
 
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("ParseSingleExample")
@@ -248,7 +250,7 @@ REGISTER_OP("ParseSingleExample")
       AddSparseOutputShapes(attrs.sparse_keys.size(), input, 1, c, &output_idx);
       TF_RETURN_IF_ERROR(
           AddDenseOutputShapes(attrs.dense_shapes, input, c, &output_idx));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("ParseSequenceExample")
@@ -304,7 +306,7 @@ REGISTER_OP("ParseSequenceExample")
       AddDenseLengthsShapes(attrs.num_feature_list_dense, input, c,
                             &output_idx);
 
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 // Differences between ParseSequenceExample and ParseSequenceExampleV2:
@@ -393,7 +395,7 @@ REGISTER_OP("ParseSequenceExampleV2")
                             &output_idx);
       TF_RETURN_IF_ERROR(AddRaggedOutputShapes(
           attrs.num_feature_list_ragged, true, num_examples, c, &output_idx));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("ParseSingleSequenceExample")
@@ -447,7 +449,7 @@ REGISTER_OP("ParseSingleSequenceExample")
       TF_RETURN_IF_ERROR(AddDenseOutputShapes(attrs.feature_list_dense_shapes,
                                               c->UnknownShapeOfRank(1), c,
                                               &output_idx));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("ParseTensor")
@@ -482,7 +484,7 @@ REGISTER_OP("DecodeCSV")
         ShapeHandle v;
         TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(i), 1, &v));
         if (c->Rank(c->input(i)) == 1 && c->Value(c->Dim(v, 0)) > 1) {
-          return errors::InvalidArgument(
+          return absl::InvalidArgumentError(
               "Shape of a default must be a length-0 or length-1 vector, or a "
               "scalar.");
         }
@@ -490,13 +492,13 @@ REGISTER_OP("DecodeCSV")
 
       // Propagate shape of the records input.
       for (int i = 0; i < c->num_outputs(); ++i) c->set_output(i, c->input(0));
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 REGISTER_OP("StringToNumber")
     .Input("string_tensor: string")
     .Output("output: out_type")
-    .Attr("out_type: {float, double, int32, int64} = DT_FLOAT")
+    .Attr("out_type: {float, double, int32, int64, uint32, uint64} = DT_FLOAT")
     .SetShapeFn(shape_inference::UnchangedShape);
 
 }  // namespace tensorflow

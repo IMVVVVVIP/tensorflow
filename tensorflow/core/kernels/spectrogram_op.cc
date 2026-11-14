@@ -34,33 +34,43 @@ class AudioSpectrogramOp : public OpKernel {
     OP_REQUIRES_OK(context, context->GetAttr("stride", &stride_));
     OP_REQUIRES_OK(context,
                    context->GetAttr("magnitude_squared", &magnitude_squared_));
+    OP_REQUIRES(context, window_size_ > 1,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "window_size must be > 1, got ", window_size_)));
+    OP_REQUIRES(context, stride_ > 0,
+                absl::InvalidArgumentError(
+                    absl::StrCat("stride must be > 0, got ", stride_)));
   }
 
   void Compute(OpKernelContext* context) override {
     const Tensor& input = context->input(0);
-    OP_REQUIRES(context, input.dims() == 2,
-                errors::InvalidArgument("input must be 2-dimensional",
-                                        input.shape().DebugString()));
+    OP_REQUIRES(
+        context, input.dims() == 2,
+        absl::InvalidArgumentError(absl::StrCat("input must be 2-dimensional",
+                                                input.shape().DebugString())));
+    OP_REQUIRES(context, window_size_ > 1,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "window_size must be > 1, got ", window_size_)));
     Spectrogram spectrogram;
     OP_REQUIRES(context, spectrogram.Initialize(window_size_, stride_),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "Spectrogram initialization failed for window size ",
-                    window_size_, " and stride ", stride_));
+                    window_size_, " and stride ", stride_)));
 
     const auto input_as_matrix = input.matrix<float>();
 
-    const int64 sample_count = input.dim_size(0);
-    const int64 channel_count = input.dim_size(1);
+    const int64_t sample_count = input.dim_size(0);
+    const int64_t channel_count = input.dim_size(1);
 
-    const int64 output_width = spectrogram.output_frequency_channels();
-    const int64 length_minus_window = (sample_count - window_size_);
-    int64 output_height;
+    const int64_t output_width = spectrogram.output_frequency_channels();
+    const int64_t length_minus_window = (sample_count - window_size_);
+    int64_t output_height;
     if (length_minus_window < 0) {
       output_height = 0;
     } else {
       output_height = 1 + (length_minus_window / stride_);
     }
-    const int64 output_slices = channel_count;
+    const int64_t output_slices = channel_count;
 
     Tensor* output_tensor = nullptr;
     OP_REQUIRES_OK(
@@ -71,9 +81,9 @@ class AudioSpectrogramOp : public OpKernel {
     auto output_flat = output_tensor->flat<float>().data();
 
     std::vector<float> input_for_channel(sample_count);
-    for (int64 channel = 0; channel < channel_count; ++channel) {
+    for (int64_t channel = 0; channel < channel_count; ++channel) {
       OP_REQUIRES(context, spectrogram.Reset(),
-                  errors::InvalidArgument("Failed to Reset()"));
+                  absl::InvalidArgumentError("Failed to Reset()"));
 
       float* output_slice =
           output_flat + (channel * output_height * output_width);
@@ -84,17 +94,18 @@ class AudioSpectrogramOp : public OpKernel {
       OP_REQUIRES(context,
                   spectrogram.ComputeSquaredMagnitudeSpectrogram(
                       input_for_channel, &spectrogram_output),
-                  errors::InvalidArgument("Spectrogram compute failed"));
+                  absl::InvalidArgumentError("Spectrogram compute failed"));
       OP_REQUIRES(context, (spectrogram_output.size() == output_height),
-                  errors::InvalidArgument(
+                  absl::InvalidArgumentError(absl::StrCat(
                       "Spectrogram size calculation failed: Expected height ",
-                      output_height, " but got ", spectrogram_output.size()));
-      OP_REQUIRES(context,
-                  spectrogram_output.empty() ||
-                      (spectrogram_output[0].size() == output_width),
-                  errors::InvalidArgument(
-                      "Spectrogram size calculation failed: Expected width ",
-                      output_width, " but got ", spectrogram_output[0].size()));
+                      output_height, " but got ", spectrogram_output.size())));
+      OP_REQUIRES(
+          context,
+          spectrogram_output.empty() ||
+              (spectrogram_output[0].size() == output_width),
+          absl::InvalidArgumentError(absl::StrCat(
+              "Spectrogram size calculation failed: Expected width ",
+              output_width, " but got ", spectrogram_output[0].size())));
       for (int row_index = 0; row_index < output_height; ++row_index) {
         const std::vector<float>& spectrogram_row =
             spectrogram_output[row_index];
@@ -114,8 +125,8 @@ class AudioSpectrogramOp : public OpKernel {
   }
 
  private:
-  int32 window_size_;
-  int32 stride_;
+  int32_t window_size_;
+  int32_t stride_;
   bool magnitude_squared_;
 };
 REGISTER_KERNEL_BUILDER(Name("AudioSpectrogram").Device(DEVICE_CPU),

@@ -12,13 +12,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#include "tensorflow/lite/delegates/flex/allowlisted_flex_ops.h"
+#include "tensorflow/compiler/mlir/lite/delegates/flex/allowlisted_flex_ops.h"
 
 #include <set>
+#include <string>
 
 #include <gtest/gtest.h>
+#include "tensorflow/compiler/mlir/lite/delegates/flex/allowlisted_flex_ops_internal.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/lite/delegates/flex/allowlisted_flex_ops_internal.h"
 
 namespace tflite {
 namespace flex {
@@ -64,8 +65,3 @@ TEST(TfTextUtilsTest, TestFlexOpNotAllowed) {
 
 }  // namespace flex
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

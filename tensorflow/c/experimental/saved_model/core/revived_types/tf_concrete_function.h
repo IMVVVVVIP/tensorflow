@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_TF_CONCRETE_FUNCTION_H_
-#define TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_TF_CONCRETE_FUNCTION_H_
+#ifndef TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_REVIVED_TYPES_TF_CONCRETE_FUNCTION_H_
+#define TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_REVIVED_TYPES_TF_CONCRETE_FUNCTION_H_
 
 #include <functional>
 #include <memory>
@@ -22,13 +22,17 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/types/span.h"
+#include "tensorflow/c/eager/abstract_tensor_handle.h"
 #include "tensorflow/c/eager/immediate_execution_context.h"
 #include "tensorflow/c/eager/immediate_execution_operation.h"
 #include "tensorflow/c/eager/immediate_execution_tensor_handle.h"
 #include "tensorflow/c/experimental/saved_model/core/concrete_function.h"
 #include "tensorflow/c/experimental/saved_model/core/function_metadata.h"
-#include "tensorflow/c/experimental/saved_model/core/revived_types/tensorhandle_convertible.h"
+#include "tensorflow/c/experimental/saved_model/core/revived_types/flat_tensor_function.h"
 #include "tensorflow/core/framework/function.pb.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/core/protobuf/saved_object_graph.pb.h"
 
 namespace tensorflow {
@@ -51,35 +55,31 @@ class TFConcreteFunction : public ConcreteFunction {
   //  ctx      - A handle to the Tensorflow runtime. This MUST be non-null and
   //             outlive TFConcreteFunction.
   //  out      - The output TFConcreteFunction.
-  static Status Create(const FunctionDef* function_def,
-                       std::vector<ImmediateExecutionTensorHandle*> captures,
-                       FunctionMetadata metadata,
-                       ImmediateExecutionContext* ctx,
-                       std::unique_ptr<TFConcreteFunction>* out);
+  static absl::Status Create(
+      const FunctionDef* function_def,
+      std::vector<ImmediateExecutionTensorHandle*> captures,
+      FunctionMetadata metadata, ImmediateExecutionContext* ctx,
+      std::unique_ptr<TFConcreteFunction>* out);
 
   // This method returns the "Call" Op used to execute the function.
-  Status GetCallOp(absl::Span<AbstractTensorHandle* const> inputs,
-                   ImmediateOpPtr* out) override;
+  absl::Status MakeCallOp(absl::Span<AbstractTensorHandle* const> inputs,
+                          ImmediateOpPtr* out) const override;
 
   const FunctionMetadata& GetFunctionMetadata() const override;
 
-  ~TFConcreteFunction() override;
+  ~TFConcreteFunction() override = default;
 
  private:
-  TFConcreteFunction(const std::string& name,
-                     std::vector<ImmediateExecutionTensorHandle*> captures,
-                     FunctionMetadata metadata, ImmediateExecutionContext* ctx);
+  TFConcreteFunction(std::unique_ptr<FlatTensorFunction> func,
+                     FunctionMetadata metadata);
 
   TFConcreteFunction(const TFConcreteFunction&) = delete;
   TFConcreteFunction& operator=(const TFConcreteFunction&) = delete;
 
-  // Name of the FunctionDef corresponding to this TFConcreteFunction
-  std::string name_;
-  std::vector<ImmediateExecutionTensorHandle*> captures_;
+  std::unique_ptr<FlatTensorFunction> func_;
   FunctionMetadata metadata_;
-  ImmediateExecutionContext* ctx_;
 };
 
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_TF_CONCRETE_FUNCTION_H_
+#endif  // TENSORFLOW_C_EXPERIMENTAL_SAVED_MODEL_CORE_REVIVED_TYPES_TF_CONCRETE_FUNCTION_H_

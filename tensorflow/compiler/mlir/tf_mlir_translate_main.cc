@@ -13,9 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
+#include <string>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 #include "absl/strings/str_split.h"
+#include "absl/types/span.h"
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SMLoc.h"
@@ -26,10 +31,10 @@ limitations under the License.
 #include "mlir/Support/FileUtilities.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "mlir/Support/ToolUtilities.h"  // from @llvm-project
-#include "mlir/Translation.h"  // from @llvm-project
+#include "mlir/Tools/mlir-translate/Translation.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/init_mlir.h"
 #include "tensorflow/compiler/mlir/tensorflow/translate/tf_mlir_translate.h"
-#include "tensorflow/compiler/mlir/tensorflow/translate/tf_mlir_translate_cl.h"
+#include "tensorflow/compiler/mlir/tools/tf_mlir_translate_cl.h"
 #include "tensorflow/core/platform/init_main.h"
 
 // NOLINTNEXTLINE
@@ -60,7 +65,14 @@ static llvm::cl::opt<bool> import_saved_model_object_graph(
 static llvm::cl::opt<bool> import_saved_model_signature_defs(
     "savedmodel-signaturedefs-to-mlir",
     llvm::cl::desc(
-        "Import a saved model's SignatureDefs to to their MLIR representation"),
+        "Import a saved model's SignatureDefs to their MLIR representation"),
+    llvm::cl::value_desc("dir"));
+
+// NOLINTNEXTLINE
+static llvm::cl::opt<bool> import_saved_model_signature_defs_lite(
+    "savedmodel-signaturedefs-to-mlir-lite",
+    llvm::cl::desc("Import a saved model's SignatureDefs to their MLIR "
+                   "representation without any graph transformation"),
     llvm::cl::value_desc("dir"));
 
 // NOLINTNEXTLINE
@@ -81,17 +93,20 @@ int main(int argc, char** argv) {
   tensorflow::InitMlir y(&argc, &argv);
 
   // Add flags for all the registered translations.
-  llvm::cl::opt<const mlir::TranslateFunction*, false, mlir::TranslationParser>
+  llvm::cl::opt<const mlir::Translation*, false, mlir::TranslationParser>
       requested_translation("", llvm::cl::desc("Translation to perform"));
   mlir::registerAsmPrinterCLOptions();
   llvm::cl::ParseCommandLineOptions(argc, argv, "TF MLIR translation driver\n");
 
   if (!import_saved_model_object_graph && !import_saved_model_signature_defs &&
-      !requested_translation) {
+      !import_saved_model_signature_defs_lite && !requested_translation) {
     llvm::errs() << "error: need to specify one translation to perform\n";
     return 1;
-  } else if (import_saved_model_object_graph &&
-             import_saved_model_signature_defs && requested_translation) {
+  } else if (import_saved_model_object_graph +
+                 import_saved_model_signature_defs +
+                 import_saved_model_signature_defs_lite +
+                 (requested_translation != nullptr) >
+             1) {
     llvm::errs()
         << "error: cannot specify more than one translation to perform\n";
     return 1;
@@ -111,20 +126,29 @@ int main(int argc, char** argv) {
 
   if (import_saved_model_object_graph) {
     mlir::MLIRContext context;
-
     auto module_or = tensorflow::SavedModelObjectGraphToMlirImport(
         input_filename, tags, exported_names, &context);
     if (!module_or.status().ok()) return 1;
 
-    module_or.ConsumeValueOrDie()->print(output->os());
+    module_or.value()->print(output->os());
   } else if (import_saved_model_signature_defs) {
     mlir::MLIRContext context;
-
+    tensorflow::MLIRImportOptions import_options;
+    import_options.upgrade_legacy = upgrade_legacy;
     auto module_or = tensorflow::SavedModelSignatureDefsToMlirImport(
-        input_filename, tags, exported_names, &context, upgrade_legacy);
+        input_filename, tags, exported_names, &context, import_options);
     if (!module_or.status().ok()) return 1;
 
-    module_or.ConsumeValueOrDie()->print(output->os());
+    module_or.value()->print(output->os());
+  } else if (import_saved_model_signature_defs_lite) {
+    mlir::MLIRContext context;
+    tensorflow::MLIRImportOptions import_options;
+    import_options.upgrade_legacy = upgrade_legacy;
+    auto module_or = tensorflow::SavedModelSignatureDefsToMlirImportLite(
+        input_filename, tags, exported_names, &context, import_options);
+    if (!module_or.status().ok()) return 1;
+
+    module_or.value()->print(output->os());
   } else {
     auto input = mlir::openInputFile(input_filename, &error_message);
 
@@ -136,10 +160,10 @@ int main(int argc, char** argv) {
     // Processes the memory buffer with a new MLIRContext.
     auto processBuffer = [&](std::unique_ptr<llvm::MemoryBuffer> ownedBuffer,
                              llvm::raw_ostream& os) {
-      llvm::SourceMgr sourceMgr;
-      sourceMgr.AddNewSourceBuffer(std::move(ownedBuffer), llvm::SMLoc());
+      auto sourceMgr = std::make_shared<llvm::SourceMgr>();
+      sourceMgr->AddNewSourceBuffer(std::move(ownedBuffer), llvm::SMLoc());
       mlir::MLIRContext context;
-      mlir::SourceMgrDiagnosticHandler diagnostic_handler(sourceMgr, &context);
+      mlir::SourceMgrDiagnosticHandler diagnostic_handler(*sourceMgr, &context);
       return (*requested_translation)(sourceMgr, os, &context);
     };
 

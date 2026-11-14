@@ -29,27 +29,26 @@ namespace grappler {
 namespace {
 
 static const char* kTestOptimizerName = "Test";
+static const char* kTestPluginOptimizerName = "TestPlugin";
 
 class TestGraphOptimizer : public CustomGraphOptimizer {
  public:
-  Status Init(const tensorflow::RewriterConfig_CustomGraphOptimizer* config =
-                  nullptr) override {
-    return Status::OK();
+  absl::Status Init(
+      const tensorflow::RewriterConfig_CustomGraphOptimizer* config) override {
+    return absl::OkStatus();
   }
-  string name() const override { return kTestOptimizerName; }
+  std::string name() const override { return kTestOptimizerName; }
   bool UsesFunctionLibrary() const override { return false; }
-  Status Optimize(Cluster* cluster, const GrapplerItem& item,
-                  GraphDef* optimized_graph) override {
-    return Status::OK();
+  absl::Status Optimize(Cluster* cluster, const GrapplerItem& item,
+                        GraphDef* optimized_graph) override {
+    return absl::OkStatus();
   }
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimized_graph, double result) override {}
 };
 
 REGISTER_GRAPH_OPTIMIZER_AS(TestGraphOptimizer, "StaticRegister");
 
 TEST(CustomGraphOptimizerRegistryTest, DynamicRegistration) {
-  std::vector<string> optimizers =
+  std::vector<std::string> optimizers =
       CustomGraphOptimizerRegistry::GetRegisteredOptimizers();
   std::unique_ptr<const CustomGraphOptimizer> test_optimizer;
   ASSERT_EQ(
@@ -69,7 +68,7 @@ TEST(CustomGraphOptimizerRegistryTest, DynamicRegistration) {
 }
 
 TEST(CustomGraphOptimizerRegistryTest, StaticRegistration) {
-  const std::vector<string> optimizers =
+  const std::vector<std::string> optimizers =
       CustomGraphOptimizerRegistry::GetRegisteredOptimizers();
   EXPECT_EQ(1,
             std::count(optimizers.begin(), optimizers.end(), "StaticRegister"));
@@ -83,6 +82,32 @@ TEST(GraphOptimizerRegistryTest, CrashesOnDuplicateRegistration) {
   const auto creator = []() { return new TestGraphOptimizer; };
   EXPECT_DEATH(CustomGraphOptimizerRegistry::RegisterOptimizerOrDie(
                    creator, "StaticRegister"),
+               "twice");
+}
+
+class TestPluginGraphOptimizer : public CustomGraphOptimizer {
+ public:
+  absl::Status Init(
+      const tensorflow::RewriterConfig_CustomGraphOptimizer* config) override {
+    return absl::OkStatus();
+  }
+  std::string name() const override { return kTestPluginOptimizerName; }
+  bool UsesFunctionLibrary() const override { return false; }
+  absl::Status Optimize(Cluster* cluster, const GrapplerItem& item,
+                        GraphDef* optimized_graph) override {
+    return absl::OkStatus();
+  }
+};
+
+TEST(PluginGraphOptimizerRegistryTest, CrashesOnDuplicateRegistration) {
+  const auto creator = []() { return new TestPluginGraphOptimizer; };
+  ConfigList config_list;
+  PluginGraphOptimizerRegistry::RegisterPluginOptimizerOrDie(creator, "GPU",
+                                                             config_list);
+  PluginGraphOptimizerRegistry::RegisterPluginOptimizerOrDie(creator, "CPU",
+                                                             config_list);
+  EXPECT_DEATH(PluginGraphOptimizerRegistry::RegisterPluginOptimizerOrDie(
+                   creator, "GPU", config_list),
                "twice");
 }
 

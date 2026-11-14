@@ -15,6 +15,10 @@ limitations under the License.
 
 // See docs in ../ops/image_ops.cc.
 
+#include <cstdint>
+
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -33,24 +37,27 @@ class RandomCropOp : public OpKernel {
 
   void Compute(OpKernelContext* context) override {
     const Tensor& input = context->input(0);
-    OP_REQUIRES(context, input.dims() == 3,
-                errors::InvalidArgument("input must be 3-dimensional",
-                                        input.shape().DebugString()));
+    OP_REQUIRES(
+        context, input.dims() == 3,
+        absl::InvalidArgumentError(absl::StrCat("input must be 3-dimensional",
+                                                input.shape().DebugString())));
     const Tensor& shape_t = context->input(1);
-    OP_REQUIRES(context, shape_t.dims() == 1,
-                errors::InvalidArgument("shape_t must be 1-dimensional",
-                                        shape_t.shape().DebugString()));
-    OP_REQUIRES(context, shape_t.NumElements() == 2,
-                errors::InvalidArgument("shape_t must have two elements",
-                                        shape_t.shape().DebugString()));
+    OP_REQUIRES(
+        context, shape_t.dims() == 1,
+        absl::InvalidArgumentError(absl::StrCat(
+            "shape_t must be 1-dimensional", shape_t.shape().DebugString())));
+    OP_REQUIRES(
+        context, shape_t.NumElements() == 2,
+        absl::InvalidArgumentError(absl::StrCat(
+            "shape_t must have two elements", shape_t.shape().DebugString())));
 
-    auto shape_vec = shape_t.vec<int64>();
-    const int32 target_height = shape_vec(0);
-    const int32 target_width = shape_vec(1);
+    auto shape_vec = shape_t.vec<int64_t>();
+    const int32_t target_height = shape_vec(0);
+    const int32_t target_width = shape_vec(1);
 
-    const int32 height = input.dim_size(0);
-    const int32 width = input.dim_size(1);
-    const int32 channels = input.dim_size(2);
+    const int32_t height = input.dim_size(0);
+    const int32_t width = input.dim_size(1);
+    const int32_t channels = input.dim_size(2);
 
     // Initialize shape to the batch size of the input, then add
     // the rest of the dimensions
@@ -65,16 +72,16 @@ class RandomCropOp : public OpKernel {
     }
 
     OP_REQUIRES(context, width >= target_width,
-                errors::FailedPrecondition(
+                absl::FailedPreconditionError(absl::StrCat(
                     "width must be >= target_width: width = ", width,
-                    ", target_width = ", target_width));
+                    ", target_width = ", target_width)));
     OP_REQUIRES(context, height >= target_height,
-                errors::FailedPrecondition(
+                absl::FailedPreconditionError(absl::StrCat(
                     "height must be >= target_height: height = ", height,
-                    ", target_height = ", target_height));
+                    ", target_height = ", target_height)));
 
-    int32 offset_height = 0;
-    int32 offset_width = 0;
+    int32_t offset_height = 0;
+    int32_t offset_width = 0;
 
     auto local_gen = generator_.ReserveSamples32(2);
     random::SimplePhilox random(&local_gen);

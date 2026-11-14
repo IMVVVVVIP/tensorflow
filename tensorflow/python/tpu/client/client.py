@@ -12,23 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-# Lint as: python3
 """Cloud TPU Client."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+from concurrent import futures
 import datetime
 import json
 import logging
 import os
 import time
+import urllib
 
 from absl import flags
-from concurrent import futures
-from six.moves.urllib import request
-from six.moves.urllib.error import HTTPError
 
 _GOOGLE_API_CLIENT_INSTALLED = True
 try:
@@ -41,12 +35,16 @@ FLAGS = flags.FLAGS
 
 flags.DEFINE_bool('runtime_oom_exit', True,
                   'Exit the script when the TPU runtime is OOM.')
+flags.DEFINE_bool('hbm_oom_exit', True,
+                  'Exit the script when the TPU HBM is OOM.')
 
 _GKE_ENV_VARIABLE = 'KUBE_GOOGLE_CLOUD_TPU_ENDPOINTS'
+_DEFAULT_TPUCONFIG_VARIABLE = 'TPU_CONFIG'
 _ENDPOINTS_SEPARATOR = ','
 _DEFAULT_ENV_VARIABLE = 'TPU_NAME'
 _DISCOVERY_SERVICE_URL_ENV_VARIABLE = 'TPU_API_DISCOVERY_URL'
 _GCE_METADATA_URL_ENV_VARIABLE = 'GCE_METADATA_IP'
+_GCE_METADATA_ENDPOINT_ENV_VARIABLE = 'GCE_METADATA_HOST'
 _DEFAULT_ENDPOINT_PORT = '8470'
 _OOM_EVENT_COOL_TIME_SEC = 90
 _VERSION_SWITCHER_ENDPOINT = 'http://{}:8475/requestversion'
@@ -69,15 +67,19 @@ def _environment_discovery_url():
 
 
 def _gce_metadata_endpoint():
-  return 'http://' + os.environ.get(_GCE_METADATA_URL_ENV_VARIABLE,
-                                    'metadata.google.internal')
+  endpoint = os.environ.get(_GCE_METADATA_ENDPOINT_ENV_VARIABLE)
+  if not endpoint:
+    endpoint = os.environ.get(
+        _GCE_METADATA_URL_ENV_VARIABLE, 'metadata.google.internal'
+    )
+  return 'http://' + endpoint
 
 
 def _request_compute_metadata(path):
-  req = request.Request(
+  req = urllib.request.Request(
       '%s/computeMetadata/v1/%s' % (_gce_metadata_endpoint(), path),
       headers={'Metadata-Flavor': 'Google'})
-  resp = request.urlopen(req)
+  resp = urllib.request.urlopen(req)
   return _as_text(resp.read())
 
 
@@ -98,6 +100,13 @@ def _environment_var_to_network_endpoints(endpoints):
     }
 
 
+def _get_tpu_node_config():
+  tpu_config_env = os.environ.get(_DEFAULT_TPUCONFIG_VARIABLE)
+  if tpu_config_env:
+    return json.loads(tpu_config_env)
+  return None
+
+
 def _get_tpu_name(tpu):
   if tpu:
     return tpu
@@ -114,7 +123,7 @@ def _as_text(s):
   return s
 
 
-class Client(object):
+class Client:
   """Client for working with the Cloud TPU API.
 
   This client is intended to be used for resolving tpu name to ip addresses.
@@ -141,7 +150,13 @@ class Client(object):
     tpu = _get_tpu_name(tpu)
 
     if tpu is None:
-      raise ValueError('Please provide a TPU Name to connect to.')
+      tpu_node_config = _get_tpu_node_config()
+      if tpu_node_config:
+        tpu = tpu_node_config.get('tpu_node_name')
+        project = project or tpu_node_config.get('project')
+        zone = zone or tpu_node_config.get('zone')
+      else:
+        raise ValueError('Please provide a TPU Name to connect to.')
 
     self._tpu = _as_text(tpu)
 
@@ -171,9 +186,8 @@ class Client(object):
     """Return the structured Symptom message."""
     return 'Symptom: ' + msg
 
-  def _oom_event(self):
+  def _oom_event(self, symptoms):
     """Check if a runtime OOM event is reported."""
-    symptoms = self.symptoms()
     if not symptoms:
       return False
     for symptom in reversed(symptoms):
@@ -184,12 +198,42 @@ class Client(object):
                                                 '%Y-%m-%dT%H:%M:%S')
       time_diff = _utcnow() - oom_datetime
       if time_diff < datetime.timedelta(seconds=_OOM_EVENT_COOL_TIME_SEC):
-        logging.warning(self._symptom_msg(
-            'a recent runtime OOM has occured ~{} seconds ago. The model '
-            'script will terminate automatically. To prevent future OOM '
-            'events, please consider reducing the model size. To disable this '
-            'behavior, set flag --runtime_oom_exit=false when starting the '
-            'script.'.format(time_diff.seconds)))
+        logging.warning(
+            self._symptom_msg(
+                'a recent runtime OOM has occurred ~{} seconds ago. The model '
+                'script will terminate automatically. To prevent future OOM '
+                'events, please consider reducing the model size. '
+                'To disable this behavior, set flag '
+                '--runtime_oom_exit=false when starting the '
+                'script.'.format(time_diff.seconds)
+            )
+        )
+        return True
+    return False
+
+  def _hbm_oom_event(self, symptoms):
+    """Check if a HBM OOM event is reported."""
+    if not symptoms:
+      return False
+    for symptom in reversed(symptoms):
+      if symptom['symptomType'] != 'HBM_OUT_OF_MEMORY':
+        continue
+      oom_datetime_str = symptom['createTime'].split('.')[0]
+      oom_datetime = datetime.datetime.strptime(oom_datetime_str,
+                                                '%Y-%m-%dT%H:%M:%S')
+      time_diff = _utcnow() - oom_datetime
+      if time_diff < datetime.timedelta(seconds=_OOM_EVENT_COOL_TIME_SEC):
+        logging.warning(
+            self._symptom_msg(
+                'a recent HBM OOM has occurred ~{} seconds ago. '
+                'The model script will terminate automatically. '
+                'To prevent future HBM OOM events, please '
+                'consider reducing the model size. '
+                'To disable this behavior, set flag '
+                '--hbm_oom_exit=false when starting the '
+                'script.'.format(time_diff.seconds)
+            )
+        )
         return True
     return False
 
@@ -264,9 +308,12 @@ class Client(object):
     If false the TPU is in a unrecoverable state and should be recreated.
     """
     state = self.state()
+    symptoms = self.symptoms()
     if state and state in ['TERMINATED', 'PREEMPTED']:
       return False
-    elif FLAGS.runtime_oom_exit and self._oom_event():
+    elif FLAGS.runtime_oom_exit and self._oom_event(symptoms):
+      return False
+    elif FLAGS.hbm_oom_exit and self._hbm_oom_event(symptoms):
       return False
     return True
 
@@ -290,11 +337,11 @@ class Client(object):
       url = _VERSION_SWITCHER_ENDPOINT.format(
           self.network_endpoints()[0]['ipAddress'])
       try:
-        req = request.Request(url)
-        resp = request.urlopen(req)
+        req = urllib.request.Request(url)
+        resp = urllib.request.urlopen(req)
         version_details = json.loads(resp.read())
         return version_details.get('currentVersion')
-      except HTTPError as e:
+      except urllib.error.HTTPError as e:
         status_code = e.code
         if status_code == 404:
           return None
@@ -375,19 +422,22 @@ class Client(object):
       ip_address = worker['ipAddress']
       url = (_VERSION_SWITCHER_ENDPOINT + '/{}?restartType={}').format(
           ip_address, version, restart_type)
-      req = request.Request(url, data=b'')
+      req = urllib.request.Request(url, data=b'')
       try:
-        request.urlopen(req)
-      except HTTPError as e:
+        urllib.request.urlopen(req)
+      except urllib.error.HTTPError as e:
         status_code = e.code
         if status_code == 404:
-          raise Exception(
+          raise RuntimeError(
               'Tensorflow version {} is not available on Cloud TPU, '
               'try a previous nightly version or refer to '
               'https://cloud.google.com/tpu/docs/release-notes for '
-              'the latest official version.'.format(version))
+              'the latest official version.'.format(version)
+          ) from e
         else:
-          raise Exception('Failed to configure worker {}'.format(ip_address))
+          raise RuntimeError(
+              'Failed to configure worker {}'.format(ip_address)
+          ) from e
 
     workers = self.network_endpoints()
 

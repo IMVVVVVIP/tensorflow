@@ -15,10 +15,12 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/kernels/transpose_conv.h"
 
+#include <any>
 #include <memory>
+#include <string>
+#include <utility>
 #include <vector>
 
-#include "absl/memory/memory.h"
 #include "tensorflow/lite/delegates/gpu/common/convert.h"
 #include "tensorflow/lite/delegates/gpu/common/operations.h"
 #include "tensorflow/lite/delegates/gpu/common/shape.h"
@@ -37,8 +39,12 @@ class ConvolutionTransposedBuffers : public NodeShader {
  public:
   absl::Status GenerateCode(const GenerationContext& ctx,
                             GeneratedCode* generated_code) const final {
+    if (ctx.input_shapes.size() != 1) {
+      return absl::UnimplementedError(
+          "Convolution Transposed does not support more than 1 runtime tensor");
+    }
     const auto& attr =
-        absl::any_cast<const ConvolutionTransposedAttributes&>(ctx.op_attr);
+        std::any_cast<const ConvolutionTransposedAttributes&>(ctx.op_attr);
     auto weights = attr.weights.shape;
 
     std::vector<Variable> parameters = {
@@ -100,7 +106,7 @@ class ConvolutionTransposedBuffers : public NodeShader {
 }  // namespace
 
 std::unique_ptr<NodeShader> NewConvolutionTransposedNodeShader() {
-  return absl::make_unique<ConvolutionTransposedBuffers>();
+  return std::make_unique<ConvolutionTransposedBuffers>();
 }
 
 }  // namespace gl

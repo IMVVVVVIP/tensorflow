@@ -13,13 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifdef INTEL_MKL
+#if defined(INTEL_MKL)
+#define EIGEN_USE_THREADS
 
+#include "tensorflow/cc/ops/const_op.h"
+#include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/framework/fake_input.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/kernels/mkl/mkl_kernel_util.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/kernels/ops_util.h"
+#include "tensorflow/core/kernels/quantization_utils.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
@@ -27,100 +32,95 @@ limitations under the License.
 
 namespace tensorflow {
 
-class MklDequantizeOpTest : public OpsTestBase {};
+class MklDequantizeOpTest : public OpsTestBase {
+ protected:
+  template <typename Tinput, typename Toutput>
+  void RunMklDequantize(const Tensor& input_quantized,
+                        const Tensor& min_range_float,
+                        const Tensor& max_range_float,
+                        const Tensor& expected_output) {
+    AddInputFromArray<Tinput>(input_quantized.shape(),
+                              input_quantized.flat<Tinput>());
+    AddInputFromArray<float>(min_range_float.shape(),
+                             min_range_float.flat<float>());
+    AddInputFromArray<float>(max_range_float.shape(),
+                             max_range_float.flat<float>());
 
-static const uint8 dummy_tensor[] = {0, 0, 0, 0, 0, 0, 0, 0};
-static const TensorShape dummy_shape({8});
-
-TEST_F(MklDequantizeOpTest, small) {
-  TF_ASSERT_OK(NodeDefBuilder("dequantize_op", "_MklDequantize")
-                   .Input(FakeInput(DT_QUINT8))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Attr("T", DataTypeToEnum<quint8>::v())
-                   .Attr("mode", "SCALED")
-                   .Attr("_kernel", "QuantizedMklOp")
-                   .Finalize(node_def()));
-  TF_ASSERT_OK(InitOp());
-  AddInputFromArray<quint8>(TensorShape({1, 2, 2, 2}),
-                            {0, 10, 50, 40, 25, 115, 190, 255});
-  // min_range = 0
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  // max_range = 200
-  AddInputFromArray<float>(TensorShape({1}), {200.0f});
-  AddInputFromArray<uint8>(dummy_shape, dummy_tensor);
-  AddInputFromArray<uint8>(dummy_shape, dummy_tensor);
-  AddInputFromArray<uint8>(dummy_shape, dummy_tensor);
-  TF_ASSERT_OK(RunOpKernel());
-  Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 2, 2, 2}));
-  test::FillValues<float>(&expected,
-                          {0.0, 7.84, 39.21, 31.37, 19.6, 90.2, 149.0, 200});
-  const Tensor& output = *GetOutput(0);
-  test::ExpectTensorNear<float>(expected, output, 0.1);
-}
-
-template <typename T>
-class CommonTestUtilities : public OpsTestBase {
- public:
-  void MklToTF(const Tensor& tensor, const Tensor& mkl_meta_tensor,
-               Tensor* output) {
-    // Create an MKL to TF conversion node and execute it
-    TF_ASSERT_OK(NodeDefBuilder("mkl_to_tf_op", "_MklToTf")
-                     .Input(FakeInput(DataTypeToEnum<T>::v()))
-                     .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                     .Attr("T", DataTypeToEnum<T>::v())
-                     .Attr("_kernel", "MklLayoutDependentOp")
-                     .Finalize(node_def()));
-    TF_ASSERT_OK(InitOp());
-    AddInputFromArray<T>(tensor.shape(), tensor.flat<T>());
-    AddInputFromArray<uint8>(mkl_meta_tensor.shape(),
-                             mkl_meta_tensor.flat<uint8>());
     TF_ASSERT_OK(RunOpKernel());
 
-    *output = *GetOutput(0);
+    const Tensor& actual_output = *GetOutput(0);
+    test::ExpectTensorNear<Toutput>(expected_output, actual_output, 0.1);
   }
 
-  void ConvertAndCompare(const Tensor& tensor, const Tensor& mkl_meta_tensor,
-                         const Tensor& expected) {
-    Tensor output;
-    MklToTF(tensor, mkl_meta_tensor, &output);
-    test::ExpectTensorNear<T>(expected, output, 0.1);
-  }
+  template <typename Tinput, typename Toutput>
+  void TestMklDequantize() {
+    const DataType input_dt = DataTypeToEnum<Tinput>::v();
+    const DataType output_dt = DataTypeToEnum<Toutput>::v();
 
-  void TestBody() {}
+    TF_ASSERT_OK(NodeDefBuilder("dequantize_op", "_MklDequantize")
+                     .Input(FakeInput(input_dt))
+                     .Input(FakeInput(DT_FLOAT))  // min_range
+                     .Input(FakeInput(DT_FLOAT))  // max_range
+                     .Attr("T", input_dt)
+                     .Attr("dtype", output_dt)
+                     .Attr("mode", "SCALED")
+                     .Attr("_kernel", "QuantizedMklOp")
+                     .Finalize(node_def()));
+
+    TF_ASSERT_OK(InitOp());
+
+    Tensor input_float(DT_FLOAT, {1, 2, 2, 2});
+    test::FillValues<float>(&input_float, {0, 10, 50, 40, 25, 115, 190, 255});
+
+    const float min_range = 0.0f;
+    const float max_range = 255.0f;
+
+    Tensor min_range_float(DT_FLOAT, {});
+    test::FillValues<float>(&min_range_float, {min_range});
+
+    Tensor max_range_float(DT_FLOAT, {});
+    test::FillValues<float>(&max_range_float, {max_range});
+
+    Tensor input_quantized =
+        FloatTensorToQuantized<Tinput>(input_float, min_range, max_range);
+
+    Tensor expected_output_float32;
+    MklTestingUtil::RunDequantizeOp(input_quantized, min_range_float,
+                                    max_range_float, "SCALED",
+                                    &expected_output_float32);
+
+    if (output_dt == DT_BFLOAT16) {
+      // Since DequantizeOp does not support "SCALED" mode for bf16 output,
+      // use a workaround by casting fp32 output (computed using "SCALED" mode)
+      // into bf16 output.
+      Tensor expected_output_bfloat16(DT_BFLOAT16, {1, 2, 2, 2});
+      expected_output_bfloat16.flat<bfloat16>() =
+          expected_output_float32.flat<float>().cast<bfloat16>();
+      RunMklDequantize<Tinput, Toutput>(input_quantized, min_range_float,
+                                        max_range_float,
+                                        expected_output_bfloat16);
+    } else {
+      RunMklDequantize<Tinput, Toutput>(input_quantized, min_range_float,
+                                        max_range_float,
+                                        expected_output_float32);
+    }
+  }
 };
 
-TEST_F(MklDequantizeOpTest, MKLInput) {
-  TF_ASSERT_OK(NodeDefBuilder("dequantize_op", "_MklDequantize")
-                   .Input(FakeInput(DT_QUINT8))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Attr("T", DataTypeToEnum<quint8>::v())
-                   .Attr("mode", "SCALED")
-                   .Attr("_kernel", "QuantizedMklOp")
-                   .Finalize(node_def()));
-  TF_ASSERT_OK(InitOp());
-  AddInputFromArray<quint8>(TensorShape({1, 2, 2, 2}),
-                            {0, 10, 50, 40, 25, 115, 190, 255});
-  // min_range = 0
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  // max_range = 200
-  AddInputFromArray<float>(TensorShape({1}), {200.0f});
-  AddInputFromArray<uint8>(dummy_shape, dummy_tensor);
-  AddInputFromArray<uint8>(dummy_shape, dummy_tensor);
-  AddInputFromArray<uint8>(dummy_shape, dummy_tensor);
-  TF_ASSERT_OK(RunOpKernel());
-  Tensor expected(allocator(), DT_FLOAT, TensorShape({1, 2, 2, 2}));
-  test::FillValues<float>(&expected,
-                          {0.0, 7.84, 39.21, 31.37, 19.6, 90.2, 149.0, 200});
-  CommonTestUtilities<float> test_util;
-  test_util.ConvertAndCompare(*GetOutput(0), *GetOutput(1), expected);
+TEST_F(MklDequantizeOpTest, MklDequantize_Unsigned_Input_Float_Output) {
+  TestMklDequantize<quint8, float>();
+}
+
+TEST_F(MklDequantizeOpTest, MklDequantize_Signed_Input_Float_Output) {
+  TestMklDequantize<qint8, float>();
+}
+
+TEST_F(MklDequantizeOpTest, MklDequantize_Unsigned_Input_Bfloat16_Output) {
+  TestMklDequantize<quint8, bfloat16>();
+}
+
+TEST_F(MklDequantizeOpTest, MklDequantize_Signed_Input_Bfloat16_Output) {
+  TestMklDequantize<qint8, bfloat16>();
 }
 
 }  // namespace tensorflow

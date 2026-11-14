@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/framework/node_def_util.h"
 
+#include <limits>
+
+#include "absl/status/status.h"
 #include "tensorflow/core/framework/attr_value.pb.h"  // NOLINT
 #include "tensorflow/core/framework/fake_input.h"
 #include "tensorflow/core/framework/node_def_builder.h"
@@ -37,7 +40,7 @@ OpDef ToOpDef(const OpDefBuilder& builder) {
   return op_reg_data.op_def;
 }
 
-NodeDef ToNodeDef(const string& text) {
+NodeDef ToNodeDef(const std::string& text) {
   NodeDef node_def;
   EXPECT_TRUE(protobuf::TextFormat::MergeFromString(text, &node_def));
   return node_def;
@@ -50,24 +53,24 @@ NodeDef ToNodeDef(NodeDefBuilder&& builder) {
 }
 
 void ExpectSuccess(const NodeDef& good, const OpDef& op_def) {
-  EXPECT_EQ(Status::OK(), ValidateNodeDef(good, op_def))
+  EXPECT_EQ(absl::OkStatus(), ValidateNodeDef(good, op_def))
       << "NodeDef: " << SummarizeNodeDef(good)
       << "; OpDef: " << SummarizeOpDef(op_def);
 }
 
 void ExpectFailure(const NodeDef& bad, const OpDef& op_def,
-                   const string& message) {
-  Status status = ValidateNodeDef(bad, op_def);
+                   const std::string& message) {
+  absl::Status status = ValidateNodeDef(bad, op_def);
 
   EXPECT_FALSE(status.ok()) << "NodeDef: " << SummarizeNodeDef(bad)
                             << "; OpDef: " << SummarizeOpDef(op_def);
   if (status.ok()) return;
 
-  EXPECT_TRUE(errors::IsInvalidArgument(status))
+  EXPECT_TRUE(absl::IsInvalidArgument(status))
       << status << "; NodeDef: " << SummarizeNodeDef(bad)
       << "; OpDef: " << SummarizeOpDef(op_def);
 
-  LOG(INFO) << "Message: " << status.error_message();
+  LOG(INFO) << "Message: " << status.message();
   EXPECT_TRUE(absl::StrContains(status.ToString(), message))
       << "NodeDef: " << SummarizeNodeDef(bad)
       << "; OpDef: " << SummarizeOpDef(op_def) << "\nActual error: " << status
@@ -76,9 +79,15 @@ void ExpectFailure(const NodeDef& bad, const OpDef& op_def,
 
 TEST(NodeDefUtilTest, In) {
   const OpDef op = ToOpDef(OpDefBuilder("In").Input("i: T").Attr("T: type"));
-  const NodeDef node_def = ToNodeDef(R"proto(
-    name:'n' op:'In' input:'a' attr { key:'T' value { type:DT_FLOAT } }
-    )proto");
+  const NodeDef node_def = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'In'
+    input: 'a'
+    attr {
+      key: 'T'
+      value { type: DT_FLOAT }
+    }
+  )pb");
   ExpectSuccess(node_def, op);
 
   EXPECT_EQ("{{node n}} = In[T=DT_FLOAT](a)", SummarizeNodeDef(node_def));
@@ -92,11 +101,6 @@ TEST(NodeDefUtilTest, In) {
   bad = node_def;
   bad.clear_attr();
   ExpectFailure(bad, op, "NodeDef missing attr 'T' from Op<name=In;");
-
-  // Extra attr
-  bad = node_def;
-  AddNodeAttr("EXTRA", 17, &bad);
-  ExpectFailure(bad, op, "NodeDef mentions attr 'EXTRA' not in Op<name=In;");
 
   // Attr has wrong type
   bad = node_def;
@@ -130,7 +134,7 @@ TEST(NodeDefUtilTest, In) {
   bad.add_input("^b");
   bad.add_input("a");
   ExpectFailure(bad, op,
-                "Invalid argument: Non-control input 'a' after control input "
+                "Non-control input 'a' after control input "
                 "in NodeDef:");
 
   bad = node_def;
@@ -141,9 +145,14 @@ TEST(NodeDefUtilTest, In) {
 TEST(NodeDefUtilTest, Out) {
   const OpDef op =
       ToOpDef(OpDefBuilder("Out").Output("o: T").Attr("T: numbertype"));
-  const NodeDef node_def = ToNodeDef(R"proto(
-    name:'n' op:'Out' attr { key:'T' value { type:DT_INT32 } }
-    )proto");
+  const NodeDef node_def = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'Out'
+    attr {
+      key: 'T'
+      value { type: DT_INT32 }
+    }
+  )pb");
   ExpectSuccess(node_def, op);
 
   EXPECT_EQ("{{node n}} = Out[T=DT_INT32]()", SummarizeNodeDef(node_def));
@@ -155,15 +164,21 @@ TEST(NodeDefUtilTest, Out) {
   ExpectFailure(bad, op,
                 "Value for attr 'T' of string is not in the list of allowed "
                 "values: float, double, int32, uint8, int16, int8, complex64, "
-                "int64, qint8, quint8, qint32, bfloat16, uint16, complex128, "
+                "int64, qint8, quint8, qint32, bfloat16, qint16, quint16, "
+                "uint16, complex128, "
                 "half, uint32, uint64");
 }
 
 TEST(NodeDefUtilTest, Enum) {
   const OpDef op = ToOpDef(OpDefBuilder("Enum").Attr("e: {'apple','orange'}"));
-  const NodeDef node_def = ToNodeDef(R"proto(
-    name:'n' op:'Enum' attr { key:'e' value { s:'apple' } }
-    )proto");
+  const NodeDef node_def = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'Enum'
+    attr {
+      key: 'e'
+      value { s: 'apple' }
+    }
+  )pb");
   ExpectSuccess(node_def, op);
 
   EXPECT_EQ("{{node n}} = Enum[e=\"apple\"]()", SummarizeNodeDef(node_def));
@@ -187,29 +202,59 @@ TEST(NodeDefUtilTest, SameIn) {
                                .Input("i: N * T")
                                .Attr("N: int >= 2")
                                .Attr("T: {float,double}"));
-  const NodeDef node_def = ToNodeDef(R"proto(
-    name:'n' op:'SameIn' input:'a' input:'b'
-    attr { key:'N' value { i:2 } } attr { key:'T' value { type:DT_DOUBLE } }
-    )proto");
+  const NodeDef node_def = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'SameIn'
+    input: 'a'
+    input: 'b'
+    attr {
+      key: 'N'
+      value { i: 2 }
+    }
+    attr {
+      key: 'T'
+      value { type: DT_DOUBLE }
+    }
+  )pb");
   ExpectSuccess(node_def, op);
 
   EXPECT_EQ("{{node n}} = SameIn[N=2, T=DT_DOUBLE](a, b)",
             SummarizeNodeDef(node_def));
 
   // Illegal type
-  NodeDef bad = ToNodeDef(R"proto(
-    name:'n' op:'SameIn' input:'a' input:'b'
-    attr { key:'N' value { i:2 } } attr { key:'T' value { type:DT_STRING } }
-    )proto");
+  NodeDef bad = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'SameIn'
+    input: 'a'
+    input: 'b'
+    attr {
+      key: 'N'
+      value { i: 2 }
+    }
+    attr {
+      key: 'T'
+      value { type: DT_STRING }
+    }
+  )pb");
   ExpectFailure(bad, op,
                 "Value for attr 'T' of string is not in the list of allowed "
                 "values: float, double");
 
   // Too few inputs
-  bad = ToNodeDef(R"proto(
-    name:'n' op:'SameIn' input:'a' input:'b'
-    attr { key:'N' value { i:1 } } attr { key:'T' value { type:DT_FLOAT } }
-    )proto");
+  bad = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'SameIn'
+    input: 'a'
+    input: 'b'
+    attr {
+      key: 'N'
+      value { i: 1 }
+    }
+    attr {
+      key: 'T'
+      value { type: DT_FLOAT }
+    }
+  )pb");
   ExpectFailure(bad, op, "Value for attr 'N' of 1 must be at least minimum 2");
 }
 
@@ -217,26 +262,44 @@ TEST(NodeDefUtilTest, AnyIn) {
   const OpDef op =
       ToOpDef(OpDefBuilder("AnyIn").Input("i: T").Attr("T: list(type) >= 1"));
 
-  const NodeDef node_def = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'a' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: 'a'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectSuccess(node_def, op);
 
   EXPECT_EQ("{{node n}} = AnyIn[T=[DT_INT32, DT_STRING]](a, b)",
             SummarizeNodeDef(node_def));
 
-  const NodeDef bad = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'a' attr { key:'T' value { list { } } }
-    )proto");
+  const NodeDef bad = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: 'a'
+    attr {
+      key: 'T'
+      value { list {} }
+    }
+  )pb");
   ExpectFailure(bad, op, "Length for attr 'T' of 0 must be at least minimum 1");
 
   // With proto3 semantics, an empty value {} is indistinguishable from a value
   // with an empty list in it. So we simply expect to get a message complaining
   // about empty list for value {}.
-  const NodeDef bad2 = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'a' attr { key:'T' value { } }
-    )proto");
+  const NodeDef bad2 = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: 'a'
+    attr {
+      key: 'T'
+      value {}
+    }
+  )pb");
   ExpectFailure(bad2, op,
                 "Length for attr 'T' of 0 must be at least minimum 1");
 }
@@ -258,31 +321,37 @@ TEST(NodeDefUtilTest, Device) {
 }
 
 void ExpectValidSyntax(const NodeDef& good) {
-  EXPECT_EQ(Status::OK(), ValidateExternalNodeDefSyntax(good))
+  EXPECT_EQ(absl::OkStatus(), ValidateExternalNodeDefSyntax(good))
       << "NodeDef: " << SummarizeNodeDef(good);
 }
 
-void ExpectInvalidSyntax(const NodeDef& bad, const string& message) {
-  Status status = ValidateExternalNodeDefSyntax(bad);
+void ExpectInvalidSyntax(const NodeDef& bad, const std::string& message) {
+  absl::Status status = ValidateExternalNodeDefSyntax(bad);
 
   ASSERT_FALSE(status.ok()) << "NodeDef: " << SummarizeNodeDef(bad);
 
-  EXPECT_TRUE(errors::IsInvalidArgument(status))
+  EXPECT_TRUE(absl::IsInvalidArgument(status))
       << status << "; NodeDef: " << SummarizeNodeDef(bad);
 
-  EXPECT_TRUE(absl::StrContains(StringPiece(status.ToString()), message))
+  EXPECT_TRUE(absl::StrContains(absl::string_view(status.ToString()), message))
       << "NodeDef: " << SummarizeNodeDef(bad) << ", " << status << ", "
       << message;
 }
 
 TEST(NodeDefUtilTest, ValidSyntax) {
-  const NodeDef node_def = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'a' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: 'a'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectValidSyntax(node_def);
 
-  const NodeDef node_def_namespace = ToNodeDef(R"proto(
+  const NodeDef node_def_namespace = ToNodeDef(R"pb(
     name: 'n'
     op: 'Project>AnyIn'
     input: 'a'
@@ -291,10 +360,10 @@ TEST(NodeDefUtilTest, ValidSyntax) {
       key: 'T'
       value { list { type: [ DT_INT32, DT_STRING ] } }
     }
-  )proto");
+  )pb");
   ExpectValidSyntax(node_def_namespace);
 
-  const NodeDef node_def_explicit_inputs = ToNodeDef(R"proto(
+  const NodeDef node_def_explicit_inputs = ToNodeDef(R"pb(
     name: 'n'
     op: 'AnyIn'
     input: 'a:0'
@@ -303,13 +372,13 @@ TEST(NodeDefUtilTest, ValidSyntax) {
       key: 'T'
       value { list { type: [ DT_INT32, DT_STRING ] } }
     }
-  )proto");
+  )pb");
   ExpectValidSyntax(node_def_explicit_inputs);
 
   EXPECT_EQ("{{node n}} = AnyIn[T=[DT_INT32, DT_STRING]](a:0, b:123)",
             SummarizeNodeDef(node_def_explicit_inputs));
 
-  const NodeDef node_def_explicit_inputs_namespace = ToNodeDef(R"proto(
+  const NodeDef node_def_explicit_inputs_namespace = ToNodeDef(R"pb(
     name: 'Project>n'
     op: 'Project>AnyIn'
     input: 'Project>a:0'
@@ -319,7 +388,7 @@ TEST(NodeDefUtilTest, ValidSyntax) {
       key: 'T'
       value { list { type: [ DT_INT32, DT_STRING ] } }
     }
-  )proto");
+  )pb");
   ExpectValidSyntax(node_def_explicit_inputs_namespace);
 
   EXPECT_EQ(
@@ -327,81 +396,156 @@ TEST(NodeDefUtilTest, ValidSyntax) {
       "(Project>a:0, Project>b:123, ^Project>c)",
       SummarizeNodeDef(node_def_explicit_inputs_namespace));
 
-  const NodeDef node_def_partial_shape = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn'
-    attr { key:'shp' value { shape { dim { size: -1 } dim { size: 0 } } } }
-    )proto");
+  const NodeDef node_def_partial_shape = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    attr {
+      key: 'shp'
+      value {
+        shape {
+          dim { size: -1 }
+          dim { size: 0 }
+        }
+      }
+    }
+  )pb");
   ExpectValidSyntax(node_def_partial_shape);
 
-  const NodeDef node_def_control_input = ToNodeDef(R"proto(
-    name:'n-' op:'AnyIn' input:'a' input:'^b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_control_input = ToNodeDef(R"pb(
+    name: 'n-'
+    op: 'AnyIn'
+    input: 'a'
+    input: '^b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectValidSyntax(node_def_control_input);
 
-  const NodeDef node_def_invalid_name = ToNodeDef(R"proto(
-    name:'n:0' op:'AnyIn' input:'a' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_invalid_name = ToNodeDef(R"pb(
+    name: 'n:0'
+    op: 'AnyIn'
+    input: 'a'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_invalid_name, "Illegal op name 'n:0'");
 
-  const NodeDef node_def_internal_name = ToNodeDef(R"proto(
-    name:'_n' op:'AnyIn' input:'a' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_internal_name = ToNodeDef(R"pb(
+    name: '_n'
+    op: 'AnyIn'
+    input: 'a'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_internal_name, "Illegal op name '_n'");
 
-  const NodeDef node_def_slash_in_name = ToNodeDef(R"proto(
-    name:'n\\' op:'AnyIn' input:'a' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_slash_in_name = ToNodeDef(R"pb(
+    name: 'n\\'
+    op: 'AnyIn'
+    input: 'a'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_slash_in_name, "Illegal op name 'n\\'");
 
-  const NodeDef node_def_internal_input_name = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'_a' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_internal_input_name = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: '_a'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_internal_input_name,
                       "Illegal op input name '_a'");
 
-  const NodeDef node_def_input_name_slash = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'a\\' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_input_name_slash = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: 'a\\'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_input_name_slash, "Illegal op input name 'a\\'");
 
-  const NodeDef node_def_invalid_control_input_name = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'a' input:'^b:0'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_invalid_control_input_name = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: 'a'
+    input: '^b:0'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_invalid_control_input_name,
                       "Illegal op input name '^b:0'");
 
-  const NodeDef node_def_control_input_name_slash = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'a' input:'^b\\'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_control_input_name_slash = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: 'a'
+    input: '^b\\'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_control_input_name_slash,
                       "Illegal op input name '^b\\'");
 
-  const NodeDef node_def_data_input_after_control = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'^a' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_data_input_after_control = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: '^a'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_data_input_after_control,
                       "All control inputs must follow all data inputs");
 
-  const NodeDef node_def_data_input_invalid_port = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'a:b' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_data_input_invalid_port = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: 'a:b'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_data_input_invalid_port,
                       "Illegal op input name 'a:b");
 
-  const NodeDef node_def_data_input_invalid_port2 = ToNodeDef(R"proto(
-    name:'n' op:'AnyIn' input:'a:00' input:'b'
-    attr { key:'T' value { list { type: [DT_INT32, DT_STRING] } } }
-    )proto");
+  const NodeDef node_def_data_input_invalid_port2 = ToNodeDef(R"pb(
+    name: 'n'
+    op: 'AnyIn'
+    input: 'a:00'
+    input: 'b'
+    attr {
+      key: 'T'
+      value { list { type: [ DT_INT32, DT_STRING ] } }
+    }
+  )pb");
   ExpectInvalidSyntax(node_def_data_input_invalid_port2,
                       "Illegal op input name 'a:00");
 }
@@ -446,6 +590,20 @@ TEST(OutputTypesForNode, Simple) {
   EXPECT_TRUE(OutputTypeForNode(node_def, op_def, 1, &type).ok());
   EXPECT_EQ(type, DT_BOOL);
   EXPECT_FALSE(OutputTypeForNode(node_def, op_def, 2, &type).ok());
+}
+
+TEST(OutputTypesForNode, LargeOutput) {
+  const OpDef op_def = ToOpDef(OpDefBuilder("TestSplitOp")
+                                   .Input("value: int64")
+                                   .Output("output: num_split * int64")
+                                   .Attr("num_split: int >= 1"));
+  int64_t num_split = 1000000000000;
+  const NodeDef node_def =
+      ToNodeDef(std::move(NodeDefBuilder("test_split_op", &op_def)
+                              .Input(FakeInput())
+                              .Attr("num_split", num_split)));
+  DataTypeVector types;
+  EXPECT_FALSE(OutputTypesForNode(node_def, op_def, &types).ok());
 }
 
 TEST(OutputTypesForNode_AttrSliceOverload, Simple) {
@@ -606,13 +764,78 @@ TEST(AddPrefixAndSuffixToNode, Enter) {
   node_def.set_name("enter");
   node_def.set_op("Enter");
   AddNodeAttr("frame_name", "test_frame", &node_def);
-  const string prefix = "prefix/";
-  const string suffix = "/suffix";
+  const std::string prefix = "prefix/";
+  const std::string suffix = "/suffix";
   TF_ASSERT_OK(AddPrefixAndSuffixToNode(prefix, suffix, &node_def));
   EXPECT_EQ("prefix/enter/suffix", node_def.name());
-  string frame_name;
+  std::string frame_name;
   TF_ASSERT_OK(GetNodeAttr(node_def, "frame_name", &frame_name));
   EXPECT_EQ("prefix/test_frame/suffix", frame_name);
+}
+
+TEST(MaybeAddPrefixToColocationConstraints, Basic) {
+  NodeDef node_def;
+  node_def.set_name("Identity");
+  node_def.set_op("Identity");
+  AddNodeAttr(kColocationAttrName,
+              {absl::StrCat(kColocationGroupPrefix, "Node1"),
+               absl::StrCat(kColocationGroupPrefix, "Node2"),
+               absl::StrCat(kColocationGroupPrefix, "Node3")},
+              &node_def);
+
+  std::unordered_set<std::string> match;
+  match.insert("Node1");
+  match.insert("Node3");
+  TF_ASSERT_OK(MaybeAddPrefixToColocationConstraints(match, "fn/", &node_def));
+  std::vector<std::string> coloc_constraints;
+  TF_ASSERT_OK(GetNodeAttr(node_def, kColocationAttrName, &coloc_constraints));
+  EXPECT_EQ(coloc_constraints,
+            std::vector<std::string>(
+                {"loc:@fn/Node1", "loc:@Node2", "loc:@fn/Node3"}));
+}
+
+TEST(MaybeAddPrefixToColocationConstraints, NoConstraints) {
+  NodeDef node_def;
+  node_def.set_name("Identity");
+  node_def.set_op("Identity");
+
+  std::unordered_set<std::string> match;
+  match.insert("Node1");
+  match.insert("Node3");
+  TF_ASSERT_OK(MaybeAddPrefixToColocationConstraints(match, "fn/", &node_def));
+  EXPECT_FALSE(HasNodeAttr(node_def, kColocationAttrName));
+}
+
+TEST(MaybeUpdateColocationConstraintsWithMap, Basic) {
+  NodeDef node_def;
+  node_def.set_name("Identity");
+  node_def.set_op("Identity");
+  AddNodeAttr(kColocationAttrName,
+              {absl::StrCat(kColocationGroupPrefix, "Node1"),
+               absl::StrCat(kColocationGroupPrefix, "Node2"),
+               absl::StrCat(kColocationGroupPrefix, "Node3")},
+              &node_def);
+
+  std::map<absl::string_view, absl::string_view> node_map;
+  node_map["Node1"] = "Node4";
+  node_map["Invalid"] = "Node5";
+  TF_ASSERT_OK(MaybeUpdateColocationConstraintsWithMap(node_map, &node_def));
+  std::vector<std::string> coloc_constraints;
+  TF_ASSERT_OK(GetNodeAttr(node_def, kColocationAttrName, &coloc_constraints));
+  EXPECT_EQ(coloc_constraints, std::vector<std::string>(
+                                   {"loc:@Node4", "loc:@Node2", "loc:@Node3"}));
+}
+
+TEST(MaybeUpdateColocationConstraintsWithMap, NoConstraints) {
+  NodeDef node_def;
+  node_def.set_name("Identity");
+  node_def.set_op("Identity");
+
+  std::map<absl::string_view, absl::string_view> node_map;
+  node_map["Node1"] = "Node4";
+  node_map["Invalid"] = "Node5";
+  TF_ASSERT_OK(MaybeUpdateColocationConstraintsWithMap(node_map, &node_def));
+  EXPECT_FALSE(HasNodeAttr(node_def, kColocationAttrName));
 }
 
 TEST(FormatNodeForErrorTest, Node) {
@@ -630,16 +853,37 @@ TEST(FormatNodeForErrorTest, NodeDef) {
   EXPECT_EQ("{{node enter}}", FormatNodeDefForError(node_def));
 }
 
+TEST(FormatNodeForErrorTest, NodeDefWithOriginalNames) {
+  NodeDef node_def;
+  node_def.set_name("enter");
+  node_def.set_op("Enter");
+  AddNodeAttr("frame_name", "test_frame", &node_def);
+  *(node_def.mutable_experimental_debug_info()->add_original_node_names()) =
+      "node_name";
+  *(node_def.mutable_experimental_debug_info()->add_original_func_names()) =
+      "func_name";
+  EXPECT_EQ("{{function_node func_name}}{{node node_name}}",
+            FormatNodeDefForError(node_def));
+  *(node_def.mutable_experimental_debug_info()->add_original_node_names()) =
+      "node_name2";
+  *(node_def.mutable_experimental_debug_info()->add_original_func_names()) =
+      "func_name2";
+  EXPECT_EQ(
+      "{{function_node func_name}}{{node node_name}}, "
+      "{{function_node func_name2}}{{node node_name2}}",
+      FormatNodeDefForError(node_def));
+}
+
 TEST(AttachDef, AllowMultipleFormattedNode) {
   NodeDef a;
   a.set_name("a");
   NodeDef b;
   b.set_name("b");
-  Status s = Status(error::CANCELLED, "Error");
-  Status s2 = AttachDef(s, a, true);
-  EXPECT_EQ("Error\n\t [[{{node a}}]]", s2.error_message());
-  Status s3 = AttachDef(s2, b, true);
-  EXPECT_EQ("Error\n\t [[{{node a}}]]\n\t [[{{node b}}]]", s3.error_message());
+  absl::Status s = absl::Status(absl::StatusCode::kCancelled, "Error");
+  absl::Status s2 = AttachDef(s, a, true);
+  EXPECT_EQ("Error\n\t [[{{node a}}]]", s2.message());
+  absl::Status s3 = AttachDef(s2, b, true);
+  EXPECT_EQ("Error\n\t [[{{node a}}]]\n\t [[{{node b}}]]", s3.message());
 }
 
 TEST(AttachDef, DisallowMultipleFormattedNode) {
@@ -647,11 +891,91 @@ TEST(AttachDef, DisallowMultipleFormattedNode) {
   a.set_name("a");
   NodeDef b;
   b.set_name("b");
-  Status s = Status(error::CANCELLED, "Error");
-  Status s2 = AttachDef(s, a, false);
-  EXPECT_EQ("Error\n\t [[{{node a}}]]", s2.error_message());
-  Status s3 = AttachDef(s2, b, false);
-  EXPECT_EQ("Error\n\t [[{{node a}}]]\n\t [[b]]", s3.error_message());
+  absl::Status s = absl::Status(absl::StatusCode::kCancelled, "Error");
+  absl::Status s2 = AttachDef(s, a, false);
+  EXPECT_EQ("Error\n\t [[{{node a}}]]", s2.message());
+  absl::Status s3 = AttachDef(s2, b, false);
+  EXPECT_EQ("Error\n\t [[{{node a}}]]\n\t [[b]]", s3.message());
+}
+
+TEST(NodeDefUtilTest, ValidInputOutputPortAndNameRangeControl) {
+  const OpDef op_def = ToOpDef(OpDefBuilder("SimplePortAndRange")
+                                   .Input("a: N * float")
+                                   .Output("b: M * int32")
+                                   .Attr("N: int")
+                                   .Attr("M: int"));
+  const NodeDef node_def = ToNodeDef(R"pb(
+    name: 'valid_node'
+    op: 'SimplePortAndRange'
+    input: 'x0'
+    input: 'x1'
+    attr {
+      key: 'N'
+      value { i: 2 }
+    }
+    attr {
+      key: 'M'
+      value { i: 1 }
+    }
+  )pb");
+
+  DataType dtype = DT_INVALID;
+  TF_EXPECT_OK(InputTypeForNode(node_def, op_def, 0, &dtype));
+  EXPECT_EQ(dtype, DT_FLOAT);
+  TF_EXPECT_OK(InputTypeForNode(node_def, op_def, 1, &dtype));
+  EXPECT_EQ(dtype, DT_FLOAT);
+  TF_EXPECT_OK(OutputTypeForNode(node_def, op_def, 0, &dtype));
+  EXPECT_EQ(dtype, DT_INT32);
+
+  NameRangeMap inputs, outputs;
+  TF_EXPECT_OK(NameRangesForNode(node_def, op_def, &inputs, &outputs));
+  EXPECT_EQ(NameRangeMap({{"a", {0, 2}}}), inputs);
+  EXPECT_EQ(NameRangeMap({{"b", {0, 1}}}), outputs);
+}
+
+TEST(NodeDefUtilTest, RejectsNegativePortAndInvalidNameRange) {
+  const OpDef op_def = ToOpDef(OpDefBuilder("PortAndRangeBounds")
+                                   .Input("a: N * float")
+                                   .Input("b: M * float")
+                                   .Output("c: N * int32")
+                                   .Attr("N: int")
+                                   .Attr("M: int"));
+  const NodeDef valid_node_def = ToNodeDef(R"pb(
+    name: 'port_bounds_node'
+    op: 'PortAndRangeBounds'
+    input: 'x0'
+    input: 'x1'
+    attr {
+      key: 'N'
+      value { i: 1 }
+    }
+    attr {
+      key: 'M'
+      value { i: 1 }
+    }
+  )pb");
+
+  DataType dtype = DT_INVALID;
+  EXPECT_EQ(InputTypeForNode(valid_node_def, op_def, -1, &dtype).code(),
+            absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(OutputTypeForNode(valid_node_def, op_def, -1, &dtype).code(),
+            absl::StatusCode::kInvalidArgument);
+
+  NodeDef neg_range_node_def = valid_node_def;
+  (*neg_range_node_def.mutable_attr())["N"].set_i(-2);
+  NameRangeMap inputs, outputs;
+  EXPECT_EQ(
+      NameRangesForNode(neg_range_node_def, op_def, &inputs, &outputs).code(),
+      absl::StatusCode::kInvalidArgument);
+
+  NodeDef overflow_range_node_def = valid_node_def;
+  (*overflow_range_node_def.mutable_attr())["N"].set_i(
+      std::numeric_limits<int>::max());
+  (*overflow_range_node_def.mutable_attr())["M"].set_i(1);
+  EXPECT_EQ(
+      NameRangesForNode(overflow_range_node_def, op_def, &inputs, &outputs)
+          .code(),
+      absl::StatusCode::kInvalidArgument);
 }
 
 }  // namespace

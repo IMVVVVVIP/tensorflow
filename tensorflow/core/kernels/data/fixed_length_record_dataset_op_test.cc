@@ -11,7 +11,16 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/kernels/data/fixed_length_record_dataset_op.h"
 
-#include "tensorflow/core/kernels/data/dataset_test_base.h"
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
+#include "tensorflow/core/data/dataset_test_base.h"
+#include "tensorflow/core/data/serialization_utils.h"
 
 namespace tensorflow {
 namespace data {
@@ -29,10 +38,10 @@ tstring LocalTempFilename() {
 class FixedLengthRecordDatasetParams : public DatasetParams {
  public:
   FixedLengthRecordDatasetParams(const std::vector<tstring>& filenames,
-                                 int64 header_bytes, int64 record_bytes,
-                                 int64 footer_bytes, int64 buffer_size,
+                                 int64_t header_bytes, int64_t record_bytes,
+                                 int64_t footer_bytes, int64_t buffer_size,
                                  CompressionType compression_type,
-                                 string node_name)
+                                 std::string node_name)
       : DatasetParams({DT_STRING}, {PartialTensorShape({})},
                       std::move(node_name)),
         filenames_(filenames),
@@ -48,14 +57,15 @@ class FixedLengthRecordDatasetParams : public DatasetParams {
     int num_files = filenames_.size();
     return {
         CreateTensor<tstring>(TensorShape({num_files}), filenames_),
-        CreateTensor<int64>(TensorShape({}), {header_bytes_}),
-        CreateTensor<int64>(TensorShape({}), {record_bytes_}),
-        CreateTensor<int64>(TensorShape({}), {footer_bytes_}),
-        CreateTensor<int64>(TensorShape({}), {buffer_size_}),
+        CreateTensor<int64_t>(TensorShape({}), {header_bytes_}),
+        CreateTensor<int64_t>(TensorShape({}), {record_bytes_}),
+        CreateTensor<int64_t>(TensorShape({}), {footer_bytes_}),
+        CreateTensor<int64_t>(TensorShape({}), {buffer_size_}),
         CreateTensor<tstring>(TensorShape({}), {ToString(compression_type_)})};
   }
 
-  Status GetInputNames(std::vector<string>* input_names) const override {
+  absl::Status GetInputNames(
+      std::vector<std::string>* input_names) const override {
     input_names->clear();
     *input_names = {FixedLengthRecordDatasetOp::kFileNames,
                     FixedLengthRecordDatasetOp::kHeaderBytes,
@@ -63,34 +73,59 @@ class FixedLengthRecordDatasetParams : public DatasetParams {
                     FixedLengthRecordDatasetOp::kFooterBytes,
                     FixedLengthRecordDatasetOp::kBufferSize,
                     FixedLengthRecordDatasetOp::kCompressionType};
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status GetAttributes(AttributeVector* attr_vector) const override {
-    *attr_vector = {};
-    return Status::OK();
+  absl::Status GetAttributes(AttributeVector* attr_vector) const override {
+    attr_vector->clear();
+    attr_vector->emplace_back("metadata", "");
+    return absl::OkStatus();
   }
 
-  string dataset_type() const override {
+  std::string dataset_type() const override {
     return FixedLengthRecordDatasetOp::kDatasetType;
   }
 
  private:
   std::vector<tstring> filenames_;
-  int64 header_bytes_;
-  int64 record_bytes_;
-  int64 footer_bytes_;
-  int64 buffer_size_;
+  int64_t header_bytes_;
+  int64_t record_bytes_;
+  int64_t footer_bytes_;
+  int64_t buffer_size_;
   CompressionType compression_type_;
 };
 
-class FixedLengthRecordDatasetOpTest : public DatasetOpsTestBase {};
+class FixedLengthRecordDatasetOpTest : public DatasetOpsTestBase {
+ protected:
+  void ExpectRestoreFailsForInvalidFileIndex(
+      const FixedLengthRecordDatasetParams& dataset_params) {
+    for (const auto& [file_index, pos] :
+         std::vector<std::pair<int64_t, int64_t>>{{3, -1}, {-1, -1}, {2, 0}}) {
+      VariantTensorDataWriter writer;
+      TF_ASSERT_OK(writer.WriteScalar(iterator_->prefix(), "current_file_index",
+                                      file_index));
+      TF_ASSERT_OK(writer.WriteScalar(iterator_->prefix(), "current_pos", pos));
+      std::vector<const VariantTensorData*> data;
+      writer.GetData(&data);
+      VariantTensorDataReader reader(data);
+      std::unique_ptr<IteratorBase> iterator;
+      absl::Status status = RestoreIterator(iterator_ctx_.get(), &reader,
+                                            dataset_params.iterator_prefix(),
+                                            *dataset_, &iterator);
+      EXPECT_THAT(status,
+                  absl_testing::StatusIs(
+                      absl::StatusCode::kInvalidArgument,
+                      ::testing::HasSubstr("Invalid current_file_index")))
+          << "current_file_index=" << file_index << " current_pos=" << pos;
+    }
+  }
+};
 
-Status CreateTestFiles(const std::vector<tstring>& filenames,
-                       const std::vector<string>& contents,
-                       CompressionType compression_type) {
+absl::Status CreateTestFiles(const std::vector<tstring>& filenames,
+                             const std::vector<std::string>& contents,
+                             CompressionType compression_type) {
   if (filenames.size() != contents.size()) {
-    return tensorflow::errors::InvalidArgument(
+    return absl::InvalidArgumentError(
         "The number of files does not match with the contents");
   }
   if (compression_type == CompressionType::UNCOMPRESSED) {
@@ -106,19 +141,19 @@ Status CreateTestFiles(const std::vector<tstring>& filenames,
           WriteDataToFile(filenames[i], contents[i].data(), params));
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Test case 1: multiple fixed-length record files with ZLIB compression.
 FixedLengthRecordDatasetParams FixedLengthRecordDatasetParams1() {
   std::vector<tstring> filenames = {LocalTempFilename(), LocalTempFilename()};
-  std::vector<string> contents = {
+  std::vector<std::string> contents = {
       absl::StrCat("HHHHH", "111", "222", "333", "FF"),
       absl::StrCat("HHHHH", "aaa", "bbb", "FF")};
   CompressionType compression_type = CompressionType::ZLIB;
   if (!CreateTestFiles(filenames, contents, compression_type).ok()) {
-    VLOG(WARNING) << "Failed to create the test files: "
-                  << absl::StrJoin(filenames, ", ");
+    LOG(WARNING) << "Failed to create the test files: "
+                 << absl::StrJoin(filenames, ", ");
   }
 
   return FixedLengthRecordDatasetParams(filenames,
@@ -133,13 +168,13 @@ FixedLengthRecordDatasetParams FixedLengthRecordDatasetParams1() {
 // Test case 2: multiple fixed-length record files with GZIP compression.
 FixedLengthRecordDatasetParams FixedLengthRecordDatasetParams2() {
   std::vector<tstring> filenames = {LocalTempFilename(), LocalTempFilename()};
-  std::vector<string> contents = {
+  std::vector<std::string> contents = {
       absl::StrCat("HHHHH", "111", "222", "333", "FF"),
       absl::StrCat("HHHHH", "aaa", "bbb", "FF")};
   CompressionType compression_type = CompressionType::GZIP;
   if (!CreateTestFiles(filenames, contents, compression_type).ok()) {
-    VLOG(WARNING) << "Failed to create the test files: "
-                  << absl::StrJoin(filenames, ", ");
+    LOG(WARNING) << "Failed to create the test files: "
+                 << absl::StrJoin(filenames, ", ");
   }
   return FixedLengthRecordDatasetParams(filenames,
                                         /*header_bytes=*/5,
@@ -153,13 +188,13 @@ FixedLengthRecordDatasetParams FixedLengthRecordDatasetParams2() {
 // Test case 3: multiple fixed-length record files without compression.
 FixedLengthRecordDatasetParams FixedLengthRecordDatasetParams3() {
   std::vector<tstring> filenames = {LocalTempFilename(), LocalTempFilename()};
-  std::vector<string> contents = {
+  std::vector<std::string> contents = {
       absl::StrCat("HHHHH", "111", "222", "333", "FF"),
       absl::StrCat("HHHHH", "aaa", "bbb", "FF")};
   CompressionType compression_type = CompressionType::UNCOMPRESSED;
   if (!CreateTestFiles(filenames, contents, compression_type).ok()) {
-    VLOG(WARNING) << "Failed to create the test files: "
-                  << absl::StrJoin(filenames, ", ");
+    LOG(WARNING) << "Failed to create the test files: "
+                 << absl::StrJoin(filenames, ", ");
   }
   return FixedLengthRecordDatasetParams(filenames,
                                         /*header_bytes=*/5,
@@ -243,6 +278,58 @@ TEST_F(FixedLengthRecordDatasetOpTest, IteratorPrefix) {
       dataset_params.iterator_prefix(), iterator_prefix_params)));
 }
 
+TEST_F(FixedLengthRecordDatasetOpTest, FileSmallerThanHeaderAndFooter) {
+  std::vector<tstring> filenames = {LocalTempFilename()};
+  std::vector<std::string> contents = {"123"};
+  TF_ASSERT_OK(
+      CreateTestFiles(filenames, contents, CompressionType::UNCOMPRESSED));
+
+  auto dataset_params = FixedLengthRecordDatasetParams(
+      filenames,
+      /*header_bytes=*/5,
+      /*record_bytes=*/3,
+      /*footer_bytes=*/2,
+      /*buffer_size=*/10,
+      /*compression_type=*/CompressionType::UNCOMPRESSED,
+      /*node_name=*/kNodeName);
+
+  TF_ASSERT_OK(Initialize(dataset_params));
+  bool end_of_sequence = false;
+  std::vector<Tensor> out_tensors;
+  absl::Status status =
+      iterator_->GetNext(iterator_ctx_.get(), &out_tensors, &end_of_sequence);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
+  EXPECT_TRUE(absl::StrContains(
+      status.message(),
+      "smaller than the sum of the header (5 bytes) and footer (2 bytes)"))
+      << status.message();
+}
+
+TEST_F(FixedLengthRecordDatasetOpTest, FileTooSmallForCompressedReader) {
+  std::vector<tstring> filenames = {LocalTempFilename()};
+  std::vector<std::string> contents = {"123"};
+  TF_ASSERT_OK(CreateTestFiles(filenames, contents, CompressionType::ZLIB));
+
+  auto dataset_params =
+      FixedLengthRecordDatasetParams(filenames,
+                                     /*header_bytes=*/5,
+                                     /*record_bytes=*/3,
+                                     /*footer_bytes=*/2,
+                                     /*buffer_size=*/10,
+                                     /*compression_type=*/CompressionType::ZLIB,
+                                     /*node_name=*/kNodeName);
+
+  TF_ASSERT_OK(Initialize(dataset_params));
+  bool end_of_sequence = false;
+  std::vector<Tensor> out_tensors;
+  // This error is caught by the compressed reader when reading the data.
+  absl::Status status =
+      iterator_->GetNext(iterator_ctx_.get(), &out_tensors, &end_of_sequence);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInternal);
+  EXPECT_TRUE(absl::StrContains(status.message(), "EOF reached"))
+      << status.message();
+}
+
 std::vector<IteratorSaveAndRestoreTestCase<FixedLengthRecordDatasetParams>>
 IteratorSaveAndRestoreTestCases() {
   return {
@@ -264,6 +351,66 @@ IteratorSaveAndRestoreTestCases() {
 ITERATOR_SAVE_AND_RESTORE_TEST_P(FixedLengthRecordDatasetOpTest,
                                  FixedLengthRecordDatasetParams,
                                  IteratorSaveAndRestoreTestCases())
+
+// The dataset has 2 files, so these {current_file_index, current_pos} pairs
+// would index past `filenames_` on restore or on the next GetNext call.
+TEST_F(FixedLengthRecordDatasetOpTest, RestoreInvalidFileIndexCompressed) {
+  auto dataset_params = FixedLengthRecordDatasetParams1();
+  TF_ASSERT_OK(Initialize(dataset_params));
+  ExpectRestoreFailsForInvalidFileIndex(dataset_params);
+}
+
+TEST_F(FixedLengthRecordDatasetOpTest, RestoreInvalidFileIndexUncompressed) {
+  auto dataset_params = FixedLengthRecordDatasetParams3();
+  TF_ASSERT_OK(Initialize(dataset_params));
+  ExpectRestoreFailsForInvalidFileIndex(dataset_params);
+}
+
+// {num_files, -1} is the checkpoint of an exhausted iterator and must
+// still restore.
+TEST_F(FixedLengthRecordDatasetOpTest, RestoreExhaustedIteratorCompressed) {
+  auto dataset_params = FixedLengthRecordDatasetParams1();
+  TF_ASSERT_OK(Initialize(dataset_params));
+  VariantTensorDataWriter writer;
+  TF_ASSERT_OK(writer.WriteScalar(iterator_->prefix(), "current_file_index",
+                                  int64_t{2}));
+  TF_ASSERT_OK(
+      writer.WriteScalar(iterator_->prefix(), "current_pos", int64_t{-1}));
+  std::vector<const VariantTensorData*> data;
+  writer.GetData(&data);
+  VariantTensorDataReader reader(data);
+  std::unique_ptr<IteratorBase> iterator;
+  TF_ASSERT_OK(RestoreIterator(iterator_ctx_.get(), &reader,
+                               dataset_params.iterator_prefix(), *dataset_,
+                               &iterator));
+  bool end_of_sequence = false;
+  std::vector<Tensor> out_tensors;
+  TF_ASSERT_OK(
+      iterator->GetNext(iterator_ctx_.get(), &out_tensors, &end_of_sequence));
+  EXPECT_TRUE(end_of_sequence);
+}
+
+TEST_F(FixedLengthRecordDatasetOpTest, RestoreExhaustedIteratorUncompressed) {
+  auto dataset_params = FixedLengthRecordDatasetParams3();
+  TF_ASSERT_OK(Initialize(dataset_params));
+  VariantTensorDataWriter writer;
+  TF_ASSERT_OK(writer.WriteScalar(iterator_->prefix(), "current_file_index",
+                                  int64_t{2}));
+  TF_ASSERT_OK(
+      writer.WriteScalar(iterator_->prefix(), "current_pos", int64_t{-1}));
+  std::vector<const VariantTensorData*> data;
+  writer.GetData(&data);
+  VariantTensorDataReader reader(data);
+  std::unique_ptr<IteratorBase> iterator;
+  TF_ASSERT_OK(RestoreIterator(iterator_ctx_.get(), &reader,
+                               dataset_params.iterator_prefix(), *dataset_,
+                               &iterator));
+  bool end_of_sequence = false;
+  std::vector<Tensor> out_tensors;
+  TF_ASSERT_OK(
+      iterator->GetNext(iterator_ctx_.get(), &out_tensors, &end_of_sequence));
+  EXPECT_TRUE(end_of_sequence);
+}
 
 }  // namespace
 }  // namespace data

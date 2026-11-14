@@ -15,6 +15,8 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_COMMON_RUNTIME_SCOPED_ALLOCATOR_H_
 #define TENSORFLOW_CORE_COMMON_RUNTIME_SCOPED_ALLOCATOR_H_
 
+#include "absl/log/log.h"
+#include "absl/types/span.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/lib/core/refcount.h"
@@ -27,26 +29,26 @@ class ScopedAllocatorInstance;
 // Manages a single backing tensor and a collection of aliases.
 class ScopedAllocator {
  public:
-  static constexpr int32 kInvalidId = 0;
+  static constexpr int32_t kInvalidId = 0;
   static constexpr size_t kMaxAlignment = 64;
 
   // A subrange of the TensorBuffer associated with this object that
   // will be the backing memory for one aliased tensor.
   struct Field {
-    int32 scope_id;
+    int32_t scope_id;
     size_t offset;
     size_t bytes_requested;
     size_t bytes_allocated;
   };
   // Field index that refers to backing tensor, not any aliased field.
-  static constexpr int32 kBackingIndex = -1;
+  static constexpr int32_t kBackingIndex = -1;
 
   // backing_tensor is expected to be newly allocated by a ScopedAllocatorOp
   // instance.  It must be large enough to back all of the specified
   // (offset, byte) ranges of the fields.
-  ScopedAllocator(const Tensor& backing_tensor, int32 scope_id,
-                  const std::string& name, const gtl::ArraySlice<Field> fields,
-                  int32 expected_call_count,
+  ScopedAllocator(const Tensor& backing_tensor, int32_t scope_id,
+                  const std::string& name, const absl::Span<const Field> fields,
+                  int32_t expected_call_count,
                   ScopedAllocatorContainer* container);
 
   // Automatically deletes when last use expires, or when
@@ -66,17 +68,18 @@ class ScopedAllocator {
   friend class ScopedAllocatorInstance;
   // Only ScopedAllocatorInstances can call AllocateRaw and DeallocateRaw on a
   // ScopedAllocator
-  void* AllocateRaw(int32 field_index, size_t num_bytes) TF_LOCKS_EXCLUDED(mu_);
+  void* AllocateRaw(int32_t field_index, size_t num_bytes)
+      TF_LOCKS_EXCLUDED(mu_);
   void DeallocateRaw(void* p) TF_LOCKS_EXCLUDED(mu_);
   Tensor backing_tensor_;
   TensorBuffer* tbuf_;
-  int32 id_;
+  int32_t id_;
   std::string name_;
   ScopedAllocatorContainer* container_;
   std::vector<Field> fields_;
   mutex mu_;
-  int32 expected_call_count_ TF_GUARDED_BY(mu_);
-  int32 live_alloc_count_ TF_GUARDED_BY(mu_);
+  int32_t expected_call_count_ TF_GUARDED_BY(mu_);
+  int32_t live_alloc_count_ TF_GUARDED_BY(mu_);
 };
 
 // An Allocator that will return a pointer into the backing buffer of
@@ -87,7 +90,7 @@ class ScopedAllocator {
 // discarded immediately after a single use.
 class ScopedAllocatorInstance : public Allocator {
  public:
-  explicit ScopedAllocatorInstance(ScopedAllocator* sa, int32 field_index);
+  explicit ScopedAllocatorInstance(ScopedAllocator* sa, int32_t field_index);
 
  private:
   ~ScopedAllocatorInstance() override {
@@ -109,14 +112,14 @@ class ScopedAllocatorInstance : public Allocator {
   bool TracksAllocationSizes() const override { return false; }
   size_t RequestedSize(const void* ptr) const override { return 0; }
   size_t AllocatedSize(const void* ptr) const override { return 0; }
-  int64 AllocationId(const void* ptr) const override { return 0; }
+  int64_t AllocationId(const void* ptr) const override { return 0; }
   size_t AllocatedSizeSlow(const void* ptr) const override { return 0; }
   std::string Name() override;
 
  private:
   mutex mu_;
   ScopedAllocator* scoped_allocator_;
-  int32 field_index_;
+  int32_t field_index_;
   bool allocated_ TF_GUARDED_BY(mu_);
   bool deallocated_ TF_GUARDED_BY(mu_);
   bool in_table_ TF_GUARDED_BY(mu_);

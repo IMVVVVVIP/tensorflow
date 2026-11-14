@@ -22,15 +22,15 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-string MatMulBCastToStr(const MatMulBCast& b) {
+std::string MatMulBCastToStr(const MatMulBCast& b) {
   if (!b.IsValid()) {
     return "invalid";
   }
-  string ret;
-  strings::StrAppend(
-      &ret, "[", absl::StrJoin(b.output_batch_shape().dim_sizes(), ","), "]");
-  strings::StrAppend(&ret, "[", absl::StrJoin(b.x_batch_indices(), ","), "]");
-  strings::StrAppend(&ret, "[", absl::StrJoin(b.y_batch_indices(), ","), "]");
+  std::string ret;
+  absl::StrAppend(&ret, "[",
+                  absl::StrJoin(b.output_batch_shape().dim_sizes(), ","), "]");
+  absl::StrAppend(&ret, "[", absl::StrJoin(b.x_batch_indices(), ","), "]");
+  absl::StrAppend(&ret, "[", absl::StrJoin(b.y_batch_indices(), ","), "]");
   return ret;
 }
 
@@ -94,14 +94,18 @@ TEST(MatMulBCastTest, EmptyWithNonEmptyBatchBroadcast) {
   EXPECT_EQ("[2][0,1][0,0]", MatMulBCastToStr(bcast2));
 }
 
-TEST(MatMulBCastTest, InvalidDimensions) {
-  // Too few dimensions.
+TEST(MatMulBCastTest, NoBathcDimensions) {
   MatMulBCast bcast1({3, 3}, {3});
-  EXPECT_FALSE(bcast1.IsValid());
+  EXPECT_TRUE(bcast1.IsValid());
 
   MatMulBCast bcast2({3}, {3, 3});
-  EXPECT_FALSE(bcast2.IsValid());
+  EXPECT_TRUE(bcast2.IsValid());
 
+  MatMulBCast bcast3({3, 3}, {3, 3});
+  EXPECT_TRUE(bcast3.IsValid());
+}
+
+TEST(MatMulBCastTest, InvalidDimensions) {
   // Batch dimensions not broadcastable.
   MatMulBCast bcast3({4, 5, 3}, {2, 3, 7});
   EXPECT_FALSE(bcast3.IsValid());

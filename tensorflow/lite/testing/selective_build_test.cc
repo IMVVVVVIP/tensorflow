@@ -12,16 +12,21 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/log/log.h"
 #include "tensorflow/core/platform/logging.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/core/interpreter_builder.h"
+#include "tensorflow/lite/create_op_resolver.h"
 #include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/java/src/main/native/op_resolver.h"
-#include "tensorflow/lite/model.h"
 #include "tensorflow/lite/model_builder.h"
+#include "tensorflow/lite/mutable_op_resolver.h"
 
 namespace tflite {
 bool RunWithRandomInputs(const std::string& filename) {
@@ -29,7 +34,7 @@ bool RunWithRandomInputs(const std::string& filename) {
       tflite::FlatBufferModel::BuildFromFile(filename.c_str());
 
   // Build the interpreter
-  std::unique_ptr<OpResolver> resolver = CreateOpResolver();
+  std::unique_ptr<MutableOpResolver> resolver = CreateOpResolver();
   std::unique_ptr<tflite::Interpreter> interpreter;
   if (tflite::InterpreterBuilder(*model, *resolver)(&interpreter) !=
       kTfLiteOk) {
@@ -64,17 +69,12 @@ bool RunWithRandomInputs(const std::string& filename) {
 }
 
 TEST(SelectiveBuiltTest, AddModel) {
-  std::string model = "third_party/tensorflow/lite/testdata/add.bin";
+  std::string model = "tensorflow/lite/testdata/add.bin";
   EXPECT_THAT(RunWithRandomInputs(model), true);
 }
 
-TEST(SelectiveBuiltTest, LGTMModel) {
-  std::string model = "third_party/tensorflow/lite/testdata/lstm.bin";
+TEST(SelectiveBuiltTest, LSTMModel) {
+  std::string model = "tensorflow/lite/testdata/lstm.bin";
   EXPECT_THAT(RunWithRandomInputs(model), true);
 }
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

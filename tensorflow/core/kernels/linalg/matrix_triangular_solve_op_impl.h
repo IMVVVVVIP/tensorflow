@@ -18,7 +18,7 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_LINALG_MATRIX_TRIANGULAR_SOLVE_OP_IMPL_H_
 #define TENSORFLOW_CORE_KERNELS_LINALG_MATRIX_TRIANGULAR_SOLVE_OP_IMPL_H_
 
-#include "third_party/eigen3/Eigen/Core"
+#include "Eigen/Core"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -32,16 +32,11 @@ limitations under the License.
 #include "tensorflow/core/util/matmul_bcast.h"
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/kernels/transpose_functor.h"
 #include "tensorflow/core/platform/stream_executor.h"
+#include "tensorflow/core/util/gpu_solvers.h"
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-
-#if GOOGLE_CUDA
-#include "tensorflow/core/util/cuda_solvers.h"
-#elif TENSORFLOW_USE_ROCM
-#include "tensorflow/core/util/rocm_solvers.h"
-#endif
 
 namespace tensorflow {
 
@@ -51,7 +46,7 @@ typedef Eigen::GpuDevice GPUDevice;
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 template <typename Scalar>
 se::DeviceMemory<Scalar> AsDeviceMemory(const Scalar* gpu_memory) {
-  se::DeviceMemoryBase wrapped(const_cast<Scalar*>(gpu_memory));
+  stream_executor::DeviceAddressBase wrapped(const_cast<Scalar*>(gpu_memory));
   se::DeviceMemory<Scalar> typed(wrapped);
   return typed;
 }
@@ -87,9 +82,9 @@ struct SequentialMatrixTriangularSolveKernel {
     const bool should_bcast = bcast.IsBroadcastingRequired();
     const auto& x_batch_indices = bcast.x_batch_indices();
     const auto& y_batch_indices = bcast.y_batch_indices();
-    for (int64 i = start; i < limit; ++i) {
-      const int64 x_batch_index = should_bcast ? x_batch_indices[i] : i;
-      const int64 y_batch_index = should_bcast ? y_batch_indices[i] : i;
+    for (int64_t i = start; i < limit; ++i) {
+      const int64_t x_batch_index = should_bcast ? x_batch_indices[i] : i;
+      const int64_t y_batch_index = should_bcast ? y_batch_indices[i] : i;
       auto matrix = ConstTensorSliceToEigenMatrix(in_x, x_batch_index);
       auto rhs = ConstTensorSliceToEigenMatrix(in_y, y_batch_index);
       auto output = TensorSliceToEigenMatrix(out, i);
@@ -121,8 +116,8 @@ struct LaunchBatchMatrixTriangularSolve<CPUDevice, Scalar> {
                      const Tensor& in_y, bool adjoint, bool lower,
                      const MatMulBCast& bcast, Tensor* out) {
     // Number of matrix triangular solves i.e. size of the batch.
-    const int64 batch_size = bcast.output_batch_size();
-    const int64 cost_per_unit =
+    const int64_t batch_size = bcast.output_batch_size();
+    const int64_t cost_per_unit =
         in_x.dim_size(1) * in_x.dim_size(1) * in_y.dim_size(2) / 2;
     auto worker_threads = *(context->device()->tensorflow_cpu_worker_threads());
 
@@ -130,12 +125,6 @@ struct LaunchBatchMatrixTriangularSolve<CPUDevice, Scalar> {
         Eigen::Matrix<Scalar, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>;
     using ConstMatrixMap = Eigen::Map<const Matrix>;
     using RealScalar = typename Eigen::NumTraits<Scalar>::Real;
-    // Check diagonal before doing any solves.
-    auto matrix = ConstMatrixMap(in_x.flat<Scalar>().data(), in_x.dim_size(1),
-                                 in_x.dim_size(2));
-    const RealScalar min_abs_pivot = matrix.diagonal().cwiseAbs().minCoeff();
-    OP_REQUIRES(context, min_abs_pivot > RealScalar(0),
-                errors::InvalidArgument("Input matrix is not invertible."));
 
     Shard(worker_threads.num_threads, worker_threads.workers, batch_size,
           cost_per_unit,
@@ -162,13 +151,16 @@ class BaseMatrixTriangularSolveOp : public OpKernel {
     const Tensor& in1 = ctx->input(1);
 
     ValidateInputTensors(ctx, in0, in1);
+    if (!ctx->status().ok()) {
+      return;
+    }
 
     MatMulBCast bcast(in0.shape().dim_sizes(), in1.shape().dim_sizes());
     OP_REQUIRES(
         ctx, bcast.IsValid(),
-        errors::InvalidArgument(
+        absl::InvalidArgumentError(absl::StrCat(
             "In[0] and In[1] must have compatible batch dimensions: ",
-            in0.shape().DebugString(), " vs. ", in1.shape().DebugString()));
+            in0.shape().DebugString(), " vs. ", in1.shape().DebugString())));
 
     TensorShape out_shape = bcast.output_batch_shape();
     auto batch_size = bcast.output_batch_size();
@@ -178,34 +170,34 @@ class BaseMatrixTriangularSolveOp : public OpKernel {
     OP_REQUIRES(
         ctx,
         in0_reshaped.CopyFrom(in0, TensorShape({bcast.x_batch_size(), d0, d1})),
-        errors::Internal("Failed to reshape In[0] from ",
-                         in0.shape().DebugString()));
+        absl::InternalError(absl::StrCat("Failed to reshape In[0] from ",
+                                         in0.shape().DebugString())));
     auto d2 = in1.dim_size(in1.dims() - 2);
     auto d3 = in1.dim_size(in1.dims() - 1);
     Tensor in1_reshaped;
     OP_REQUIRES(
         ctx,
         in1_reshaped.CopyFrom(in1, TensorShape({bcast.y_batch_size(), d2, d3})),
-        errors::Internal("Failed to reshape In[1] from ",
-                         in1.shape().DebugString()));
+        absl::InternalError(absl::StrCat("Failed to reshape In[1] from ",
+                                         in1.shape().DebugString())));
     if (adjoint_) std::swap(d0, d1);
     OP_REQUIRES(ctx, d1 == d2,
                 errors::InvalidArgument(
                     "In[0] mismatch In[1] shape: ", d1, " vs. ", d2, ": ",
                     in0.shape().DebugString(), " ", in1.shape().DebugString(),
                     " ", lower_, " ", adjoint_));
-    out_shape.AddDim(d0);
-    out_shape.AddDim(d3);
+    OP_REQUIRES_OK(ctx, out_shape.AddDimWithStatus(d0));
+    OP_REQUIRES_OK(ctx, out_shape.AddDimWithStatus(d3));
     Tensor* out = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, out_shape, &out));
     if (out->NumElements() == 0) {
       return;
     }
     Tensor out_reshaped;
-    OP_REQUIRES(ctx,
-                out_reshaped.CopyFrom(*out, TensorShape({batch_size, d0, d3})),
-                errors::Internal("Failed to reshape output from ",
-                                 out->shape().DebugString()));
+    OP_REQUIRES(
+        ctx, out_reshaped.CopyFrom(*out, TensorShape({batch_size, d0, d3})),
+        absl::InternalError(absl::StrCat("Failed to reshape output from ",
+                                         out->shape().DebugString())));
     LaunchBatchMatrixTriangularSolve<Device, Scalar>::Launch(
         ctx, in0_reshaped, in1_reshaped, adjoint_, lower_, bcast,
         &out_reshaped);
@@ -230,13 +222,22 @@ class MatrixTriangularSolveOp
  private:
   void ValidateInputTensors(OpKernelContext* ctx, const Tensor& in0,
                             const Tensor& in1) override {
-    OP_REQUIRES(
-        ctx, in0.dims() >= 2,
-        errors::InvalidArgument("In[0] ndims must be >= 2: ", in0.dims()));
+    const auto in0_num_dims = in0.dims();
+    OP_REQUIRES(ctx, in0_num_dims >= 2,
+                absl::InvalidArgumentError(
+                    absl::StrCat("In[0] ndims must be >= 2: ", in0_num_dims)));
 
-    OP_REQUIRES(
-        ctx, in1.dims() >= 2,
-        errors::InvalidArgument("In[0] ndims must be >= 2: ", in1.dims()));
+    const auto in1_num_dims = in1.dims();
+    OP_REQUIRES(ctx, in1_num_dims >= 2,
+                absl::InvalidArgumentError(
+                    absl::StrCat("In[1] ndims must be >= 2: ", in1_num_dims)));
+
+    const auto in0_last_dim = in0.dim_size(in0_num_dims - 1);
+    const auto in0_prev_dim = in0.dim_size(in0_num_dims - 2);
+    OP_REQUIRES(ctx, in0_last_dim == in0_prev_dim,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "In[0] matrices in the last dimensions must be square (",
+                    in0_last_dim, " =/= ", in0_prev_dim, ")")));
   }
 };
 
@@ -259,41 +260,31 @@ struct LaunchBatchMatrixTriangularSolve<GPUDevice, Scalar> {
                      const MatMulBCast& bcast, Tensor* out) {
     auto* stream = context->op_device_context()->stream();
 
-    const uint64 m = in_x.dim_size(1);
-    const uint64 n = out->dim_size(2);
+    const uint64_t m = in_x.dim_size(1);
+    const uint64_t n = out->dim_size(2);
 
     //  Do a memcpy when we don't need to broadcast.
     if (!bcast.IsBroadcastingRequired() || out->shape() == in_y.shape()) {
       auto src_device_mem = AsDeviceMemory(in_y.template flat<Scalar>().data());
       auto dst_device_mem = AsDeviceMemory(out->template flat<Scalar>().data());
-      OP_REQUIRES(
-          context,
-          stream
-              ->ThenMemcpyD2D(&dst_device_mem, src_device_mem,
-                              bcast.y_batch_size() * m * n * sizeof(Scalar))
-              .ok(),
-          errors::Internal("MatrixTriangularSolveOp: failed to copy rhs "
-                           "from device"));
+      OP_REQUIRES_OK(context, stream->MemcpyD2D(&dst_device_mem, src_device_mem,
+                                                bcast.y_batch_size() * m * n *
+                                                    sizeof(Scalar)));
     } else {
       std::vector<Scalar*> out_ptrs;
       std::vector<const Scalar*> b_tmp_ptrs;
       auto* b_base_ptr = in_y.template flat<Scalar>().data();
-      const std::vector<int64>& b_batch_indices = bcast.y_batch_indices();
-      for (int64 i = 0; i < bcast.y_batch_size(); ++i) {
+      const std::vector<int64_t>& b_batch_indices = bcast.y_batch_indices();
+      for (int64_t i = 0; i < bcast.y_batch_size(); ++i) {
         b_tmp_ptrs.push_back(b_base_ptr + i * m * n);
       }
-      for (int64 i = 0; i < bcast.output_batch_size(); ++i) {
+      for (int64_t i = 0; i < bcast.output_batch_size(); ++i) {
         auto src_device_mem = AsDeviceMemory(b_tmp_ptrs[b_batch_indices[i]]);
         auto dst_device_mem =
             AsDeviceMemory(out->template flat<Scalar>().data() + i * m * n);
-        OP_REQUIRES(
-            context,
-            stream
-                ->ThenMemcpyD2D(&dst_device_mem, src_device_mem,
-                                m * n * sizeof(Scalar))
-                .ok(),
-            errors::Internal("MatrixTriangularSolveOp: failed to copy rhs "
-                             "from device"));
+        OP_REQUIRES_OK(context,
+                       stream->MemcpyD2D(&dst_device_mem, src_device_mem,
+                                         m * n * sizeof(Scalar)));
       }
     }
 
@@ -317,7 +308,6 @@ struct LaunchBatchMatrixTriangularSolve<GPUDevice, Scalar> {
 
     uplo = lower ? CUBLAS_FILL_MODE_UPPER : CUBLAS_FILL_MODE_LOWER;
     trans = adjoint ? CUBLAS_OP_C : CUBLAS_OP_N;
-    auto solver = absl::make_unique<CudaSolver>(context);
 
 #elif TENSORFLOW_USE_ROCM
     rocblas_side side = rocblas_side_right;
@@ -335,16 +325,16 @@ struct LaunchBatchMatrixTriangularSolve<GPUDevice, Scalar> {
     uplo = lower ? rocblas_fill_upper : rocblas_fill_lower;
     trans = adjoint ? rocblas_operation_conjugate_transpose
                     : rocblas_operation_none;
-    auto solver = absl::make_unique<ROCmSolver>(context);
 
 #endif
 
-    const uint64 leading_dim_matrix = m;
-    const uint64 leading_dim_output = n;
-    const uint64 colmajor_rows = n;
-    const uint64 colmajor_cols = m;
+    auto solver = std::make_unique<GpuSolver>(context);
+    const uint64_t leading_dim_matrix = m;
+    const uint64_t leading_dim_output = n;
+    const uint64_t colmajor_rows = n;
+    const uint64_t colmajor_cols = m;
 
-    const int64 batch_size = bcast.output_batch_size();
+    const int64_t batch_size = bcast.output_batch_size();
     std::vector<const Scalar*> a_ptrs;
     std::vector<Scalar*> out_ptrs;
     std::vector<const Scalar*> a_tmp_ptrs;
@@ -355,16 +345,16 @@ struct LaunchBatchMatrixTriangularSolve<GPUDevice, Scalar> {
     auto* out_base_ptr = out->template flat<Scalar>().data();
 
     if (!bcast.IsBroadcastingRequired()) {
-      for (int64 i = 0; i < batch_size; ++i) {
+      for (int64_t i = 0; i < batch_size; ++i) {
         a_ptrs.push_back(a_base_ptr + i * m * m);
         out_ptrs.push_back(out_base_ptr + i * m * n);
       }
     } else {
-      const std::vector<int64>& a_batch_indices = bcast.x_batch_indices();
-      for (int64 i = 0; i < bcast.x_batch_size(); ++i) {
+      const std::vector<int64_t>& a_batch_indices = bcast.x_batch_indices();
+      for (int64_t i = 0; i < bcast.x_batch_size(); ++i) {
         a_tmp_ptrs.push_back(a_base_ptr + i * m * m);
       }
-      for (int64 i = 0; i < batch_size; ++i) {
+      for (int64_t i = 0; i < batch_size; ++i) {
         a_ptrs.push_back(a_tmp_ptrs[a_batch_indices[i]]);
         out_ptrs.push_back(out_base_ptr + i * m * n);
       }
@@ -372,8 +362,6 @@ struct LaunchBatchMatrixTriangularSolve<GPUDevice, Scalar> {
 
     typedef Scalar Coefficient;
     const Scalar alpha = Scalar(1.0);
-
-#if GOOGLE_CUDA
 
     // TODO(b/146763573): Consider using Trsv here when the right hand side is
     // a vector. This will require an explicit transpose since Trsv assumes
@@ -408,15 +396,6 @@ struct LaunchBatchMatrixTriangularSolve<GPUDevice, Scalar> {
         }
       }
     }
-#elif TENSORFLOW_USE_ROCM
-    for (int batch = 0; batch < batch_size; ++batch) {
-      OP_REQUIRES_OK(
-          context,
-          solver->Trsm(side, uplo, trans, diag, colmajor_rows, colmajor_cols,
-                       &alpha, a_ptrs[batch], leading_dim_matrix /*lda*/,
-                       out_ptrs[batch], leading_dim_output /*ldb*/));
-    }
-#endif
   }
 };
 

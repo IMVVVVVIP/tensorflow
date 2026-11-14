@@ -13,14 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
+
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Casting.h"
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Block.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Operation.h"  // from @llvm-project
-#include "mlir/IR/StandardTypes.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/IR/Visitors.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
@@ -38,9 +40,13 @@ namespace {
 constexpr char kXlaOutsideCompilationAttr[] = "_xla_outside_compilation";
 constexpr char kTPUEmbeddingAttr[] = "_tpu_embedding_layer";
 
-struct TPUUpdateEmbeddingEnqueueOpInputs
-    : public PassWrapper<TPUUpdateEmbeddingEnqueueOpInputs, FunctionPass> {
-  void runOnFunction() override;
+#define GEN_PASS_DEF_TPUUPDATEEMBEDDINGENQUEUEOPINPUTSPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_passes.h.inc"
+
+struct TPUUpdateEmbeddingEnqueueOpInputsPass
+    : public impl::TPUUpdateEmbeddingEnqueueOpInputsPassBase<
+          TPUUpdateEmbeddingEnqueueOpInputsPass> {
+  void runOnOperation() override;
 };
 
 // Extracts `_tpu_embedding_layer` attribute from TPU embedding ops and
@@ -61,7 +67,7 @@ LogicalResult ExtractEmbeddingAttribute(
 }
 
 LogicalResult FindTPUEmbeddingOps(
-    FuncOp func_op, llvm::StringMap<Operation*>* enqueue_op_map,
+    func::FuncOp func_op, llvm::StringMap<Operation*>* enqueue_op_map,
     llvm::StringMap<Operation*>* recv_activation_op_map,
     llvm::StringMap<Operation*>* send_gradient_op_map) {
   auto walk_result = func_op.walk([&](Operation* op) {
@@ -74,7 +80,8 @@ LogicalResult FindTPUEmbeddingOps(
         return WalkResult::interrupt();
 
     if (llvm::isa<TF::EnqueueTPUEmbeddingSparseTensorBatchOp,
-                  TF::EnqueueTPUEmbeddingRaggedTensorBatchOp>(op))
+                  TF::EnqueueTPUEmbeddingRaggedTensorBatchOp,
+                  TF::EnqueueTPUEmbeddingArbitraryTensorBatchOp>(op))
       if (failed(ExtractEmbeddingAttribute(op, enqueue_op_map)))
         return WalkResult::interrupt();
 
@@ -119,8 +126,8 @@ LogicalResult UpdateEmbeddingEnqueueOpInput(
     llvm::SmallVector<StringRef, 1> mode_string_value;
     mode_string_value.emplace_back(is_training ? "train" : "inference");
     builder->setInsertionPoint(embedding_op);
-    auto enqueue_mode = builder->create<TF::ConstOp>(
-        embedding_op->getLoc(),
+    auto enqueue_mode = TF::ConstOp::create(
+        *builder, embedding_op->getLoc(),
         DenseStringElementsAttr::get(
             RankedTensorType::get({}, builder->getType<TF::StringType>()),
             mode_string_value));
@@ -128,8 +135,8 @@ LogicalResult UpdateEmbeddingEnqueueOpInput(
     auto outside_compilation_attr =
         embedding_op->getAttrOfType<StringAttr>(kXlaOutsideCompilationAttr);
     if (outside_compilation_attr)
-      enqueue_mode.setAttr(kXlaOutsideCompilationAttr,
-                           outside_compilation_attr);
+      enqueue_mode->setAttr(kXlaOutsideCompilationAttr,
+                            outside_compilation_attr);
 
     mode_enqueue_operand.set(enqueue_mode);
   }
@@ -137,9 +144,9 @@ LogicalResult UpdateEmbeddingEnqueueOpInput(
   return success();
 }
 
-void TPUUpdateEmbeddingEnqueueOpInputs::runOnFunction() {
+void TPUUpdateEmbeddingEnqueueOpInputsPass::runOnOperation() {
   OpBuilder builder(&getContext());
-  auto func_op = getFunction();
+  auto func_op = getOperation();
 
   // All TPU embedding layer related ops are annotated with
   // `_tpu_embedding_layer` attribute along with corresponding string attribute.
@@ -169,15 +176,10 @@ void TPUUpdateEmbeddingEnqueueOpInputs::runOnFunction() {
 
 }  // anonymous namespace
 
-std::unique_ptr<OperationPass<FuncOp>>
+std::unique_ptr<OperationPass<func::FuncOp>>
 CreateTPUUpdateEmbeddingEnqueueOpInputsPass() {
-  return std::make_unique<TPUUpdateEmbeddingEnqueueOpInputs>();
+  return std::make_unique<TPUUpdateEmbeddingEnqueueOpInputsPass>();
 }
-
-static PassRegistration<TPUUpdateEmbeddingEnqueueOpInputs> pass(
-    "tf-tpu-update-embedding-enqueue-op-inputs",
-    "Updates inputs to TPU embedding enqueue ops depending on whether graph "
-    "is in training mode or in evaluation mode.");
 
 }  // namespace TFTPU
 }  // namespace mlir

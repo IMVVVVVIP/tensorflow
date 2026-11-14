@@ -14,12 +14,9 @@
 # =============================================================================
 """Tests for create_python_api."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import imp
+import os
 import sys
+import types
 
 from tensorflow.python.platform import test
 from tensorflow.python.tools.api.generator import create_python_api
@@ -49,7 +46,7 @@ class CreatePythonApiTest(test.TestCase):
 
   def setUp(self):
     # Add fake op to a module that has 'tensorflow' in the name.
-    sys.modules[_MODULE_NAME] = imp.new_module(_MODULE_NAME)
+    sys.modules[_MODULE_NAME] = types.ModuleType(_MODULE_NAME)
     setattr(sys.modules[_MODULE_NAME], 'test_op', test_op)
     setattr(sys.modules[_MODULE_NAME], 'deprecated_test_op', deprecated_test_op)
     setattr(sys.modules[_MODULE_NAME], 'TestClass', TestClass)
@@ -64,6 +61,7 @@ class CreatePythonApiTest(test.TestCase):
   def testFunctionImportIsAdded(self):
     imports, _, _ = create_python_api.get_api_init_text(
         packages=[create_python_api._DEFAULT_PACKAGE],
+        packages_to_ignore=[],
         output_package='tensorflow',
         api_name='tensorflow',
         api_version=1)
@@ -99,6 +97,7 @@ class CreatePythonApiTest(test.TestCase):
   def testClassImportIsAdded(self):
     imports, _, _ = create_python_api.get_api_init_text(
         packages=[create_python_api._DEFAULT_PACKAGE],
+        packages_to_ignore=[],
         output_package='tensorflow',
         api_name='tensorflow',
         api_version=2)
@@ -118,6 +117,7 @@ class CreatePythonApiTest(test.TestCase):
   def testConstantIsAdded(self):
     imports, _, _ = create_python_api.get_api_init_text(
         packages=[create_python_api._DEFAULT_PACKAGE],
+        packages_to_ignore=[],
         output_package='tensorflow',
         api_name='tensorflow',
         api_version=1)
@@ -134,6 +134,7 @@ class CreatePythonApiTest(test.TestCase):
   def testCompatModuleIsAdded(self):
     imports, _, _ = create_python_api.get_api_init_text(
         packages=[create_python_api._DEFAULT_PACKAGE],
+        packages_to_ignore=[],
         output_package='tensorflow',
         api_name='tensorflow',
         api_version=2,
@@ -146,6 +147,7 @@ class CreatePythonApiTest(test.TestCase):
   def testNestedCompatModulesAreAdded(self):
     imports, _, _ = create_python_api.get_api_init_text(
         packages=[create_python_api._DEFAULT_PACKAGE],
+        packages_to_ignore=[],
         output_package='tensorflow',
         api_name='tensorflow',
         api_version=2,
@@ -158,6 +160,21 @@ class CreatePythonApiTest(test.TestCase):
                   msg='compat.v2.compat.v1 not in %s' % str(imports.keys()))
     self.assertIn('compat.v2.compat.v2', imports,
                   msg='compat.v2.compat.v2 not in %s' % str(imports.keys()))
+
+  def testProxyAPIFileIsGenerated(self):
+    save_dir = self.get_temp_dir()
+    proxy_module_root = 'tf_keras.api._v2'
+    module = 'keras.losses'
+    module_dir = module.replace('.', '/')
+    proxy_file = os.path.join(save_dir, module_dir, '__init__.py')
+    expected_imports = [f'from {proxy_module_root}.{module} import *']
+    create_python_api.create_proxy_api_files([proxy_file],
+                                             proxy_module_root,
+                                             save_dir)
+    self.assertTrue(os.path.exists(proxy_file))
+    with open(proxy_file, 'r') as f:
+      lines = f.readlines()
+    self.assertCountEqual(expected_imports, lines)
 
 
 if __name__ == '__main__':

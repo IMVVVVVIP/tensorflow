@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,117 +14,43 @@ limitations under the License.
 ==============================================================================*/
 
 // This file implements logic for translating mixed IR to buffer form.
-// Currently it supports MHLO and some operations from the Standard dialect.
 
 #include <memory>
 
-#include "mlir/Dialect/SCF/SCF.h"  // from @llvm-project
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
-#include "mlir/IR/Function.h"  // from @llvm-project
-#include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "mlir/IR/Operation.h"  // from @llvm-project
-#include "mlir/IR/PatternMatch.h"  // from @llvm-project
-#include "mlir/IR/StandardTypes.h"  // from @llvm-project
-#include "mlir/IR/Visitors.h"  // from @llvm-project
-#include "mlir/Pass/Pass.h"  // from @llvm-project
-#include "mlir/Transforms/BufferPlacement.h"  // from @llvm-project
-#include "mlir/Transforms/DialectConversion.h"  // from @llvm-project
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/hlo_ops.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/IR/lhlo_ops.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/transforms/passes.h"
-#include "tensorflow/compiler/mlir/hlo/include/mlir-hlo/Dialect/mhlo/transforms/rewriters.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"  // from @llvm-project
+#include "mlir/Dialect/Bufferization/Transforms/Bufferize.h"  // from @llvm-project
+#include "mlir/Pass/PassManager.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tools/kernel_gen/transforms/passes.h"
 #include "tensorflow/compiler/mlir/tools/kernel_gen/transforms/rewriters.h"
+#include "xla/mlir_hlo/transforms/passes.h"
 
 namespace mlir {
 namespace kernel_gen {
 namespace transforms {
 namespace {
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_KERNELGENFINALBUFFERIZEPASS
 #include "tensorflow/compiler/mlir/tools/kernel_gen/transforms/kernel_gen_passes.h.inc"
 
-// TODO(herhut) : This could become a real pattern in bufferize pass. What we
-// would need to do is insert a copy to model the semantics correctly. The same
-// is true for the TensorLoad pattern that is already in there.  Then buffer
-// assignment free insertion and copy removal should clean this up for us.
-//
-// This patten erases `tensor_store(src_unranked_tensor, dst_unranked_memref)`
-// op and replaces the result of the defining op produced `dst_unranked_memref`
-// with the rewritten `src_unranked_tensor`.
-class UnrankedTensorStoreTestOnlyPattern
-    : public OpConversionPattern<mlir::TensorStoreOp> {
- public:
-  using OpConversionPattern<mlir::TensorStoreOp>::OpConversionPattern;
+struct KernelgenFinalBufferizePass
+    : public impl::KernelgenFinalBufferizePassBase<
+          KernelgenFinalBufferizePass> {
+  // Default alignment_ specified in passes.td
+  KernelgenFinalBufferizePass() = default;
 
-  LogicalResult matchAndRewrite(
-      mlir::TensorStoreOp op, ArrayRef<Value> operands,
-      ConversionPatternRewriter& rewriter) const final {
-    rewriter.replaceOp(op.memref().getDefiningOp(), op.tensor());
-    rewriter.replaceOp(op, {});
-    return success();
-  }
-};
-
-struct BufferizePass : public BufferizePassBase<BufferizePass> {
- public:
   void runOnOperation() override {
-    OwningRewritePatternList patterns;
-    auto& context = getContext();
-    ConversionTarget target(context);
-    target.addLegalDialect<lmhlo::LmhloDialect>();
-    target.addLegalDialect<StandardOpsDialect>();
-    target.addLegalDialect<scf::SCFDialect>();
-    target.addLegalOp<ModuleOp>();
-    target.addLegalOp<ModuleTerminatorOp>();
-    target.addIllegalDialect<mhlo::MhloDialect>();
-    target.addIllegalOp<TensorFromElementsOp>();
-    target.addIllegalOp<ExtractElementOp>();
-    target.addIllegalOp<TensorLoadOp>();
-    target.addDynamicallyLegalOp<TensorStoreOp>([&](TensorStoreOp op) {
-      return !op.tensor().getType().isa<UnrankedTensorType>();
-    });
-
-    BufferAssignmentTypeConverter converter;
-    auto typesAreLegal = [&converter](Operation* op) {
-      return converter.isLegal(op->getOperandTypes()) &&
-             converter.isLegal(op->getResultTypes());
-    };
-    target.addDynamicallyLegalOp<FuncOp>([&](FuncOp op) {
-      auto inputs = op.getType().getInputs();
-      auto results = op.getType().getResults();
-      return converter.isLegal(inputs) && converter.isLegal(results) &&
-             converter.isLegal(&op.getBody());
-    });
-    target.addDynamicallyLegalOp<CallOp>(typesAreLegal);
-    target.addDynamicallyLegalOp<ReturnOp>(typesAreLegal);
-
-    auto module = getOperation();
-    WalkResult result = module.walk([&](FuncOp func) -> WalkResult {
-      BufferAssignmentPlacer bufferAssignment(func);
-      OwningRewritePatternList patterns;
-      mhlo::populateHLOToLHLOConversionPattern(
-          func.getContext(), &bufferAssignment, &converter, &patterns);
-      populateWithBufferAssignmentOpConversionPatterns<
-          ReturnOp, ReturnOp, lmhlo::CopyOp,
-          /*allowMemrefFunctionResults=*/true>(&context, &bufferAssignment,
-                                               &converter, &patterns);
-      populateStandardBufferizePattern(func.getContext(), &bufferAssignment,
-                                       &converter, &patterns);
-      patterns.insert<UnrankedTensorStoreTestOnlyPattern>(func.getContext());
-
-      return applyPartialConversion(func, target, patterns);
-    });
-    if (result.wasInterrupted()) {
-      signalPassFailure();
-    }
+    mlir::PassManager pm(&getContext());
+    pm.addPass(mlir::createFinalBufferizePass(/*alignment=*/64,
+                                              populateExtraBufferizeDialects,
+                                              populateExtraBufferizePatterns));
+    (void)runPipeline(pm, getOperation());
   }
 };
 
 }  // namespace
 
-std::unique_ptr<OperationPass<ModuleOp> > CreateBufferizePass() {
-  return std::make_unique<BufferizePass>();
+std::unique_ptr<OperationPass<ModuleOp>> CreateKernelgenFinalBufferizePass() {
+  return std::make_unique<KernelgenFinalBufferizePass>();
 }
 
 }  // namespace transforms

@@ -13,8 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include <memory>
+#include <utility>
+
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
+#include "mlir/Dialect/MemRef/IR/MemRef.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "mlir/Transforms/DialectConversion.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tools/kernel_gen/ir/tf_framework_ops.h"
 #include "tensorflow/compiler/mlir/tools/kernel_gen/transforms/passes.h"
@@ -25,42 +31,57 @@ namespace kernel_gen {
 namespace tf_framework {
 namespace {
 
-#define GEN_PASS_CLASSES
+#define GEN_PASS_DEF_EMBEDTFFRAMEWORKPASS
 #include "tensorflow/compiler/mlir/tools/kernel_gen/transforms/kernel_gen_passes.h.inc"
 
-static constexpr StringRef kTFEntry = "tf_entry";
+bool IsNotInsideTfEntryFunction(Operation* op) {
+  auto func = op->getParentOfType<func::FuncOp>();
+  return !func->hasAttrOfType<UnitAttr>(TFFrameworkDialect::kTFEntryAttrName);
+}
+
+template <typename OpTy>
+bool HasInitializedOpKernelContextOperand(OpTy op) {
+  return op.getCtx() != nullptr;
+}
 
 // The pass rewrites the function marked with `tf_entry` attribute.
 // * adds tf_framework::OpKernelContextType argument to the function,
 // * std.alloc becomes tf_framework.alloc_raw,
 // * std.dealloc becomes tf_framework.dealloc_raw.
 class EmbedTFFrameworkPass
-    : public EmbedTFFrameworkPassBase<EmbedTFFrameworkPass> {
+    : public impl::EmbedTFFrameworkPassBase<EmbedTFFrameworkPass> {
+  void getDependentDialects(DialectRegistry& registry) const override {
+    registry.insert<mlir::kernel_gen::tf_framework::TFFrameworkDialect>();
+  }
+
  public:
   void runOnOperation() override {
     ModuleOp m = getOperation();
 
     // Populate patterns.
-    OwningRewritePatternList patterns;
-    PopulateEmbedTFFrameworkConversionPatterns(m.getContext(), &patterns);
+    RewritePatternSet patterns(&getContext());
+    PopulateEmbedTFFrameworkPatterns(&patterns);
 
     // Set target.
     ConversionTarget target(getContext());
     target.addLegalDialect<tf_framework::TFFrameworkDialect>();
 
-    target.addDynamicallyLegalOp<FuncOp>([&](FuncOp op) {
-      if (!op.getAttrOfType<UnitAttr>(kTFEntry)) {
+    target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+      if (!op->hasAttrOfType<UnitAttr>(TFFrameworkDialect::kTFEntryAttrName)) {
         return true;
       }
-      FunctionType func_type = op.getType();
+      FunctionType func_type = op.getFunctionType();
       return func_type.getNumInputs() > 0 &&
-             func_type.getInput(0).isa<OpKernelContextType>();
+             mlir::isa<OpKernelContextType>(func_type.getInput(0));
     });
-    target.addDynamicallyLegalOp<AllocOp, DeallocOp>([](Operation* op) {
-      return !op->getParentOfType<FuncOp>().getAttrOfType<UnitAttr>(kTFEntry);
-    });
+    target.addDynamicallyLegalOp<cf::AssertOp, memref::AllocOp,
+                                 memref::DeallocOp>(IsNotInsideTfEntryFunction);
+    target.addDynamicallyLegalOp<JITExecuteOp>(
+        &HasInitializedOpKernelContextOperand<JITExecuteOp>);
+    target.addDynamicallyLegalOp<JITCompileFromStrOp>(
+        &HasInitializedOpKernelContextOperand<JITCompileFromStrOp>);
 
-    if (failed(applyPartialConversion(m, target, patterns))) {
+    if (failed(applyPartialConversion(m, target, std::move(patterns)))) {
       signalPassFailure();
     }
   }
@@ -68,7 +89,7 @@ class EmbedTFFrameworkPass
 
 }  // namespace
 
-std::unique_ptr<OperationPass<ModuleOp> > createEmbedTFFrameworkPass() {
+std::unique_ptr<OperationPass<ModuleOp> > CreateEmbedTFFrameworkPass() {
   return std::make_unique<EmbedTFFrameworkPass>();
 }
 

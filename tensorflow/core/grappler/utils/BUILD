@@ -1,11 +1,29 @@
+# Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load("//tensorflow:tensorflow.default.bzl", "filegroup")
 load(
     "//tensorflow/core/platform:build_config.bzl",
     "tf_protos_grappler",
 )
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
-    licenses = ["notice"],  # Apache 2.0
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
+    licenses = ["notice"],
 )
 
 filegroup(
@@ -14,7 +32,7 @@ filegroup(
         "topological_sort.h",
     ],
     visibility = [
-        "//tensorflow/python:__pkg__",
+        "//tensorflow/python/grappler:__pkg__",
     ],
 )
 
@@ -194,6 +212,7 @@ cc_library(
         "//tensorflow/core:lib_internal",
         "//tensorflow/core:protos_all_cc",
         "//tensorflow/core/common_runtime:core_cpu_base_no_ops",
+        "//tensorflow/core/common_runtime:function_body",
         "//tensorflow/core/grappler:grappler_item",
         "//tensorflow/core/grappler:op_types",
         "//tensorflow/core/grappler:utils",
@@ -201,6 +220,7 @@ cc_library(
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/container:inlined_vector",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -387,6 +407,30 @@ tf_cc_test(
         "//tensorflow/core:testlib",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_library(
+    name = "pattern_utils",
+    srcs = ["pattern_utils.cc"],
+    hdrs = ["pattern_utils.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":graph_view",
+        "@com_google_absl//absl/container:flat_hash_set",
+    ],
+)
+
+tf_cc_test(
+    name = "pattern_utils_test",
+    srcs = ["pattern_utils_test.cc"],
+    deps = [
+        ":pattern_utils",
+        "//tensorflow/cc:cc_ops",
+        "//tensorflow/cc:cc_ops_internal",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core:testlib",
     ],
 )
 

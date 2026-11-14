@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/strings/str_util.h"
+#include "tensorflow/core/util/determinism.h"
 
 namespace tensorflow {
 
@@ -36,15 +37,15 @@ static mutex* file_mutex = new mutex();
 
 // Appends the given data to the specified file. It will create the file if it
 // doesn't already exist.
-Status AppendStringToFile(const std::string& fname, StringPiece data,
-                          Env* env) {
+absl::Status AppendStringToFile(const std::string& fname,
+                                absl::string_view data, Env* env) {
   // TODO(ckluk): If opening and closing on every log causes performance issues,
   // we can reimplement using reference counters.
   mutex_lock l(*file_mutex);
   std::unique_ptr<WritableFile> file;
   TF_RETURN_IF_ERROR(env->NewAppendableFile(fname, &file));
-  Status a = file->Append(data);
-  Status c = file->Close();
+  absl::Status a = file->Append(data);
+  absl::Status c = file->Close();
   return a.ok() ? c : a;
 }
 
@@ -57,19 +58,18 @@ AssertOp::AssertOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
 void AssertOp::Compute(OpKernelContext* ctx) {
   const Tensor& cond = ctx->input(0);
   OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(cond.shape()),
-              errors::InvalidArgument("In[0] should be a scalar: ",
-                                      cond.shape().DebugString()));
+              absl::InvalidArgumentError(absl::StrCat(
+                  "In[0] should be a scalar: ", cond.shape().DebugString())));
 
   if (cond.scalar<bool>()()) {
     return;
   }
-  string msg = "assertion failed: ";
+  std::string msg = "assertion failed: ";
   for (int i = 1; i < ctx->num_inputs(); ++i) {
-    strings::StrAppend(&msg, "[", ctx->input(i).SummarizeValue(summarize_),
-                       "]");
-    if (i < ctx->num_inputs() - 1) strings::StrAppend(&msg, " ");
+    absl::StrAppend(&msg, "[", ctx->input(i).SummarizeValue(summarize_), "]");
+    if (i < ctx->num_inputs() - 1) absl::StrAppend(&msg, " ");
   }
-  ctx->SetStatus(errors::InvalidArgument(msg));
+  ctx->SetStatus(absl::InvalidArgumentError(msg));
 }
 
 REGISTER_KERNEL_BUILDER(Name("Assert")
@@ -98,21 +98,20 @@ class PrintOp : public OpKernel {
       if (call_counter_ >= first_n_) return;
       call_counter_++;
     }
-    string msg;
-    strings::StrAppend(&msg, message_);
+    std::string msg;
+    absl::StrAppend(&msg, message_);
     for (int i = 1; i < ctx->num_inputs(); ++i) {
-      strings::StrAppend(&msg, "[", ctx->input(i).SummarizeValue(summarize_),
-                         "]");
+      absl::StrAppend(&msg, "[", ctx->input(i).SummarizeValue(summarize_), "]");
     }
     std::cerr << msg << std::endl;
   }
 
  private:
   mutex mu_;
-  int64 call_counter_ TF_GUARDED_BY(mu_) = 0;
-  int64 first_n_ = 0;
-  int32 summarize_ = 0;
-  string message_;
+  int64_t call_counter_ TF_GUARDED_BY(mu_) = 0;
+  int64_t first_n_ = 0;
+  int32_t summarize_ = 0;
+  std::string message_;
 };
 
 REGISTER_KERNEL_BUILDER(Name("Print").Device(DEVICE_CPU), PrintOp);
@@ -131,12 +130,12 @@ class PrintV2Op : public OpKernel {
                   std::end(valid_output_streams_), output_stream_);
 
     if (output_stream_index == std::end(valid_output_streams_)) {
-      string error_msg = strings::StrCat(
+      std::string error_msg = absl::StrCat(
           "Unknown output stream: ", output_stream_, ", Valid streams are:");
       for (auto valid_stream : valid_output_streams_) {
-        strings::StrAppend(&error_msg, " ", valid_stream);
+        absl::StrAppend(&error_msg, " ", valid_stream);
       }
-      OP_REQUIRES(ctx, false, errors::InvalidArgument(error_msg));
+      OP_REQUIRES(ctx, false, absl::InvalidArgumentError(error_msg));
     }
   }
 
@@ -147,9 +146,9 @@ class PrintV2Op : public OpKernel {
         ctx, TensorShapeUtils::IsScalar(input_->shape()),
         errors::InvalidArgument("Input is expected to be scalar, but got ",
                                 input_->shape()));
-    const string& msg = input_->scalar<tstring>()();
+    const std::string& msg = input_->scalar<tstring>()();
 
-    string ended_msg = strings::StrCat(msg, end_);
+    std::string ended_msg = absl::StrCat(msg, end_);
 
     if (!file_path_.empty()) {
       // Outputs to a file at the specified path.
@@ -173,13 +172,13 @@ class PrintV2Op : public OpKernel {
     } else if (output_stream_ == "log(error)") {
       LOG(ERROR) << ended_msg << std::flush;
     } else {
-      string error_msg = strings::StrCat(
+      std::string error_msg = absl::StrCat(
           "Unknown output stream: ", output_stream_, ", Valid streams are:");
       for (auto valid_stream : valid_output_streams_) {
-        strings::StrAppend(&error_msg, " ", valid_stream);
+        absl::StrAppend(&error_msg, " ", valid_stream);
       }
-      strings::StrAppend(&error_msg, ", or file://<filename>");
-      OP_REQUIRES(ctx, false, errors::InvalidArgument(error_msg));
+      absl::StrAppend(&error_msg, ", or file://<filename>");
+      OP_REQUIRES(ctx, false, absl::InvalidArgumentError(error_msg));
     }
   }
 
@@ -187,10 +186,10 @@ class PrintV2Op : public OpKernel {
                                           "log(warning)", "log(error)"};
 
  private:
-  string end_;
+  std::string end_;
   // Either output_stream_ or file_path_ (but not both) will be non-empty.
-  string output_stream_;
-  string file_path_;
+  std::string output_stream_;
+  std::string file_path_;
 
   // If output_stream_ is a file path, extracts it to file_path_ and clears
   // output_stream_; otherwise sets file_paths_ to "".
@@ -211,6 +210,9 @@ class TimestampOp : public OpKernel {
   explicit TimestampOp(OpKernelConstruction* context) : OpKernel(context) {}
 
   void Compute(OpKernelContext* context) override {
+    OP_REQUIRES(context, !OpDeterminismRequired(),
+                absl::FailedPreconditionError(
+                    "Timestamp cannot be called when determinism is enabled"));
     TensorShape output_shape;  // Default shape is 0 dim, 1 element
     Tensor* output_tensor = nullptr;
     OP_REQUIRES_OK(context,

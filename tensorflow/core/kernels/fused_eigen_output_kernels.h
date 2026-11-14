@@ -26,7 +26,12 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_FUSED_EIGEN_OUTPUT_KERNELS_H_
 #define TENSORFLOW_CORE_KERNELS_FUSED_EIGEN_OUTPUT_KERNELS_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include <type_traits>
+
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_types.h"
@@ -38,27 +43,34 @@ enum class FusedComputationType {
   kBiasAdd,
   kBiasAddWithRelu,
   kBiasAddWithRelu6,
+  kBiasAddWithTanh,
+  kBiasAddWithSigmoid,
   kBiasAddWithElu,
+  kBiasAddWithLeakyRelu,
+  kBiasAddWithGeluApproximate,
+  kBiasAddWithGeluExact,
   kFusedBatchNorm,
   kFusedBatchNormWithRelu,
   kFusedBatchNormWithRelu6,
-  kFusedBatchNormWithElu
+  kFusedBatchNormWithElu,
+  kFusedBatchNormWithLeakyRelu
 };
 
 // We have to pass around additional arguments for all possible fusion types.
 struct FusedComputationArgs {
-  float epsilon = 0.0;  // Used by `FusedBatchNorm` fusion only
+  float epsilon = 0.0;          // Used by `FusedBatchNorm` fusion only
+  float leakyrelu_alpha = 0.0;  // Used by `LeakyRelu` fusion only
 };
 
 struct FusedComputationPattern {
   FusedComputationType fused_computation;
-  std::vector<string> fused_ops;
+  std::vector<std::string> fused_ops;
 };
 
 // Parse attributes from the kernel construction context, and verifies that they
 // specify valid fused computation pattern.
-Status InitializeFusedComputation(
-    OpKernelConstruction* context, const string& kernel_name,
+absl::Status InitializeFusedComputation(
+    OpKernelConstruction* context, const std::string& kernel_name,
     const std::vector<FusedComputationPattern>& patterns,
     FusedComputationType* fused_computation,
     FusedComputationArgs* fused_computation_args);
@@ -96,17 +108,45 @@ struct Relu6 {
   };
 };
 
+// Applies `Tanh` to the passed input expression.
+struct Tanh {
+  template <typename XprType>
+  static auto apply(XprType expr) -> decltype(expr.tanh()) {
+    return expr.tanh();
+  };
+};
+
+// Applies `Sigmoid` to the passed input expression.
+struct Sigmoid {
+  template <typename XprType>
+  static auto apply(XprType expr) -> decltype(expr.sigmoid()) {
+    return expr.sigmoid();
+  };
+};
+
 // Applies `Elu` to the passed input expression.
 struct Elu {
   template <typename XprType>
-  static auto apply(XprType expr) -> decltype(
+  // Use expm1 (exp(x) - 1) to avoid catastrophic cancellation for small x.
+  static auto apply(XprType expr)
+      -> decltype((expr < std::declval<typename XprType::Scalar>())
+                      .select(expr.expm1(), expr)) {
+    return (expr < static_cast<typename XprType::Scalar>(0))
+        .select(expr.expm1(), expr);
+  };
+};
+
+// Applies `LeakyRelu` to the passed input expression.
+struct LeakyRelu {
+  template <typename XprType>
+  static auto apply(XprType expr, const float leakyrelu_alpha) -> decltype(
       (expr < std::declval<typename XprType::Scalar>())
-          .select(expr.exp() -
+          .select(expr *
                       expr.constant(std::declval<typename XprType::Scalar>()),
                   expr)) {
     return (expr < static_cast<typename XprType::Scalar>(0))
-        .select(expr.exp() -
-                    expr.constant(static_cast<typename XprType::Scalar>(1)),
+        .select(expr * expr.constant(static_cast<typename XprType::Scalar>(
+                           leakyrelu_alpha)),
                 expr);
   };
 };
@@ -114,12 +154,16 @@ struct Elu {
 template <typename T>
 struct BiasAddArgs {
   const T* bias_add_data = nullptr;
+  float leakyrelu_alpha;
 
   static bool IsSupported(FusedComputationType fusion) {
     return fusion == FusedComputationType::kBiasAdd ||
            fusion == FusedComputationType::kBiasAddWithRelu ||
            fusion == FusedComputationType::kBiasAddWithRelu6 ||
-           fusion == FusedComputationType::kBiasAddWithElu;
+           fusion == FusedComputationType::kBiasAddWithTanh ||
+           fusion == FusedComputationType::kBiasAddWithSigmoid ||
+           fusion == FusedComputationType::kBiasAddWithElu ||
+           fusion == FusedComputationType::kBiasAddWithLeakyRelu;
   }
 };
 
@@ -134,11 +178,14 @@ struct FusedBatchNormArgs {
   //   scaling_factor = (estimated_variance + epsilon).rsqrt() * scale
   Eigen::Tensor<T, 1, Eigen::RowMajor> scaling_factor;
 
+  float leakyrelu_alpha;
+
   static bool IsSupported(FusedComputationType fusion) {
     return fusion == FusedComputationType::kFusedBatchNorm ||
            fusion == FusedComputationType::kFusedBatchNormWithRelu ||
            fusion == FusedComputationType::kFusedBatchNormWithRelu6 ||
-           fusion == FusedComputationType::kFusedBatchNormWithElu;
+           fusion == FusedComputationType::kFusedBatchNormWithElu ||
+           fusion == FusedComputationType::kFusedBatchNormWithLeakyRelu;
   }
 };
 
@@ -192,15 +239,57 @@ struct BiasAddOutputKernel {
     typename TTypes<T>::UnalignedConstTensor bias(bias_base, num_rows);
 
     for (int col = 0; col < num_cols; ++col) {
-      T* output_base = &output_mapper(0, col);
-      typename TTypes<T>::UnalignedTensor output(output_base, num_rows);
-      const auto expr = output + bias;
-      output = Activation::template apply<decltype(expr)>(expr);
+      Scalar* output_base = &output_mapper(0, col);
+      typename TTypes<Scalar>::UnalignedTensor output(output_base, num_rows);
+      if constexpr (std::is_same_v<Scalar, T>) {
+        const auto expr = output + bias;
+        output = Activation::template apply<decltype(expr)>(expr);
+      } else {
+        const auto bias_expr = bias.template cast<Scalar>();
+        const auto expr = output + bias_expr;
+        output = Activation::template apply<decltype(expr)>(expr);
+      }
     }
   }
 
  private:
   const T* bias_data;
+};
+
+template <typename T>
+struct BiasAddOutputKernel<T, LeakyRelu> {
+  explicit BiasAddOutputKernel(const BiasAddArgs<T>& args)
+      : bias_data(args.bias_add_data), leakyrelu_alpha(args.leakyrelu_alpha) {}
+
+  template <typename StorageIndex, typename Scalar>
+  EIGEN_ALWAYS_INLINE void operator()(
+      const ContractionOutputMapper<Scalar, StorageIndex>& output_mapper,
+      const Eigen::TensorContractionParams& params, StorageIndex i,
+      StorageIndex j, StorageIndex num_rows, StorageIndex num_cols) const {
+    DCHECK(params.swapped_arguments);
+
+    const T* bias_base = bias_data + i;
+    typename TTypes<T>::UnalignedConstTensor bias(bias_base, num_rows);
+
+    for (int col = 0; col < num_cols; ++col) {
+      Scalar* output_base = &output_mapper(0, col);
+      typename TTypes<Scalar>::UnalignedTensor output(output_base, num_rows);
+      if constexpr (std::is_same_v<Scalar, T>) {
+        const auto expr = output + bias;
+        output =
+            LeakyRelu::template apply<decltype(expr)>(expr, leakyrelu_alpha);
+      } else {
+        const auto bias_expr = bias.template cast<Scalar>();
+        const auto expr = output + bias_expr;
+        output =
+            LeakyRelu::template apply<decltype(expr)>(expr, leakyrelu_alpha);
+      }
+    }
+  }
+
+ private:
+  const T* bias_data;
+  float leakyrelu_alpha;
 };
 
 // Output kernel that fuses FusedBatchNorm operation into the output of tensor
@@ -247,6 +336,51 @@ struct FusedBatchNormOutputKernel {
   const T* estimated_mean_data;
 };
 
+template <typename T>
+struct FusedBatchNormOutputKernel<T, LeakyRelu> {
+  FusedBatchNormOutputKernel(T epsilon, const FusedBatchNormArgs<T>& args)
+      : epsilon(epsilon),
+        scaling_factor_data(args.scaling_factor.data()),
+        offset_data(args.offset_data),
+        estimated_mean_data(args.estimated_mean_data),
+        leakyrelu_alpha(args.leakyrelu_alpha) {}
+
+  template <typename StorageIndex, typename Scalar>
+  EIGEN_ALWAYS_INLINE void operator()(
+      const ContractionOutputMapper<Scalar, StorageIndex>& output_mapper,
+      const Eigen::TensorContractionParams& params, StorageIndex i,
+      StorageIndex j, StorageIndex num_rows, StorageIndex num_cols) const {
+    DCHECK(params.swapped_arguments);
+
+    const T* scaling_factor_base = scaling_factor_data + i;
+    const T* offset_base = offset_data + i;
+    const T* mean_base = estimated_mean_data + i;
+
+    typename TTypes<T>::UnalignedConstTensor scaling_factor(scaling_factor_base,
+                                                            num_rows);
+    typename TTypes<T>::UnalignedConstTensor offset(offset_base, num_rows);
+    typename TTypes<T>::UnalignedConstTensor mean(mean_base, num_rows);
+
+    for (int col = 0; col < num_cols; ++col) {
+      T* output_base = &output_mapper(0, col);
+      typename TTypes<T>::UnalignedTensor output(output_base, num_rows);
+
+      auto scaled = (output - mean) * scaling_factor;
+      auto shifted = scaled + offset;
+
+      output = LeakyRelu::template apply<decltype(shifted)>(shifted,
+                                                            leakyrelu_alpha);
+    }
+  }
+
+ private:
+  T epsilon;
+  const T* scaling_factor_data;
+  const T* offset_data;
+  const T* estimated_mean_data;
+  float leakyrelu_alpha;
+};
+
 // Type aliases for the output kernels, purely for the sake of better launch
 // dispatching code readability.
 template <typename T>
@@ -256,7 +390,13 @@ using WithBiasAddAndRelu = BiasAddOutputKernel<T, Relu>;
 template <typename T>
 using WithBiasAddAndRelu6 = BiasAddOutputKernel<T, Relu6>;
 template <typename T>
+using WithBiasAddAndTanh = BiasAddOutputKernel<T, Tanh>;
+template <typename T>
+using WithBiasAddAndSigmoid = BiasAddOutputKernel<T, Sigmoid>;
+template <typename T>
 using WithBiasAddAndElu = BiasAddOutputKernel<T, Elu>;
+template <typename T>
+using WithBiasAddAndLeakyRelu = BiasAddOutputKernel<T, LeakyRelu>;
 template <typename T>
 using WithFusedBatchNorm = FusedBatchNormOutputKernel<T>;
 template <typename T>
@@ -265,15 +405,29 @@ template <typename T>
 using WithFusedBatchNormAndRelu6 = FusedBatchNormOutputKernel<T, Relu6>;
 template <typename T>
 using WithFusedBatchNormAndElu = FusedBatchNormOutputKernel<T, Elu>;
+template <typename T>
+using WithFusedBatchNormAndLeakyRelu = FusedBatchNormOutputKernel<T, LeakyRelu>;
 
 template <typename T>
-Status InitBiasAddArgs(OpKernelContext* context, BiasAddArgs<T>* args) {
-  // Bias of the following dimensions: [ output_depth ]
+absl::Status InitBiasAddArgs(OpKernelContext* context, BiasAddArgs<T>* args,
+                             const float* leakyrelu_alpha = nullptr) {
+  // Bias of the following dimensions: [ output_depth ] or [1, ..., 1,
+  // output_depth]
   const Tensor& bias = context->input(2);
 
-  if (bias.dims() != 1)
-    return errors::InvalidArgument("bias must be 1-dimensional",
-                                   bias.shape().DebugString());
+  if (bias.dims() < 1) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("bias must be at least 1-dimensional, got: ",
+                     bias.shape().DebugString()));
+  }
+  for (int i = 0; i < bias.dims() - 1; ++i) {
+    if (bias.dim_size(i) != 1) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("For bias_dims > 1, all except the last dimension "
+                       "must be 1, got: ",
+                       bias.shape().DebugString()));
+    }
+  }
 
   const auto data_ptr = [](const Tensor& tensor) -> const T* {
     return reinterpret_cast<const T*>(tensor.tensor_data().data());
@@ -281,29 +435,36 @@ Status InitBiasAddArgs(OpKernelContext* context, BiasAddArgs<T>* args) {
 
   args->bias_add_data = data_ptr(bias);
 
-  return Status::OK();
+  if (leakyrelu_alpha) {
+    args->leakyrelu_alpha = *leakyrelu_alpha;
+  }
+
+  return absl::OkStatus();
 }
 
 template <typename T>
-Status InitFusedBatchNormArgs(OpKernelContext* context, float epsilon,
-                              FusedBatchNormArgs<T>* args) {
+absl::Status InitFusedBatchNormArgs(OpKernelContext* context, float epsilon,
+                                    FusedBatchNormArgs<T>* args,
+                                    const float* leakyrelu_alpha = nullptr) {
   const Tensor& scale = context->input(2);
   const Tensor& offset = context->input(3);
   const Tensor& estimated_mean = context->input(4);
   const Tensor& estimated_variance = context->input(5);
 
   if (scale.dims() != 1)
-    return errors::InvalidArgument("scale must be 1-dimensional",
-                                   scale.shape().DebugString());
+    return absl::InvalidArgumentError(absl::StrCat(
+        "scale must be 1-dimensional", scale.shape().DebugString()));
   if (offset.dims() != 1)
-    return errors::InvalidArgument("offset must be 1-dimensional",
-                                   offset.shape().DebugString());
+    return absl::InvalidArgumentError(absl::StrCat(
+        "offset must be 1-dimensional", offset.shape().DebugString()));
   if (estimated_mean.dims() != 1)
-    return errors::InvalidArgument("estimated_mean must be 1-dimensional",
-                                   estimated_mean.shape().DebugString());
+    return absl::InvalidArgumentError(
+        absl::StrCat("estimated_mean must be 1-dimensional",
+                     estimated_mean.shape().DebugString()));
   if (estimated_variance.dims() != 1)
-    return errors::InvalidArgument("estimated_variance must be 1-dimensional",
-                                   estimated_variance.shape().DebugString());
+    return absl::InvalidArgumentError(
+        absl::StrCat("estimated_variance must be 1-dimensional",
+                     estimated_variance.shape().DebugString()));
 
   const auto data_ptr = [](const Tensor& tensor) -> const T* {
     return reinterpret_cast<const T*>(tensor.tensor_data().data());
@@ -319,7 +480,11 @@ Status InitFusedBatchNormArgs(OpKernelContext* context, float epsilon,
       (estimated_variance.flat<T>() + static_cast<T>(epsilon)).rsqrt() *
       scale.flat<T>();
 
-  return Status::OK();
+  if (leakyrelu_alpha) {
+    args->leakyrelu_alpha = *leakyrelu_alpha;
+  }
+
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

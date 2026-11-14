@@ -64,13 +64,13 @@ class RunHandlerPool {
   //
   // Will block unless there is an inactive handler.
   std::unique_ptr<RunHandler> Get(
-      int64 step_id = 0, int64 timeout_in_ms = 0,
+      int64_t step_id = 0, int64_t timeout_in_ms = 0,
       const RunOptions::Experimental::RunHandlerPoolOptions& options =
           RunOptions::Experimental::RunHandlerPoolOptions());
 
   // Get the priorities for active handlers. The return result is with the same
   // order of the active handler list.
-  std::vector<int64> GetActiveHandlerPrioritiesForTesting() const;
+  std::vector<int64_t> GetActiveHandlerPrioritiesForTesting() const;
 
  private:
   class Impl;
@@ -115,11 +115,11 @@ class RunHandlerEnvironment {
   struct TaskImpl {
     std::function<void()> f;
     Context context;
-    uint64 trace_id;
+    uint64_t trace_id;
   };
   Env* const env_;
   const ThreadOptions thread_options_;
-  const string name_;
+  const std::string name_;
 
  public:
   struct Task {
@@ -127,9 +127,10 @@ class RunHandlerEnvironment {
   };
 
   RunHandlerEnvironment(Env* env, const ThreadOptions& thread_options,
-                        const string& name);
+                        const std::string& name);
 
-  EnvThread* CreateThread(std::function<void()> f);
+  EnvThread* CreateThread(std::function<void()> f,
+                          const std::string& thread_name);
 
   Task CreateTask(std::function<void()> f);
 
@@ -169,13 +170,13 @@ class ThreadWorkSource {
 
   int TaskQueueSize(bool is_blocking);
 
-  int64 GetTracemeId();
+  int64_t GetTracemeId();
 
-  void SetTracemeId(int64 value);
+  void SetTracemeId(int64_t value);
 
-  void SetWaiter(uint64 version, Waiter* waiter, mutex* mutex);
+  void SetWaiter(uint64_t version, Waiter* waiter, mutex* mutex);
 
-  int64 GetInflightTaskCount(bool is_blocking);
+  int64_t GetInflightTaskCount(bool is_blocking);
 
   void IncrementInflightTaskCount(bool is_blocking);
 
@@ -192,21 +193,21 @@ class ThreadWorkSource {
     Queue queue;
   };
 
-  int32 non_blocking_work_sharding_factor_;
+  int32_t non_blocking_work_sharding_factor_;
   Eigen::MaxSizeVector<NonBlockingQueue*> non_blocking_work_queues_;
 
-  std::atomic<int64> blocking_inflight_;
-  std::atomic<int64> non_blocking_inflight_;
+  std::atomic<int64_t> blocking_inflight_;
+  std::atomic<int64_t> non_blocking_inflight_;
 
   Queue blocking_work_queue_;
   mutex blocking_queue_op_mu_;
   char pad_[128];
   mutex waiters_mu_;
   Waiter queue_waiters_ TF_GUARDED_BY(waiters_mu_);
-  std::atomic<int64> traceme_id_;
+  std::atomic<int64_t> traceme_id_;
 
   mutex run_handler_waiter_mu_;
-  uint64 version_ TF_GUARDED_BY(run_handler_waiter_mu_);
+  uint64_t version_ TF_GUARDED_BY(run_handler_waiter_mu_);
   mutex* sub_thread_pool_waiter_mu_ TF_GUARDED_BY(run_handler_waiter_mu_);
   Waiter* sub_thread_pool_waiter_ TF_GUARDED_BY(run_handler_waiter_mu_);
 };
@@ -221,7 +222,7 @@ class RunHandlerThreadPool {
 
   RunHandlerThreadPool(int num_blocking_threads, int num_non_blocking_threads,
                        Env* env, const ThreadOptions& thread_options,
-                       const string& name,
+                       const std::string& name,
                        Eigen::MaxSizeVector<mutex>* waiters_mu,
                        Eigen::MaxSizeVector<Waiter>* queue_waiters);
 
@@ -238,7 +239,7 @@ class RunHandlerThreadPool {
   // The request with start_request_idx will be attempted first. Other requests
   // will be attempted in FIFO order based on their arrival time.
   void SetThreadWorkSources(
-      int tid, int start_request_idx, uint64 version,
+      int tid, int start_request_idx, uint64_t version,
       const Eigen::MaxSizeVector<ThreadWorkSource*>& thread_work_sources);
 
   PerThread* GetPerThread();
@@ -264,7 +265,7 @@ class RunHandlerThreadPool {
       bool* task_from_blocking_queue, ThreadWorkSource** tws);
 
   void WaitForWork(bool is_blocking, int thread_id,
-                   int32 max_blocking_inflight);
+                   int32_t max_blocking_inflight);
 
   void WaitForWorkInSubThreadPool(bool is_blocking, int sub_thread_pool_id);
 
@@ -272,14 +273,14 @@ class RunHandlerThreadPool {
   struct ThreadData {
     ThreadData();
     mutex mu;
-    uint64 new_version;
+    uint64_t new_version;
     condition_variable sources_not_empty;
     std::unique_ptr<Thread> thread;
     int current_index;
     std::unique_ptr<Eigen::MaxSizeVector<ThreadWorkSource*>>
         new_thread_work_sources TF_GUARDED_BY(mu);
 
-    uint64 current_version;
+    uint64_t current_version;
     // Should only be accessed by one thread.
     std::unique_ptr<Eigen::MaxSizeVector<ThreadWorkSource*>>
         current_thread_work_sources;
@@ -293,7 +294,7 @@ class RunHandlerThreadPool {
   Eigen::MaxSizeVector<ThreadData> thread_data_;
   internal::RunHandlerEnvironment env_;
   std::atomic<bool> cancelled_;
-  string name_;
+  std::string name_;
   Eigen::MaxSizeVector<mutex>* waiters_mu_;
   Eigen::MaxSizeVector<Waiter>* queue_waiters_;
 

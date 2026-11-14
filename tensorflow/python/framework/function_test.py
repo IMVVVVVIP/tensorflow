@@ -14,13 +14,10 @@
 # =============================================================================
 """Tests for functions."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import re
 import time
 
+from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.core.framework import function_pb2
@@ -37,8 +34,11 @@ from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import test_util
 from tensorflow.python.framework.errors import InvalidArgumentError
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import array_ops_stack
+from tensorflow.python.ops import cond as tf_cond
+from tensorflow.python.ops import control_flow_assert
 from tensorflow.python.ops import functional_ops
+from tensorflow.python.ops import gen_control_flow_ops
 from tensorflow.python.ops import gen_logging_ops
 from tensorflow.python.ops import gradients_impl
 from tensorflow.python.ops import init_ops
@@ -49,7 +49,9 @@ from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import template
 from tensorflow.python.ops import variable_scope
+from tensorflow.python.ops import variable_v1
 from tensorflow.python.ops import variables
+from tensorflow.python.ops import while_loop
 from tensorflow.python.platform import test
 from tensorflow.python.platform import tf_logging
 
@@ -113,7 +115,7 @@ class FunctionTest(test.TestCase):
       return a
 
     with ops.Graph().as_default():
-      var = variables.VariableV1([18.0])
+      var = variable_v1.VariableV1([18.0])
       call = MyIdentityFunc(var._ref())  # pylint: disable=protected-access
       self.assertEqual("MyIdentity", call.op.name)
       for cfg in _OptimizerOptions():
@@ -282,7 +284,7 @@ class FunctionTest(test.TestCase):
       tf_logging.info("cfg = %s", cfg)
       with session.Session(graph=g, config=cfg) as sess:
         out, = sess.run(dlogits, {logits: x, labels: y})
-      self.assertAllClose(out, np.exp(prob - y))
+      self.assertAllClose(out, np.exp(prob - y), rtol=1e-5)
 
   @test_util.disable_xla("b/124286351")  # No error is raised
   def testCustomGradientError(self):
@@ -417,11 +419,13 @@ class FunctionTest(test.TestCase):
     def Foo(x):
       y = logging_ops.Print(x, [], "Hello")
       with ops.control_dependencies([y]):
-        z = control_flow_ops.no_op()
+        z = gen_control_flow_ops.no_op()
       with ops.control_dependencies([z]):
         return x * 2
 
-    with ops.Graph().as_default(), self.cached_session():
+    # @function.Defun creates a non-partitioned function.  If we place this on
+    # the GPU then the inner `Print` op cannot be run.
+    with ops.Graph().as_default(), self.cached_session(use_gpu=False):
       z = Foo(constant_op.constant(3.0))
       self.assertAllEqual(z, 6.0)
 
@@ -448,7 +452,7 @@ class FunctionTest(test.TestCase):
     @function.Defun(dtypes.float32)
     def MyFn(x):
       with ops.control_dependencies(
-          [control_flow_ops.Assert(math_ops.less_equal(x, 10.0), [x])]):
+          [control_flow_assert.Assert(math_ops.less_equal(x, 10.0), [x])]):
         return array_ops.identity(x)
 
     with self.cached_session():
@@ -459,7 +463,7 @@ class FunctionTest(test.TestCase):
 
   @test_util.run_deprecated_v1
   def testWhileLoopCallsFunc(self):
-    with self.session(use_gpu=True) as sess:
+    with self.session():
 
       @function.Defun(dtypes.float32)
       def Times2(x):
@@ -472,7 +476,7 @@ class FunctionTest(test.TestCase):
         x2.set_shape([])
         return x2
 
-      loop = control_flow_ops.while_loop(lambda x: x < 1e5, Body, [1.0])
+      loop = while_loop.while_loop(lambda x: x < 1e5, Body, [1.0])
 
       ans = self.evaluate(loop)
       self.assertAllClose(ans, 131072.)
@@ -484,17 +488,16 @@ class FunctionTest(test.TestCase):
     @function.Defun(dtypes.int32)
     def AssertFail(x):
       # Assertion that always fails and does not have a data dependency on `x`.
-      assert_false = control_flow_ops.Assert(False, [42])
+      assert_false = control_flow_assert.Assert(False, [42])
       with ops.control_dependencies([assert_false]):
         return array_ops.identity(x)
 
     with ops.device("CPU"):
       pred = array_ops.placeholder(dtypes.bool)
       x = array_ops.placeholder(dtypes.int32)
-      cond = control_flow_ops.cond(pred, lambda: x + 1, lambda: AssertFail(x))
+      cond = tf_cond.cond(pred, lambda: x + 1, lambda: AssertFail(x))
       # pylint: disable=unnecessary-lambda
-      loop = control_flow_ops.while_loop(lambda y: pred,
-                                         lambda y: AssertFail(y), [x])
+      loop = while_loop.while_loop(lambda y: pred, lambda y: AssertFail(y), [x])
       # pylint: enable=unnecessary-lambda
 
     rewriter_config = rewriter_config_pb2.RewriterConfig(
@@ -588,14 +591,14 @@ class FunctionTest(test.TestCase):
           return constant_op.constant([1])
 
         _ = KwArgs.definition
-      with self.assertRaisesRegex(ValueError, "specified input types"):
+      with self.assertRaisesRegex(ValueError, "tf.function input types"):
 
         @function.Defun(dtypes.float32)
         def PlusMinusV2(a, b):
           return a + b, b - a
 
         _ = PlusMinusV2.definition
-      with self.assertRaisesRegex(ValueError, "specified input types"):
+      with self.assertRaisesRegex(ValueError, "tf.function input types"):
 
         @function.Defun(dtypes.float32, dtypes.float32, dtypes.float32)
         def PlusMinusV3(a, b):
@@ -623,20 +626,20 @@ class FunctionTest(test.TestCase):
       # pylint: disable=too-many-function-args
       # pylint: disable=unexpected-keyword-arg
       # pylint: disable=no-value-for-parameter
-      with self.assertRaisesRegex(ValueError, "arguments: 0"):
+      with self.assertRaisesRegex(ValueError, "Expected 0"):
         _ = Const(1)
-      with self.assertRaisesRegex(ValueError, "arguments: 0"):
+      with self.assertRaisesRegex(ValueError, "Expected 0"):
         _ = Const(1, 2)
 
-      with self.assertRaisesRegex(ValueError, "arguments: 1"):
+      with self.assertRaisesRegex(ValueError, "Expected 1"):
         _ = PlusOne()
       _ = PlusOne(1)
-      with self.assertRaisesRegex(ValueError, "arguments: 1"):
+      with self.assertRaisesRegex(ValueError, "Expected 1"):
         _ = PlusOne(1, 2)
 
-      with self.assertRaisesRegex(ValueError, "arguments: 2"):
+      with self.assertRaisesRegex(ValueError, "Expected 2"):
         _ = PlusMinus()
-      with self.assertRaisesRegex(ValueError, "arguments: 2"):
+      with self.assertRaisesRegex(ValueError, "Expected 2"):
         _ = PlusMinus(1)
       _ = PlusMinus(1, 2)
 
@@ -800,8 +803,7 @@ class FunctionTest(test.TestCase):
 
       @function.Defun()
       def Foo():
-        return control_flow_ops.while_loop(lambda i: i < 10, lambda i: i + x,
-                                           [0])
+        return while_loop.while_loop(lambda i: i < 10, lambda i: i + x, [0])
 
       y = Foo()
 
@@ -816,7 +818,7 @@ class FunctionTest(test.TestCase):
 
       @function.Defun(dtypes.bool)
       def Foo(pred):
-        return control_flow_ops.cond(pred, lambda: x, lambda: x + 1)
+        return tf_cond.cond(pred, lambda: x, lambda: x + 1)
 
       y = Foo(True)
       z = Foo(False)
@@ -869,7 +871,7 @@ class FunctionTest(test.TestCase):
     @function.Defun(
         shape_func=lambda op: [[1] + op.inputs[0].get_shape().as_list()])
     def Bar(x):
-      return array_ops.stack([x])
+      return array_ops_stack.stack([x])
 
     g = ops.Graph()
     with g.as_default():
@@ -1167,6 +1169,12 @@ class FunctionTest(test.TestCase):
 
 class FunctionsFromProtos(test.TestCase):
 
+  def stripInternalFunctionDefAnnotations(self, f_def):
+    result = function_pb2.FunctionDef()
+    result.CopyFrom(f_def)
+    result.attr.pop("_construction_context", None)
+    return result
+
   def expectFunctionsEqual(self, func, grad_func=None, new_func=None):
     if new_func is None:
       # Make a copy of func.definition to avoid any bugs masked by using the
@@ -1176,7 +1184,9 @@ class FunctionsFromProtos(test.TestCase):
       fdef = function_pb2.FunctionDef.FromString(serialized_fdef)
       new_func = function._from_definition(fdef, grad_func=grad_func)
     self.assertEqual(func.name, new_func.name)
-    self.assertEqual(func.definition, new_func.definition)
+    self.assertEqual(
+        self.stripInternalFunctionDefAnnotations(func.definition),
+        self.stripInternalFunctionDefAnnotations(new_func.definition))
     self.assertEqual(func.grad_func_name, new_func.grad_func_name)
     self.assertEqual(func.declared_input_types, new_func.declared_input_types)
     self.assertEqual(func.captured_inputs, new_func.captured_inputs)
@@ -1212,7 +1222,9 @@ class FunctionsFromProtos(test.TestCase):
     new_func = function._from_definition(Foo.definition)
 
     self.assertEqual(Foo.name, new_func.name)
-    self.assertEqual(Foo.definition, new_func.definition)
+    self.assertEqual(
+        self.stripInternalFunctionDefAnnotations(Foo.definition),
+        self.stripInternalFunctionDefAnnotations(new_func.definition))
     self.assertEqual(Foo.grad_func_name, new_func.grad_func_name)
 
     # Captured inputs are added as regular inputs to the function definition
@@ -1486,6 +1498,8 @@ class FunctionCaptureByValueTest(test.TestCase):
       self.assertAllEqual(y, [[12.0]])
 
 
+@test_util.run_all_without_tensor_float_32(
+    "Calls matmul in custom LSTM function")
 class UnrollLSTMTest(test.TestCase):
   BATCH_SIZE = 16
   LSTM_DIMS = 32
@@ -1514,7 +1528,7 @@ class UnrollLSTMTest(test.TestCase):
   def _BuildForward(self, weights, inp, mode="cell"):
 
     def Loop(cell, w, i):
-      x = array_ops.unstack(i, self.NUM_UNROLL)
+      x = array_ops_stack.unstack(i, self.NUM_UNROLL)
       m = array_ops.zeros_like(x[0])
       c = array_ops.zeros_like(x[0])
       for i in range(self.NUM_UNROLL):
@@ -1555,7 +1569,7 @@ class UnrollLSTMTest(test.TestCase):
 
       @function.Defun(dtypes.float32, dtypes.float32)
       def LSTMLoop10(weights, inp):
-        x = array_ops.unstack(inp, self.NUM_UNROLL)
+        x = array_ops_stack.unstack(inp, self.NUM_UNROLL)
         m = array_ops.zeros_like(x[0])
         c = array_ops.zeros_like(x[0])
         assert self.NUM_UNROLL % 10 == 0
@@ -1622,10 +1636,11 @@ class UnrollLSTMTest(test.TestCase):
       self.assertAllClose(d0, d3, rtol=1e-4, atol=1e-4)
 
 
-class FunctionInlineControlTest(test.TestCase):
+class FunctionInlineControlTest(test.TestCase, parameterized.TestCase):
 
+  @parameterized.parameters((True), (False))
   @test_util.disable_xla("XLA changes the names, breaking graph analysis")
-  def testFoo(self):
+  def testFoo(self, noinline):
     dtype = dtypes.float32
     cfg = config_pb2.ConfigProto(
         graph_options=config_pb2.GraphOptions(
@@ -1635,50 +1650,50 @@ class FunctionInlineControlTest(test.TestCase):
                 do_function_inlining=True,
                 do_constant_folding=True)))
     cell_func_call_pattern = re.compile(r"Cell[^/]*\(")
-    for noinline in [False, True]:
+    @function.Defun(dtype, noinline=noinline)
+    def Cell(v):
+      # If v is a vector [n, 1], x is a big square matrix.
+      x = math_ops.tanh(v + array_ops.transpose(v, [1, 0]))
+      return math_ops.reduce_sum(x, 1, keepdims=True)
 
-      @function.Defun(dtype, noinline=noinline)
-      def Cell(v):
-        # If v is a vector [n, 1], x is a big square matrix.
-        x = math_ops.tanh(v + array_ops.transpose(v, [1, 0]))
-        return math_ops.reduce_sum(x, 1, keepdims=True)
+    @function.Defun(dtype)
+    def Forward(x):
+      for _ in range(10):
+        # pylint: disable=cell-var-from-loop
+        x = Cell(x)
+      return math_ops.reduce_sum(x, [0, 1])
 
-      @function.Defun(dtype)
-      def Forward(x):
-        for _ in range(10):
-          # pylint: disable=cell-var-from-loop
-          x = Cell(x)
-        return math_ops.reduce_sum(x, [0, 1])
-
+    # Disabling this check on the ROCm platform, because it fails
+    # The failure might not be ROCm specific(see commit message for details)
+    if not test.is_built_with_rocm():
       self.assertEqual(noinline, Cell.definition.attr["_noinline"].b)
 
-      g = ops.Graph()
-      with g.as_default():
-        x = array_ops.placeholder(dtype)
-        y = Forward(x)
-        dx, = gradients_impl.gradients([y], [x])
+    g = ops.Graph()
+    with g.as_default():
+      x = array_ops.placeholder(dtype)
+      y = Forward(x)
+      dx, = gradients_impl.gradients([y], [x])
 
-      np.random.seed(321)
-      inp = np.random.uniform(-1, 1, [16, 1]).astype(np.float32)
-      run_metadata = config_pb2.RunMetadata()
-      with session.Session(graph=g, config=cfg) as sess:
-        ans = sess.run(
-            [y, dx], {x: inp},
-            run_metadata=run_metadata,
-            options=config_pb2.RunOptions(
-                trace_level=config_pb2.RunOptions.FULL_TRACE))
-        print(ans[0], np.sum(ans[1]))
-        self.assertAllClose(ans[0], 255.971, rtol=1e-3)
-        self.assertAllClose(np.sum(ans[1]), 13.0408, rtol=1e-3)
+    np.random.seed(321)
+    inp = np.random.uniform(-1, 1, [16, 1]).astype(np.float32)
+    run_metadata = config_pb2.RunMetadata()
+    with session.Session(graph=g, config=cfg) as sess:
+      ans = sess.run(
+          [y, dx], {x: inp},
+          run_metadata=run_metadata,
+          options=config_pb2.RunOptions(
+              trace_level=config_pb2.RunOptions.FULL_TRACE))
+      self.assertAllClose(ans[0], 255.971, rtol=1e-3)
+      self.assertAllClose(np.sum(ans[1]), 13.0408, rtol=1e-3)
 
-      def MetadataHasCell(run_metadata):
-        for dev_stats in run_metadata.step_stats.dev_stats:
-          for node_stats in dev_stats.node_stats:
-            if cell_func_call_pattern.search(node_stats.timeline_label):
-              return True
-        return False
+    def MetadataHasCell(run_metadata):
+      for dev_stats in run_metadata.step_stats.dev_stats:
+        for node_stats in dev_stats.node_stats:
+          if cell_func_call_pattern.search(node_stats.timeline_label):
+            return True
+      return False
 
-      self.assertEqual(MetadataHasCell(run_metadata), noinline)
+    self.assertEqual(MetadataHasCell(run_metadata), noinline)
 
 
 class ModuleFunctionTest(test.TestCase):

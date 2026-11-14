@@ -51,19 +51,39 @@ class KernelTestDelegateProviders {
 
   // Create a list of TfLite delegates based on the provided parameters
   // `params`.
-  std::vector<tools::TfLiteDelegatePtr> CreateAllDelegates(
-      const tools::ToolParams& params) const;
+  std::vector<tools::ProvidedDelegateList::ProvidedDelegate> CreateAllDelegates(
+      const tools::ToolParams& params) const {
+    tools::ProvidedDelegateList util;
+    return util.CreateAllRankedDelegates(params);
+  }
 
   // Similar to the above, but creating a list of TfLite delegates based on what
   // have been initialized (i.e. 'params_').
-  std::vector<tools::TfLiteDelegatePtr> CreateAllDelegates() const {
-    return CreateAllDelegates(params_);
+  std::vector<tools::ProvidedDelegateList::ProvidedDelegate>
+  CreateAllDelegates() const {
+    return delegate_list_util_.CreateAllRankedDelegates();
   }
+
+  // An option name to use Simple Memory Allocator.
+  static constexpr char kUseSimpleAllocator[] = "use_simple_allocator";
+  // An option name to provide acceleration test config file.
+  static constexpr char kAccelerationTestConfigPath[] =
+      "acceleration_test_config_path";
+
+  // An option name to allow fp16 precision for fp32 computation.
+  static constexpr char kAllowFp16PrecisionForFp32[] =
+      "allow_fp16_precision_for_fp32";
+
+  // An option name to provide directory path for TFLite model dump.
+  static constexpr char kDumpTFLiteModelDir[] = "dump_tflite_model_dir";
 
  private:
   // Contain delegate-related parameters that are initialized from command-line
   // flags.
   tools::ToolParams params_;
+
+  // A helper to create TfLite delegates.
+  tools::ProvidedDelegateList delegate_list_util_;
 };
 
 }  // namespace tflite

@@ -20,6 +20,9 @@ limitations under the License.
 
 #include <string>
 
+// WARNING: this header file is DEPRECATED.
+// See https://developer.android.com/ndk/guides/neuralnetworks/migration-guide.
+
 typedef struct AHardwareBuffer AHardwareBuffer;
 
 // NN api types based on NNAPI header file
@@ -42,8 +45,9 @@ enum {
   ANEURALNETWORKS_TENSOR_INT32 = 4,
   ANEURALNETWORKS_TENSOR_QUANT8_ASYMM = 5,
   ANEURALNETWORKS_BOOL = 6,
-  ANEURALNETWORKS_TENSOR_BOOL8 = 9,
   ANEURALNETWORKS_TENSOR_QUANT16_SYMM = 7,
+  ANEURALNETWORKS_TENSOR_FLOAT16 = 8,
+  ANEURALNETWORKS_TENSOR_BOOL8 = 9,
   ANEURALNETWORKS_TENSOR_QUANT8_SYMM_PER_CHANNEL = 11,
   ANEURALNETWORKS_TENSOR_QUANT8_SYMM = 13,
   ANEURALNETWORKS_TENSOR_QUANT8_ASYMM_SIGNED = 14,
@@ -104,6 +108,7 @@ enum {
   ANEURALNETWORKS_GATHER = 51,
   ANEURALNETWORKS_GREATER = 53,
   ANEURALNETWORKS_GREATER_EQUAL = 54,
+  ANEURALNETWORKS_GROUPED_CONV_2D = 55,
   ANEURALNETWORKS_LESS = 58,
   ANEURALNETWORKS_LESS_EQUAL = 59,
   ANEURALNETWORKS_LOG = 60,
@@ -144,6 +149,10 @@ enum {
   ANEURALNETWORKS_HARD_SWISH = 99,
   ANEURALNETWORKS_FILL = 100,
   ANEURALNETWORKS_RANK = 101,
+  ANEURALNETWORKS_BATCH_MATMUL = 102,
+  ANEURALNETWORKS_PACK = 103,
+  ANEURALNETWORKS_MIRROR_PAD = 104,
+  ANEURALNETWORKS_REVERSE = 105,
 };
 
 /**
@@ -227,6 +236,41 @@ enum {
   ANEURALNETWORKS_PRIORITY_HIGH = 110,
   ANEURALNETWORKS_PRIORITY_DEFAULT = ANEURALNETWORKS_PRIORITY_MEDIUM,
 };
+
+/**
+ * NNAPI feature levels.
+ *
+ * Each update of the NNAPI specification yields a new NNAPI feature level enum
+ * value. NNAPI feature level corrseponds to an NNAPI specification version that
+ * a driver and/or the NNAPI runtime can implement.
+ */
+enum {
+  /** NNAPI specification available in Android O-MR1, Android NNAPI feature
+     level 1 */
+  ANEURALNETWORKS_FEATURE_LEVEL_1 = 27,
+  /** NNAPI specification available in Android P, Android NNAPI feature level 2
+   */
+  ANEURALNETWORKS_FEATURE_LEVEL_2 = 28,
+  /** NNAPI specification available in Android Q, Android NNAPI feature level 3
+   */
+  ANEURALNETWORKS_FEATURE_LEVEL_3 = 29,
+  /** NNAPI specification available in Android R, Android NNAPI feature level 4
+   */
+  ANEURALNETWORKS_FEATURE_LEVEL_4 = 30,
+  /**
+   * NNAPI specification available in Android S, Android NNAPI feature level 5.
+   * After Android S, the NNAPI specification can be updated between Android
+   * API releases.
+   */
+  ANEURALNETWORKS_FEATURE_LEVEL_5 = 31,
+  /** Android NNAPI feature level 6 */
+  ANEURALNETWORKS_FEATURE_LEVEL_6 = 1000006,
+  /** Android NNAPI feature level 7 */
+  ANEURALNETWORKS_FEATURE_LEVEL_7 = 1000007,
+  /** Android NNAPI feature level 8 */
+  ANEURALNETWORKS_FEATURE_LEVEL_8 = 1000008,
+};
+
 /**
  * ANeuralNetworksMemoryDesc is an opaque type that represents a memory
  * descriptor.
@@ -298,9 +342,9 @@ typedef struct ANeuralNetworksMemory ANeuralNetworksMemory;
  * mathematical operations that constitute the model.
  *
  * <p>The model will be built by calling<ul>
- * <li>{@link ANeuralNetworksModel_create},</li>
- * <li>{@link ANeuralNetworksModel_addOperation},</li>
- * <li>{@link ANeuralNetworksModel_addOperand},</li>
+ * <li>{@link ANeuralNetworksModel_create @/link},</li>
+ * <li>{@link ANeuralNetworksModel_addOperation @/link},</li>
+ * <li>{@link ANeuralNetworksModel_addOperand @/link},</li>
  * </ul>
  *
  * A model is completed by calling {@link ANeuralNetworksModel_finish}.
@@ -323,13 +367,14 @@ typedef struct ANeuralNetworksModel ANeuralNetworksModel;
  *
  * <p>To use:<ul>
  *    <li>Create a new compilation instance by calling the
- *        {@link ANeuralNetworksCompilation_create} function.</li>
+ *        {@link ANeuralNetworksCompilation_create @/link} function.</li>
  *    <li>Perform the compilation with {@link
- * ANeuralNetworksCompilation_start}.</li> <li>Wait for the compilation to
- * complete with {@link ANeuralNetworksCompilation_wait}.</li> <li>Use the
- * compilation as many times as needed with {@link
- * ANeuralNetworksExecution_create}.</li> <li>Destroy the compilation with
- * {@link ANeuralNetworksCompilation_free} once all executions using the
+ * ANeuralNetworksCompilation_start @/link}.</li> <li>Wait for the compilation
+ * to complete with {@link ANeuralNetworksCompilation_wait @/link}.</li> <li>Use
+ * the compilation as many times as needed with {@link
+ * ANeuralNetworksExecution_create @/link}.</li> <li>Destroy the compilation
+ * with
+ * {@link ANeuralNetworksCompilation_free @/link} once all executions using the
  * compilation have completed.</li></ul></p>
  *
  * <p>A compilation cannot be modified once {@link
@@ -354,18 +399,18 @@ typedef struct ANeuralNetworksCompilation ANeuralNetworksCompilation;
  *
  * <p>To use:<ul>
  *    <li>Create a new execution instance by calling the
- *        {@link ANeuralNetworksExecution_create} function.</li>
+ *        {@link ANeuralNetworksExecution_create @/link} function.</li>
  *    <li>Associate data to the model inputs with
- *        {@link ANeuralNetworksExecution_setInput} or
- *        {@link ANeuralNetworksExecution_setInputFromMemory}.</li>
+ *        {@link ANeuralNetworksExecution_setInput @/link} or
+ *        {@link ANeuralNetworksExecution_setInputFromMemory @/link}.</li>
  *    <li>Associate output buffers to the model outputs with
- *        {@link ANeuralNetworksExecution_setOutput} or
- *        {@link ANeuralNetworksExecution_setOutputFromMemory}.</li>
+ *        {@link ANeuralNetworksExecution_setOutput @/link} or
+ *        {@link ANeuralNetworksExecution_setOutputFromMemory @/link}.</li>
  *    <li>Apply the model with {@link
- * ANeuralNetworksExecution_startCompute}.</li> <li>Wait for the execution to
- * complete with {@link ANeuralNetworksExecution_wait}.</li> <li>Destroy the
- * execution with
- *        {@link ANeuralNetworksExecution_free}.</li></ul></p>
+ * ANeuralNetworksExecution_startCompute @/link}.</li> <li>Wait for the
+ * execution to complete with {@link ANeuralNetworksExecution_wait @/link}.</li>
+ * <li>Destroy the execution with
+ *        {@link ANeuralNetworksExecution_free @/link}.</li></ul></p>
  *
  * <p>An execution cannot be modified once {@link
  * ANeuralNetworksExecution_start} has been called on it.</p>
@@ -467,6 +512,65 @@ typedef int32_t ANeuralNetworksOperationType;
  * Available since API level 29.
  */
 typedef struct ANeuralNetworksDevice ANeuralNetworksDevice;
+
+/**
+ * Diagnostic result codes.
+ */
+typedef enum {
+  ANNDIAG_NO_ERROR = 0,
+
+  /**
+   * Failure caused by failure to load support library driver.
+   */
+  ANNDIAG_FAILED_TO_LOAD_SL = 1,
+
+  /**
+   * Failure caused by failure to register HAL service.
+   */
+  ANNDIAG_FAILED_TO_REGISTER_SERVICE = 2,
+
+  /**
+   * General failure.
+   */
+  ANNDIAG_GENERAL_ERROR = 3,
+
+  /**
+   * Invalid argument
+   */
+  ANNDIAG_INVALID_ARGUMENT = 4,
+} ANeuralNetworksDiagnosticResultCode;
+
+/**
+ * Diagnostic data class.
+ */
+typedef enum {
+  ANNDIAG_DATA_CLASS_UNKNOWN = 0,
+  ANNDIAG_DATA_CLASS_OTHER = 1,
+  ANNDIAG_DATA_CLASS_FLOAT32 = 2,
+  ANNDIAG_DATA_CLASS_FLOAT16 = 3,
+  ANNDIAG_DATA_CLASS_QUANT = 4,
+  ANNDIAG_DATA_CLASS_MIXED = 5
+} ANeuralNetworksDiagnosticDataClass;
+
+/**
+ * Diagnostic execution mode.
+ */
+typedef enum {
+  ANNDIAG_EXECUTION_MODE_UNKNOWN = 0,
+  ANNDIAG_EXECUTION_MODE_ASYNC = 1,
+  ANNDIAG_EXECUTION_MODE_SYNC = 2,
+  ANNDIAG_EXECUTION_MODE_BURST = 3,
+  ANNDIAG_EXECUTION_MODE_ASYNC_WITH_DEPS = 4,
+} ANeuralNetworksDiagnosticExecutionMode;
+
+typedef struct ANeuralNetworksDiagnosticCompilationInfo
+    ANeuralNetworksDiagnosticCompilationInfo;
+typedef struct ANeuralNetworksDiagnosticExecutionInfo
+    ANeuralNetworksDiagnosticExecutionInfo;
+typedef void (*ANeuralNetworksDiagnosticCompilationFinishedCallback)(
+    const void* context, const ANeuralNetworksDiagnosticCompilationInfo* info);
+typedef void (*ANeuralNetworksDiagnosticExecutionFinishedCallback)(
+    const void* context, const ANeuralNetworksDiagnosticExecutionInfo* info);
 
 // nn api function types
 
@@ -677,7 +781,7 @@ typedef void (*ANeuralNetworksMemoryDesc_free_fn)(
 
 typedef int (*ANeuralNetworksMemoryDesc_addInputRole_fn)(
     ANeuralNetworksMemoryDesc* desc,
-    const ANeuralNetworksCompilation* compilation, int32_t index,
+    const ANeuralNetworksCompilation* compilation, uint32_t index,
     float frequency);
 
 typedef int (*ANeuralNetworksMemoryDesc_addOutputRole_fn)(
@@ -707,5 +811,110 @@ typedef int (*ANeuralNetworksExecution_startComputeWithDependencies_fn)(
     ANeuralNetworksExecution* execution,
     const ANeuralNetworksEvent* const* dependencies, uint32_t num_dependencies,
     uint64_t duration, ANeuralNetworksEvent** event);
+
+typedef int (*ANeuralNetworksExecution_enableInputAndOutputPadding_fn)(
+    ANeuralNetworksExecution* execution, bool enable);
+
+typedef int (*ANeuralNetworksExecution_setReusable_fn)(
+    ANeuralNetworksExecution* execution, bool reusable);
+
+typedef int64_t (*ANeuralNetworks_getRuntimeFeatureLevel_fn)();
+
+typedef int32_t (*SL_ANeuralNetworksDiagnosticCompilationInfo_getSessionId_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef int64_t (
+    *SL_ANeuralNetworksDiagnosticCompilationInfo_getNnApiVersion_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef const uint8_t* (
+    *SL_ANeuralNetworksDiagnosticCompilationInfo_getModelArchHash_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef const char* (
+    *SL_ANeuralNetworksDiagnosticCompilationInfo_getDeviceIds_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef int32_t (*SL_ANeuralNetworksDiagnosticCompilationInfo_getErrorCode_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef ANeuralNetworksDiagnosticDataClass (
+    *SL_ANeuralNetworksDiagnosticCompilationInfo_getInputDataClass_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef ANeuralNetworksDiagnosticDataClass (
+    *SL_ANeuralNetworksDiagnosticCompilationInfo_getOutputDataClass_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef uint64_t (
+    *SL_ANeuralNetworksDiagnosticCompilationInfo_getCompilationTimeNanos_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef bool (*SL_ANeuralNetworksDiagnosticCompilationInfo_isCachingEnabled_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef bool (
+    *SL_ANeuralNetworksDiagnosticCompilationInfo_isControlFlowUsed_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef bool (
+    *SL_ANeuralNetworksDiagnosticCompilationInfo_areDynamicTensorsUsed_fn)(
+    const ANeuralNetworksDiagnosticCompilationInfo* diagnosticCompilationInfo);
+
+typedef int32_t (*SL_ANeuralNetworksDiagnosticExecutionInfo_getSessionId_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef int64_t (*SL_ANeuralNetworksDiagnosticExecutionInfo_getNnApiVersion_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef const uint8_t* (
+    *SL_ANeuralNetworksDiagnosticExecutionInfo_getModelArchHash_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef const char* (
+    *SL_ANeuralNetworksDiagnosticExecutionInfo_getDeviceIds_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef ANeuralNetworksDiagnosticExecutionMode (
+    *SL_ANeuralNetworksDiagnosticExecutionInfo_getExecutionMode_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef ANeuralNetworksDiagnosticDataClass (
+    *SL_ANeuralNetworksDiagnosticExecutionInfo_getInputDataClass_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef ANeuralNetworksDiagnosticDataClass (
+    *SL_ANeuralNetworksDiagnosticExecutionInfo_getOutputDataClass_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef uint32_t (*SL_ANeuralNetworksDiagnosticExecutionInfo_getErrorCode_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef uint64_t (
+    *SL_ANeuralNetworksDiagnosticExecutionInfo_getRuntimeExecutionTimeNanos_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef uint64_t (
+    *SL_ANeuralNetworksDiagnosticExecutionInfo_getDriverExecutionTimeNanos_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef uint64_t (
+    *SL_ANeuralNetworksDiagnosticExecutionInfo_getHardwareExecutionTimeNanos_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef bool (*SL_ANeuralNetworksDiagnosticExecutionInfo_isCachingEnabled_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef bool (*SL_ANeuralNetworksDiagnosticExecutionInfo_isControlFlowUsed_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef bool (
+    *SL_ANeuralNetworksDiagnosticExecutionInfo_areDynamicTensorsUsed_fn)(
+    const ANeuralNetworksDiagnosticExecutionInfo* diagnosticExecutionInfo);
+
+typedef void (*SL_ANeuralNetworksDiagnostic_registerCallbacks_fn)(
+    ANeuralNetworksDiagnosticCompilationFinishedCallback compilationCallback,
+    ANeuralNetworksDiagnosticExecutionFinishedCallback executionCallback,
+    void* callbackContext);
 
 #endif  // TENSORFLOW_LITE_NNAPI_NEURALNETWORKSTYPES_H_

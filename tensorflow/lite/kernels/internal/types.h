@@ -1,4 +1,4 @@
-/* Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,8 +19,40 @@ limitations under the License.
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
+#include <type_traits>
 
 #include "tensorflow/lite/kernels/internal/compatibility.h"
+#include "tensorflow/lite/kernels/internal/runtime_shape.h"
+#include "tensorflow/lite/types/half.h"
+
+namespace std {
+template <>
+class numeric_limits<tflite::half> {
+ public:
+  static constexpr bool is_specialized =
+      true;  // NOLINT(readability-identifier-naming)
+  static constexpr tflite::half min() noexcept {
+    return tflite::half::smallest_normal();
+  }
+  static constexpr tflite::half max() noexcept { return tflite::half::max(); }
+  static constexpr tflite::half lowest() noexcept {
+    return tflite::half::min();
+  }
+  static constexpr tflite::half epsilon() noexcept {
+    return tflite::half::epsilon();
+  }
+  static constexpr tflite::half quiet_NaN() noexcept {
+#if TFLITE_ARCH_FLOAT16
+    return tflite::half(__builtin_nanf(""));
+#else
+    return tflite::half::from_bits(0x7e00);
+#endif
+  }
+  static constexpr bool is_signed =
+      true;  // NOLINT(readability-identifier-naming)
+};
+}  // namespace std
 
 namespace tflite {
 
@@ -32,6 +64,11 @@ enum class FusedActivationFunctionType : uint8_t {
 };
 enum class PaddingType : uint8_t { kNone, kSame, kValid };
 
+// Empty struct to allow using a distinct type for Int4.
+struct Int4 {
+  uint8_t val;
+};
+
 struct PaddingValues {
   int16_t width;
   int16_t height;
@@ -41,6 +78,20 @@ struct PaddingValues {
   int16_t width_offset;
   // Same as width_offset except it's over the height dimension.
   int16_t height_offset;
+};
+
+struct Padding3DValues {
+  int16_t width;
+  int16_t height;
+  int16_t depth;
+  // offset is used for calculating "remaining" padding, for example, `width`
+  // is 1 and `width_offset` is 1, so padding_left is 1 while padding_right is
+  // 1 + 1 = 2.
+  int16_t width_offset;
+  // Same as width_offset except it's over the height dimension.
+  int16_t height_offset;
+  // Same as width_offset except it's over the depth dimension.
+  int16_t depth_offset;
 };
 
 // This enumeration allows for non-default formats for the weights array
@@ -125,219 +176,37 @@ inline bool operator==(const QuantizationParams& qp1,
   return qp1.zero_point == qp2.zero_point && qp1.scale == qp2.scale;
 }
 
-template <int N>
-struct Dims {
-  int sizes[N];
-  int strides[N];
+// Quantization parameters for each channel, determining the mapping of
+// quantized values to real values. See QuantizationParams for a single set of
+// parameters per tensor. This has one parameters set per each channel.
+//
+// The correspondence is as follows:
+//
+//   real_value = scale[channel] * (quantized_value - zero_point[channel]);
+//
+struct PerChannelQuantizationParams {
+  // The following members typically point to the corresponding members of a
+  // TfLiteAffineQuantization struct.
+  const float* scale;
+  const int32_t* zero_point;
+  int32_t quantized_dimension;
 };
-
-class RuntimeShape {
- public:
-  // Shapes with dimensions up to 5 are stored directly in the structure, while
-  // larger shapes are separately allocated.
-  static constexpr int kMaxSmallSize = 5;
-
-  RuntimeShape& operator=(RuntimeShape const&) = delete;
-
-  RuntimeShape() : size_(0) {}
-
-  explicit RuntimeShape(int dimensions_count) : size_(dimensions_count) {
-    if (dimensions_count > kMaxSmallSize) {
-#ifdef TF_LITE_STATIC_MEMORY
-      TFLITE_CHECK(false && "No shape resizing supported on this platform");
-#else  // TF_LITE_STATIC_MEMORY
-      dims_pointer_ = new int32_t[dimensions_count];
-#endif  // TF_LITE_STATIC_MEMORY
-    }
-  }
-
-  RuntimeShape(int shape_size, int32_t value) : size_(0) {
-    Resize(shape_size);
-    for (int i = 0; i < shape_size; ++i) {
-      SetDim(i, value);
-    }
-  }
-
-  RuntimeShape(int dimensions_count, const int32_t* dims_data) : size_(0) {
-    ReplaceWith(dimensions_count, dims_data);
-  }
-
-  RuntimeShape(const std::initializer_list<int> init_list) : size_(0) {
-    BuildFrom(init_list);
-  }
-
-  // Avoid using this constructor.  We should be able to delete it when C++17
-  // rolls out.
-  RuntimeShape(RuntimeShape const& other) : size_(other.DimensionsCount()) {
-    if (size_ > kMaxSmallSize) {
-      dims_pointer_ = new int32_t[size_];
-    }
-    std::memcpy(DimsData(), other.DimsData(), sizeof(int32_t) * size_);
-  }
-
-  bool operator==(const RuntimeShape& comp) const {
-    return this->size_ == comp.size_ &&
-           std::memcmp(DimsData(), comp.DimsData(), size_ * sizeof(int32_t)) ==
-               0;
-  }
-
-  ~RuntimeShape() {
-    if (size_ > kMaxSmallSize) {
-#ifdef TF_LITE_STATIC_MEMORY
-      TFLITE_CHECK(false && "No shape resizing supported on this platform");
-#else  // TF_LITE_STATIC_MEMORY
-      delete[] dims_pointer_;
-#endif  // TF_LITE_STATIC_MEMORY
-    }
-  }
-
-  inline int32_t DimensionsCount() const { return size_; }
-  inline int32_t Dims(int i) const {
-    TFLITE_DCHECK_GE(i, 0);
-    TFLITE_DCHECK_LT(i, size_);
-    return size_ > kMaxSmallSize ? dims_pointer_[i] : dims_[i];
-  }
-  inline void SetDim(int i, int32_t val) {
-    TFLITE_DCHECK_GE(i, 0);
-    TFLITE_DCHECK_LT(i, size_);
-    if (size_ > kMaxSmallSize) {
-      dims_pointer_[i] = val;
-    } else {
-      dims_[i] = val;
-    }
-  }
-
-  inline int32_t* DimsData() {
-    return size_ > kMaxSmallSize ? dims_pointer_ : dims_;
-  }
-  inline const int32_t* DimsData() const {
-    return size_ > kMaxSmallSize ? dims_pointer_ : dims_;
-  }
-  // The caller must ensure that the shape is no bigger than 5-D.
-  inline const int32_t* DimsDataUpTo5D() const { return dims_; }
-
-  inline void Resize(int dimensions_count) {
-    if (size_ > kMaxSmallSize) {
-#ifdef TF_LITE_STATIC_MEMORY
-      TFLITE_CHECK(false && "No shape resizing supported on this platform");
-#else  // TF_LITE_STATIC_MEMORY
-      delete[] dims_pointer_;
-#endif  // TF_LITE_STATIC_MEMORY
-    }
-    size_ = dimensions_count;
-    if (dimensions_count > kMaxSmallSize) {
-#ifdef TF_LITE_STATIC_MEMORY
-      TFLITE_CHECK(false && "No shape resizing supported on this platform");
-#else  // TF_LITE_STATIC_MEMORY
-      dims_pointer_ = new int32_t[dimensions_count];
-#endif  // TF_LITE_STATIC_MEMORY
-    }
-  }
-
-  inline void ReplaceWith(int dimensions_count, const int32_t* dims_data) {
-    Resize(dimensions_count);
-    int32_t* dst_dims = DimsData();
-    std::memcpy(dst_dims, dims_data, dimensions_count * sizeof(int32_t));
-  }
-
-  template <typename T>
-  inline void BuildFrom(const T& src_iterable) {
-    const int dimensions_count =
-        std::distance(src_iterable.begin(), src_iterable.end());
-    Resize(dimensions_count);
-    int32_t* data = DimsData();
-    for (auto it : src_iterable) {
-      *data = it;
-      ++data;
-    }
-  }
-
-  // This will probably be factored out. Old code made substantial use of 4-D
-  // shapes, and so this function is used to extend smaller shapes. Note that
-  // (a) as Dims<4>-dependent code is eliminated, the reliance on this should be
-  // reduced, and (b) some kernels are stricly 4-D, but then the shapes of their
-  // inputs should already be 4-D, so this function should not be needed.
-  inline static RuntimeShape ExtendedShape(int new_shape_size,
-                                           const RuntimeShape& shape) {
-    return RuntimeShape(new_shape_size, shape, 1);
-  }
-
-  inline void BuildFrom(const std::initializer_list<int> init_list) {
-    BuildFrom<const std::initializer_list<int>>(init_list);
-  }
-
-  // Returns the total count of elements, that is the size when flattened into a
-  // vector.
-  inline int FlatSize() const {
-    int buffer_size = 1;
-    const int* dims_data = reinterpret_cast<const int*>(DimsData());
-    for (int i = 0; i < size_; i++) {
-      buffer_size *= dims_data[i];
-    }
-    return buffer_size;
-  }
-
-  bool operator!=(const RuntimeShape& comp) const { return !((*this) == comp); }
-
- private:
-  // For use only by ExtendedShape(), written to guarantee (return-value) copy
-  // elision in C++17.
-  // This creates a shape padded to the desired size with the specified value.
-  RuntimeShape(int new_shape_size, const RuntimeShape& shape, int pad_value)
-      : size_(0) {
-    // If the following check fails, it is likely because a 4D-only kernel is
-    // being used with an array of larger dimension count.
-    TFLITE_CHECK_GE(new_shape_size, shape.DimensionsCount());
-    Resize(new_shape_size);
-    const int size_increase = new_shape_size - shape.DimensionsCount();
-    for (int i = 0; i < size_increase; ++i) {
-      SetDim(i, pad_value);
-    }
-    std::memcpy(DimsData() + size_increase, shape.DimsData(),
-                sizeof(int32_t) * shape.DimensionsCount());
-  }
-
-  int32_t size_;
-  union {
-    int32_t dims_[kMaxSmallSize];
-    int32_t* dims_pointer_;
-  };
-};
-
-// Converts inference-style shape to legacy tflite::Dims<4>.
-inline tflite::Dims<4> ToRuntimeDims(const tflite::RuntimeShape& array_shape) {
-  tflite::Dims<4> result;
-  const int dimensions_count = array_shape.DimensionsCount();
-  TFLITE_CHECK_LE(dimensions_count, 4);
-  int cum_prod = 1;
-  for (int i = 0; i < 4; i++) {
-    const int new_dim =
-        (i < dimensions_count) ? array_shape.Dims(dimensions_count - 1 - i) : 1;
-    result.sizes[i] = new_dim;
-    result.strides[i] = cum_prod;
-    cum_prod *= new_dim;
-  }
-  return result;
-}
-
-// TODO(b/80418076): Move to legacy ops file, update invocations.
-inline RuntimeShape DimsToShape(const tflite::Dims<4>& dims) {
-  return RuntimeShape(
-      {dims.sizes[3], dims.sizes[2], dims.sizes[1], dims.sizes[0]});
-}
 
 // Gets next index to iterate through a multidimensional array.
-inline bool NextIndex(const int num_dims, const int* dims, int* current) {
+template <typename IndexType = int>
+inline bool NextIndex(const int num_dims, const int* dims, IndexType* current) {
   if (num_dims == 0) {
     return false;
   }
   TFLITE_DCHECK(dims != nullptr);
   TFLITE_DCHECK(current != nullptr);
+  for (int i = 0; i < num_dims; ++i) {
+    TFLITE_DCHECK_GE(dims[i], 0);
+  }
   int carry = 1;
   for (int idx = num_dims - 1; idx >= 0; --idx) {
-    int current_val = current[idx] + carry;
-    TFLITE_DCHECK_GE(dims[idx], current_val);
-    if (dims[idx] == current_val) {
+    IndexType current_val = current[idx] + carry;
+    if (current_val >= dims[idx]) {
       current[idx] = 0;
     } else {
       current[idx] = current_val;
@@ -382,31 +251,26 @@ inline size_t ReducedOutputOffset(const int num_dims, const int* dims,
   return offset;
 }
 
-inline int Offset(const RuntimeShape& shape, int i0, int i1, int i2, int i3) {
-  TFLITE_DCHECK_EQ(shape.DimensionsCount(), 4);
-  const int* dims_data = reinterpret_cast<const int*>(shape.DimsDataUpTo5D());
-  TFLITE_DCHECK(i0 >= 0 && i0 < dims_data[0]);
-  TFLITE_DCHECK(i1 >= 0 && i1 < dims_data[1]);
-  TFLITE_DCHECK(i2 >= 0 && i2 < dims_data[2]);
-  TFLITE_DCHECK(i3 >= 0 && i3 < dims_data[3]);
-  return ((i0 * dims_data[1] + i1) * dims_data[2] + i2) * dims_data[3] + i3;
-}
+// Since tensors with '0' in their shape are valid in TF, these offset functions
+// allow that as long as the corresponding index is also 0. It is upto the
+// calling ops to ensure that they perform verification checks on tensor shapes
+// if they don't support a particular behavior.
 
 inline int Offset(const Dims<4>& dims, int i0, int i1, int i2, int i3) {
-  TFLITE_DCHECK(i0 >= 0 && i0 < dims.sizes[0]);
-  TFLITE_DCHECK(i1 >= 0 && i1 < dims.sizes[1]);
-  TFLITE_DCHECK(i2 >= 0 && i2 < dims.sizes[2]);
-  TFLITE_DCHECK(i3 >= 0 && i3 < dims.sizes[3]);
+  TFLITE_DCHECK((i0 == 0 && dims.sizes[0] == 0) ||
+                (i0 >= 0 && i0 < dims.sizes[0]));
+  TFLITE_DCHECK((i1 == 0 && dims.sizes[1] == 0) ||
+                (i1 >= 0 && i1 < dims.sizes[1]));
+  TFLITE_DCHECK((i2 == 0 && dims.sizes[2] == 0) ||
+                (i2 >= 0 && i2 < dims.sizes[2]));
+  TFLITE_DCHECK((i3 == 0 && dims.sizes[3] == 0) ||
+                (i3 >= 0 && i3 < dims.sizes[3]));
   return i0 * dims.strides[0] + i1 * dims.strides[1] + i2 * dims.strides[2] +
          i3 * dims.strides[3];
 }
 
 inline int Offset(const Dims<4>& dims, int* index) {
   return Offset(dims, index[0], index[1], index[2], index[3]);
-}
-
-inline int Offset(const RuntimeShape& shape, int* index) {
-  return Offset(shape, index[0], index[1], index[2], index[3]);
 }
 
 // Get array size, DCHECKing that the dim index is in range.
@@ -438,7 +302,7 @@ int MatchingArraySize(const ArrayType1& array1, int index1,
 inline int MatchingDim(const RuntimeShape& shape1, int index1,
                        const RuntimeShape& shape2, int index2) {
   TFLITE_DCHECK_EQ(shape1.Dims(index1), shape2.Dims(index2));
-  return shape1.Dims(index1);
+  return std::min(shape1.Dims(index1), shape2.Dims(index2));
 }
 
 template <typename... Args>
@@ -568,6 +432,58 @@ inline int MatchingFlatSize(const Dims<N>& dims, const Dims<N>& check_dims_0,
     TFLITE_DCHECK_EQ(ArraySize(dims, i), ArraySize(check_dims_0, i));
   }
   return MatchingFlatSize(dims, check_dims_1, check_dims_2, check_dims_3);
+}
+
+// Flat size calculation, checking if their extended shapes match.
+inline int MatchingExtendedShapeFlatSize(const RuntimeShape& shape,
+                                         const RuntimeShape& check_shape_0) {
+  const int shape_dims = shape.DimensionsCount();
+  const int check_shape_0_dims = check_shape_0.DimensionsCount();
+  const int min_dims = std::min(shape_dims, check_shape_0_dims);
+
+  for (int i = 0; i < min_dims; ++i) {
+    TFLITE_DCHECK_EQ(shape.Dims(shape_dims - 1 - i),
+                     check_shape_0.Dims(check_shape_0_dims - 1 - i));
+  }
+  for (int i = min_dims; i < shape_dims; ++i) {
+    TFLITE_DCHECK_EQ(shape.Dims(shape_dims - 1 - i), 1);
+  }
+  for (int i = min_dims; i < check_shape_0_dims; ++i) {
+    TFLITE_DCHECK_EQ(check_shape_0.Dims(check_shape_0_dims - 1 - i), 1);
+  }
+  return shape.FlatSize();
+}
+
+inline int MatchingExtendedShapeFlatSize(const RuntimeShape& shape,
+                                         const RuntimeShape& check_shape_0,
+                                         const RuntimeShape& check_shape_1) {
+  const int flat_size = MatchingExtendedShapeFlatSize(shape, check_shape_0);
+  TFLITE_DCHECK_EQ(MatchingExtendedShapeFlatSize(shape, check_shape_1),
+                   flat_size);
+  return flat_size;
+}
+
+inline int MatchingExtendedShapeFlatSize(const RuntimeShape& shape,
+                                         const RuntimeShape& check_shape_0,
+                                         const RuntimeShape& check_shape_1,
+                                         const RuntimeShape& check_shape_2) {
+  const int flat_size = MatchingExtendedShapeFlatSize(shape, check_shape_0);
+  TFLITE_DCHECK_EQ(
+      MatchingExtendedShapeFlatSize(shape, check_shape_1, check_shape_2),
+      flat_size);
+  return flat_size;
+}
+
+inline int MatchingExtendedShapeFlatSize(const RuntimeShape& shape,
+                                         const RuntimeShape& check_shape_0,
+                                         const RuntimeShape& check_shape_1,
+                                         const RuntimeShape& check_shape_2,
+                                         const RuntimeShape& check_shape_3) {
+  const int flat_size = MatchingExtendedShapeFlatSize(shape, check_shape_0);
+  TFLITE_DCHECK_EQ(MatchingExtendedShapeFlatSize(shape, check_shape_1,
+                                                 check_shape_2, check_shape_3),
+                   flat_size);
+  return flat_size;
 }
 
 // Data is required to be contiguous, and so many operators can use either the
@@ -782,6 +698,9 @@ struct ArithmeticParams {
   // int64_t activation params.
   int64_t int64_activation_min;
   int64_t int64_activation_max;
+  // int16_t activation params.
+  int16_t int16_activation_min;
+  int16_t int16_activation_max;
 
   // Processed output dimensions.
   // Let input "a" be the one that broadcasts in the faster-changing dimension.
@@ -796,10 +715,10 @@ struct ArithmeticParams {
 };
 
 struct ConcatenationParams {
-  int8_t axis;
+  int32_t axis;
   const int32_t* input_zeropoint;
   const float* input_scale;
-  uint16_t inputs_count;
+  int32_t inputs_count;
   int32_t output_zeropoint;
   float output_scale;
 };
@@ -839,6 +758,21 @@ struct ConvParams {
   float float_activation_min;
   float float_activation_max;
 };
+
+struct Conv3DParams {
+  Padding3DValues padding_values;
+  int stride_width;
+  int stride_height;
+  int stride_depth;
+  int dilation_width;
+  int dilation_height;
+  int dilation_depth;
+  // float activation params.
+  float float_activation_min;
+  float float_activation_max;
+};
+
+typedef Conv3DParams Conv3DTransposeParams;
 
 struct DepthToSpaceParams {
   int32_t block_size;
@@ -907,6 +841,7 @@ struct FullyConnectedParams {
 
 struct GatherParams {
   int16_t axis;
+  int16_t batch_dims;
 };
 
 struct L2NormalizationParams {
@@ -973,9 +908,9 @@ struct PackParams {
 
 struct PadParams {
   int8_t left_padding_count;
-  int32_t left_padding[4];
+  int32_t left_padding[5];
   int8_t right_padding_count;
-  int32_t right_padding[4];
+  int32_t right_padding[5];
   ResizingCategory resizing_category;
 };
 
@@ -1025,9 +960,9 @@ struct ResizeNearestNeighborParams {
 
 struct SliceParams {
   int8_t begin_count;
-  int32_t begin[4];
+  int32_t begin[5];
   int8_t size_count;
-  int32_t size[4];
+  int32_t size[5];
 };
 
 struct SoftmaxParams {
@@ -1044,7 +979,9 @@ struct SoftmaxParams {
   int32_t zero_point;
   float scale;
   float* table;
+  // int16 LUT for exp(x), where x uniform distributed between [-10.0 , 0.0]
   int16_t* exp_lut;
+  // int16 LUT for 1 / (1 + x), where x uniform distributed between [0.0 , 1.0]
   int16_t* one_over_one_plus_x_lut;
   uint8_t* uint8_table1;
   uint8_t* uint8_table2;
@@ -1079,11 +1016,12 @@ struct StridedSliceParams {
   int8_t strides_count;
   int32_t strides[5];
 
-  int16_t begin_mask;
-  int16_t ellipsis_mask;
-  int16_t end_mask;
-  int16_t new_axis_mask;
-  int16_t shrink_axis_mask;
+  uint16_t begin_mask;
+  uint16_t ellipsis_mask;
+  uint16_t end_mask;
+  uint16_t new_axis_mask;
+  uint16_t shrink_axis_mask;
+  bool offset;
 };
 
 struct TanhParams {
@@ -1093,9 +1031,11 @@ struct TanhParams {
   int input_left_shift;
 };
 
+constexpr int kTransposeMaxDimensions = 8;
+
 struct TransposeParams {
   int8_t perm_count;
-  int32_t perm[5];
+  int32_t perm[kTransposeMaxDimensions];
 };
 
 struct UnpackParams {
@@ -1126,6 +1066,18 @@ inline void SetActivationParams(int32_t min, int32_t max, P* params) {
 }
 
 template <typename P>
+inline void SetActivationParams(uint32_t min, uint32_t max, P* params) {
+  params->quantized_activation_min = min;
+  params->quantized_activation_max = max;
+}
+
+template <typename P>
+inline void SetActivationParams(int16_t min, int16_t max, P* params) {
+  params->int16_activation_min = min;
+  params->int16_activation_max = max;
+}
+
+template <typename P>
 inline void SetActivationParams(int64_t min, int64_t max, P* params) {
   params->int64_activation_min = min;
   params->int64_activation_max = max;
@@ -1138,9 +1090,27 @@ inline void GetActivationParams(const P& params, int32_t* min, int32_t* max) {
 }
 
 template <typename P>
+inline void GetActivationParams(const P& params, uint32_t* min, uint32_t* max) {
+  *min = params.quantized_activation_min;
+  *max = params.quantized_activation_max;
+}
+
+template <typename P>
+inline void GetActivationParams(const P& params, int16_t* min, int16_t* max) {
+  *min = params.int16_activation_min;
+  *max = params.int16_activation_max;
+}
+
+template <typename P>
 inline void GetActivationParams(const P& params, float* min, float* max) {
   *min = params.float_activation_min;
   *max = params.float_activation_max;
+}
+
+template <typename P>
+inline void GetActivationParams(const P& params, half* min, half* max) {
+  *min = static_cast<half>(params.float_activation_min);
+  *max = static_cast<half>(params.float_activation_max);
 }
 
 template <typename P>
@@ -1148,6 +1118,23 @@ inline void GetActivationParams(const P& params, int64_t* min, int64_t* max) {
   *min = params.int64_activation_min;
   *max = params.int64_activation_max;
 }
+
+// Type trait to check of given type has size smaller than 4 bytes.
+template <typename T>
+struct is_small_integer
+    : public std::integral_constant<bool,
+                                    std::is_same<T, int8_t>::value ||
+                                        std::is_same<T, uint8_t>::value ||
+                                        std::is_same<T, int16_t>::value ||
+                                        std::is_same<T, uint16_t>::value> {};
+
+// Type trait to check of given type is int32 or int64.
+template <typename T>
+struct is_int32_or_int64
+    : public std::integral_constant<bool, std::is_same<T, int32_t>::value ||
+                                              std::is_same<T, int64_t>::value> {
+};
+
 }  // namespace tflite
 
 #endif  // TENSORFLOW_LITE_KERNELS_INTERNAL_TYPES_H_

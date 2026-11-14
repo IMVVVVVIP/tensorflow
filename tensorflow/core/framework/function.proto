@@ -1,3 +1,18 @@
+// Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
+
 syntax = "proto3";
 
 package tensorflow;
@@ -16,6 +31,7 @@ option go_package = "github.com/tensorflow/tensorflow/tensorflow/go/core/framewo
 message FunctionDefLibrary {
   repeated FunctionDef function = 1;
   repeated GradientDef gradient = 2;
+  repeated RegisteredGradient registered_gradients = 3;
 }
 
 // A function can be instantiated when the runtime can bind every attr
@@ -123,4 +139,13 @@ message FunctionDef {
 message GradientDef {
   string function_name = 1;  // The function name.
   string gradient_func = 2;  // The gradient function's name.
+}
+
+// RegisteredGradient stores a gradient function that is registered in the
+// gradients library and used in the ops of a function in the function library.
+// Unlike GradientDef, these gradients are identified by op type, and not
+// directly linked to any function.
+message RegisteredGradient {
+  string gradient_func = 1;       // The gradient function's name.
+  string registered_op_type = 2;  // The gradient function's registered op type.
 }

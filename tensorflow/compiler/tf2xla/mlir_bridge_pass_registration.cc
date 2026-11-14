@@ -15,6 +15,7 @@ limitations under the License.
 
 #include <memory>
 
+#include "tensorflow/compiler/mlir/mlir_graph_optimization_pass.h"
 #include "tensorflow/compiler/tf2xla/mlir_bridge_pass.h"
 
 namespace tensorflow {
@@ -28,6 +29,6 @@ static mlir_pass_registration::MlirOptimizationPassRegistration
 
 static mlir_pass_registration::MlirV1CompatOptimizationPassRegistration
     register_v1_compat_mlir_bridge_pass(
-        kMlirBridgePriority, std::make_unique<MlirBridgeV1CompatPass>());
+        std::make_unique<MlirBridgeV1CompatPass>());
 
 }  // namespace tensorflow

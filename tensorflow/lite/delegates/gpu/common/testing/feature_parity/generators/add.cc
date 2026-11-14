@@ -15,11 +15,17 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/common/testing/feature_parity/generators/add.h"
 
+#include <stdint.h>
+
+#include <string>
+#include <utility>
 #include <vector>
 
-#include "tensorflow/lite/delegates/gpu/common/shape.h"
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "flatbuffers/string.h"  // from @flatbuffers
 #include "tensorflow/lite/delegates/gpu/common/testing/feature_parity/utils.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/version.h"
 
 namespace tflite {
@@ -39,6 +45,7 @@ class AddModelBuilder {
         CreateBuffer(builder, builder.CreateVector({})),
     };
     std::vector<flatbuffers::Offset<Tensor>> tensors;
+    tensors.reserve(input_shapes_.size());
     for (int8_t i = 0; i < input_shapes_.size(); i++) {
       tensors.push_back(CreateTensor(
           builder, builder.CreateVector<int32_t>(input_shapes_[i].data(), 4),

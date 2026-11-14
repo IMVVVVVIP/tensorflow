@@ -12,7 +12,7 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-#ifdef INTEL_MKL
+#if defined(INTEL_MKL)
 #define EIGEN_USE_THREADS
 
 #include <functional>
@@ -35,59 +35,43 @@ limitations under the License.
 
 namespace tensorflow {
 
-static const uint8 kDummyTensor[] = {0, 0, 0, 0, 0, 0, 0, 0};
-static const TensorShape kDummyShape({2, 4});
-
-// Helper class for converting MKL tensors to TF tensors and comparing to
-// expected values
-class ConvMklToTF : public OpsTestBase {
- public:
-  template <typename T>
-  void ConvertMKL2TF(DataType dtype, const Tensor& first, const Tensor& second,
-                     Tensor& output) {
-    // TO-DO : Has to be moved to common utility file
-    // Create an MKL to TF conversion node and execute it
-    TF_EXPECT_OK(NodeDefBuilder("mkl_to_tf_op", "_MklToTf")
-                     .Input(FakeInput(dtype))     // Input
-                     .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                     .Attr("T", dtype)
-                     .Attr("_kernel", "MklLayoutDependentOp")
-                     .Finalize(node_def()));
-    TF_EXPECT_OK(InitOp());
-    AddInputFromArray<T>(first.shape(), first.flat<T>());
-    AddInputFromArray<uint8>(second.shape(), second.flat<uint8>());
-    TF_ASSERT_OK(RunOpKernel());
-
-    output = *GetOutput(0);
-  }
-  void TestBody(){};
-};
-
-class QuantizedMatMulTest : public OpsTestBase {};
+class QuantizedMatMulTest : public OpsTestBase,
+                            public ::testing::WithParamInterface<bool> {};
 
 // Two small matrices A of type uint8 and B of type int8  are multiplied
 // and the result is added with int32 bias
-TEST_F(QuantizedMatMulTest, Small_withBias) {
-  TF_ASSERT_OK(
-      NodeDefBuilder("quantized_mat_mul_op", "_MklQuantizedMatMulWithBias")
-          .Input(FakeInput(DT_QUINT8))
-          .Input(FakeInput(DT_QINT8))
-          .Input(FakeInput(DT_QINT32))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Attr("Toutput", DataTypeToEnum<qint32>::v())
-          .Attr("T", DataTypeToEnum<qint32>::v())
-          .Attr("_kernel", "QuantizedMklOp")
-          .Finalize(node_def()));
+TEST_P(QuantizedMatMulTest, Small_withBias) {
+  const bool is_old_api = GetParam();
+  if (is_old_api) {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_MklQuantizedMatMulWithBias")
+            .Input(FakeInput(DT_QUINT8))
+            .Input(FakeInput(DT_QINT8))
+            .Input(FakeInput(DT_QINT32))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Attr("Toutput", DataTypeToEnum<qint32>::v())
+            .Attr("_kernel", "QuantizedMklOp")
+            .Finalize(node_def()));
+  } else {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_QuantizedMatMul")
+            .Attr("Thost_inputs", {DT_QUINT8, DT_QINT8, DT_QINT32, DT_FLOAT,
+                                   DT_FLOAT, DT_FLOAT, DT_FLOAT})
+            .Attr("Thost_outputs", {DT_QINT32, DT_FLOAT, DT_FLOAT})
+            .Attr("Tdevice_inputs", std::vector<DataType>())
+            .Attr("Tdevice_outputs", std::vector<DataType>())
+            .Attr("T1", DT_QUINT8)
+            .Attr("T2", DT_QINT8)
+            .Attr("Tbias", DT_QINT32)
+            .Attr("Tout", DT_QINT32)
+            .Attr("fused_ops", {"BiasAdd"})
+            .Input(FakeInput())
+            .Input(FakeInput())
+            .Finalize(node_def()));
+  }
   TF_ASSERT_OK(InitOp());
   // A matrix is:
   // |  1 |  2 |  3 |
@@ -100,17 +84,10 @@ TEST_F(QuantizedMatMulTest, Small_withBias) {
   AddInputFromArray<qint8>(TensorShape({3, 4}),
                            {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
   AddInputFromArray<qint32>(TensorShape({4}), {1, 2, 3, 4});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<float>(TensorShape({1}), {-127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {127.0f});
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
+  AddInputFromArray<float>(TensorShape({}), {0});
+  AddInputFromArray<float>(TensorShape({}), {255.0f});
+  AddInputFromArray<float>(TensorShape({}), {-127.0f});
+  AddInputFromArray<float>(TensorShape({}), {127.0f});
 
   TF_ASSERT_OK(RunOpKernel());
   // Here are the results we expect, from hand calculations:
@@ -129,38 +106,43 @@ TEST_F(QuantizedMatMulTest, Small_withBias) {
   test::FillValues<qint32>(&expected, {75, 82, 89, 96, 174, 190, 206, 222});
 
   const Tensor& output = *GetOutput(0);
-  const Tensor& mkl_shape_tensor = *GetOutput(3);
-  ConvMklToTF conv_comp;
-  Tensor output_quantized;
-  conv_comp.ConvertMKL2TF<qint32>(DT_QINT32, output, mkl_shape_tensor,
-                                  output_quantized);
-
-  test::ExpectTensorEqual<qint32>(expected, output_quantized);
+  test::ExpectTensorEqual<qint32>(expected, output);
 }
 
 // Two small matrices A of type uint8 and B of type int8  are multiplied
 // and the result is added with neg bias as well
-TEST_F(QuantizedMatMulTest, Small_withNegBias) {
-  TF_ASSERT_OK(
-      NodeDefBuilder("quantized_mat_mul_op", "_MklQuantizedMatMulWithBias")
-          .Input(FakeInput(DT_QUINT8))
-          .Input(FakeInput(DT_QINT8))
-          .Input(FakeInput(DT_QINT32))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Attr("Toutput", DataTypeToEnum<qint32>::v())
-          .Attr("T", DataTypeToEnum<qint32>::v())
-          .Attr("_kernel", "QuantizedMklOp")
-          .Finalize(node_def()));
+TEST_P(QuantizedMatMulTest, Small_withNegBias) {
+  const bool is_old_api = GetParam();
+  if (is_old_api) {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_MklQuantizedMatMulWithBias")
+            .Input(FakeInput(DT_QUINT8))
+            .Input(FakeInput(DT_QINT8))
+            .Input(FakeInput(DT_QINT32))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Attr("Toutput", DataTypeToEnum<qint32>::v())
+            .Attr("_kernel", "QuantizedMklOp")
+            .Finalize(node_def()));
+  } else {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_QuantizedMatMul")
+            .Attr("Thost_inputs", {DT_QUINT8, DT_QINT8, DT_QINT32, DT_FLOAT,
+                                   DT_FLOAT, DT_FLOAT, DT_FLOAT})
+            .Attr("Thost_outputs", {DT_QINT32, DT_FLOAT, DT_FLOAT})
+            .Attr("Tdevice_inputs", std::vector<DataType>())
+            .Attr("Tdevice_outputs", std::vector<DataType>())
+            .Attr("T1", DT_QUINT8)
+            .Attr("T2", DT_QINT8)
+            .Attr("Tbias", DT_QINT32)
+            .Attr("Tout", DT_QINT32)
+            .Attr("fused_ops", {"BiasAdd"})
+            .Input(FakeInput())
+            .Input(FakeInput())
+            .Finalize(node_def()));
+  }
   TF_ASSERT_OK(InitOp());
   // A matrix is:
   // |  1 |  2 |  3 |
@@ -173,17 +155,10 @@ TEST_F(QuantizedMatMulTest, Small_withNegBias) {
   AddInputFromArray<qint8>(TensorShape({3, 4}),
                            {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
   AddInputFromArray<qint32>(TensorShape({4}), {100, -200, 300, -400});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<float>(TensorShape({1}), {-127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {127.0f});
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
+  AddInputFromArray<float>(TensorShape({}), {0});
+  AddInputFromArray<float>(TensorShape({}), {255.0f});
+  AddInputFromArray<float>(TensorShape({}), {-127.0f});
+  AddInputFromArray<float>(TensorShape({}), {127.0f});
 
   TF_ASSERT_OK(RunOpKernel());
   // Here are the results we expect, from hand calculations:
@@ -203,39 +178,45 @@ TEST_F(QuantizedMatMulTest, Small_withNegBias) {
                            {174, -120, 386, -308, 273, -12, 503, -182});
 
   const Tensor& output = *GetOutput(0);
-  const Tensor& mkl_shape_tensor = *GetOutput(3);
-  ConvMklToTF conv_comp;
-  Tensor output_quantized;
-  conv_comp.ConvertMKL2TF<qint32>(DT_QINT32, output, mkl_shape_tensor,
-                                  output_quantized);
-
-  test::ExpectTensorEqual<qint32>(expected, output_quantized);
+  test::ExpectTensorEqual<qint32>(expected, output);
 }
 
 // Two small matrices A of type uint8 (converted from signed integer)
 // and B of type int8  are multiplied and the result is added with float bias
-TEST_F(QuantizedMatMulTest, Small_WithNegInp) {
-  TF_ASSERT_OK(
-      NodeDefBuilder("quantized_mat_mul_op", "_MklQuantizedMatMulWithBias")
-          .Input(FakeInput(DT_QUINT8))
-          .Input(FakeInput(DT_QINT8))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Attr("Toutput", DataTypeToEnum<qint32>::v())
-          .Attr("T", DataTypeToEnum<qint32>::v())
-          .Attr("input_quant_mode", "MIN_FIRST")
-          .Attr("_kernel", "QuantizedMklOp")
-          .Finalize(node_def()));
+TEST_P(QuantizedMatMulTest, Small_WithNegInp) {
+  const bool is_old_api = GetParam();
+  if (is_old_api) {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_MklQuantizedMatMulWithBias")
+            .Input(FakeInput(DT_QUINT8))
+            .Input(FakeInput(DT_QINT8))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Attr("Toutput", DataTypeToEnum<qint32>::v())
+            .Attr("input_quant_mode", "MIN_FIRST")
+            .Attr("_kernel", "QuantizedMklOp")
+            .Finalize(node_def()));
+  } else {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_QuantizedMatMul")
+            .Attr("Thost_inputs", {DT_QUINT8, DT_QINT8, DT_FLOAT, DT_FLOAT,
+                                   DT_FLOAT, DT_FLOAT, DT_FLOAT})
+            .Attr("Thost_outputs", {DT_QINT32, DT_FLOAT, DT_FLOAT})
+            .Attr("Tdevice_inputs", std::vector<DataType>())
+            .Attr("Tdevice_outputs", std::vector<DataType>())
+            .Attr("T1", DT_QUINT8)
+            .Attr("T2", DT_QINT8)
+            .Attr("Tbias", DT_FLOAT)
+            .Attr("Tout", DT_QINT32)
+            .Attr("fused_ops", {"BiasAdd"})
+            .Attr("input_quant_mode", "MIN_FIRST")
+            .Input(FakeInput())
+            .Input(FakeInput())
+            .Finalize(node_def()));
+  }
   TF_ASSERT_OK(InitOp());
   // The A matrix is:
   // |  -1 |  -5 |  -9 |
@@ -256,17 +237,11 @@ TEST_F(QuantizedMatMulTest, Small_WithNegInp) {
   AddInputFromArray<qint8>(TensorShape({3, 2}), {1, 4, 2, 5, 3, 6});
   // Bias
   AddInputFromArray<float>(TensorShape({2}), {10.0f, 20.0f});
-  AddInputFromArray<float>(TensorShape({1}), {-12.0f});
-  AddInputFromArray<float>(TensorShape({1}), {243.0f});
-  AddInputFromArray<float>(TensorShape({1}), {-127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {127.0f});
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
+  AddInputFromArray<float>(TensorShape({}), {-12.0f});
+  AddInputFromArray<float>(TensorShape({}), {243.0f});
+  AddInputFromArray<float>(TensorShape({}), {-127.0f});
+  AddInputFromArray<float>(TensorShape({}), {127.0f});
+
   TF_ASSERT_OK(RunOpKernel());
   // First calculate C = A * B,
   // so we expect to get these results for MatMul:
@@ -292,41 +267,46 @@ TEST_F(QuantizedMatMulTest, Small_WithNegInp) {
                            {-28, -63, -34, -78, -40, -93, -46, -108});
 
   const Tensor& output = *GetOutput(0);
-  const Tensor& mkl_shape_tensor = *GetOutput(3);
-  ConvMklToTF conv_comp;
-  Tensor output_quantized;
-  conv_comp.ConvertMKL2TF<qint32>(DT_QINT32, output, mkl_shape_tensor,
-                                  output_quantized);
-  test::ExpectTensorEqual<qint32>(expected, output_quantized);
+  test::ExpectTensorEqual<qint32>(expected, output);
 }
 
 // Two small matrices A of type uint8 and B of type int8  are multiplied
 // and the result is added with int32 bias and Requantization fusion
-TEST_F(QuantizedMatMulTest, Small_withBiasAndReq) {
-  TF_ASSERT_OK(NodeDefBuilder("quantized_mat_mul_op",
-                              "_MklQuantizedMatMulWithBiasAndRequantize")
-                   .Input(FakeInput(DT_QUINT8))
-                   .Input(FakeInput(DT_QINT8))
-                   .Input(FakeInput(DT_QINT32))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Attr("Toutput", DataTypeToEnum<quint8>::v())
-                   .Attr("T", DataTypeToEnum<quint8>::v())
-                   .Attr("_kernel", "QuantizedMklOp")
-                   .Finalize(node_def()));
+TEST_P(QuantizedMatMulTest, Small_withBiasAndReq) {
+  const bool is_old_api = GetParam();
+  if (is_old_api) {
+    TF_ASSERT_OK(NodeDefBuilder("quantized_mat_mul_op",
+                                "_MklQuantizedMatMulWithBiasAndRequantize")
+                     .Input(FakeInput(DT_QUINT8))
+                     .Input(FakeInput(DT_QINT8))
+                     .Input(FakeInput(DT_QINT32))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Attr("Toutput", DataTypeToEnum<quint8>::v())
+                     .Attr("_kernel", "QuantizedMklOp")
+                     .Finalize(node_def()));
+  } else {
+    TF_ASSERT_OK(NodeDefBuilder("quantized_mat_mul_op", "_QuantizedMatMul")
+                     .Attr("Thost_inputs",
+                           {DT_QUINT8, DT_QINT8, DT_QINT32, DT_FLOAT, DT_FLOAT,
+                            DT_FLOAT, DT_FLOAT, DT_FLOAT, DT_FLOAT})
+                     .Attr("Thost_outputs", {DT_QUINT8, DT_FLOAT, DT_FLOAT})
+                     .Attr("Tdevice_inputs", std::vector<DataType>())
+                     .Attr("Tdevice_outputs", std::vector<DataType>())
+                     .Attr("T1", DT_QUINT8)
+                     .Attr("T2", DT_QINT8)
+                     .Attr("Tbias", DT_QINT32)
+                     .Attr("Tout", DT_QUINT8)
+                     .Attr("fused_ops", {"BiasAdd", "Requantize"})
+                     .Input(FakeInput())
+                     .Input(FakeInput())
+                     .Finalize(node_def()));
+  }
+
   TF_ASSERT_OK(InitOp());
   // A matrix is:
   // |  1 |  2 |  3 |
@@ -339,21 +319,12 @@ TEST_F(QuantizedMatMulTest, Small_withBiasAndReq) {
   AddInputFromArray<qint8>(TensorShape({3, 4}),
                            {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
   AddInputFromArray<qint32>(TensorShape({4}), {10, -20, 30, -40});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<float>(TensorShape({1}), {-127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
+  AddInputFromArray<float>(TensorShape({}), {0});
+  AddInputFromArray<float>(TensorShape({}), {255.0f});
+  AddInputFromArray<float>(TensorShape({}), {-127.0f});
+  AddInputFromArray<float>(TensorShape({}), {127.0f});
+  AddInputFromArray<float>(TensorShape({}), {0});
+  AddInputFromArray<float>(TensorShape({}), {255.0f});
 
   TF_ASSERT_OK(RunOpKernel());
   // Here are the results we expect, from hand calculations:
@@ -381,45 +352,66 @@ TEST_F(QuantizedMatMulTest, Small_withBiasAndReq) {
   // 178 * 1.00392 ~= 178.698 ~= 179
 
   Tensor expected(allocator(), DT_QUINT8, TensorShape({2, 4}));
-  test::FillValues<quint8>(&expected, {84, 60, 116, 52, 184, 169, 234, 179});
+  if (is_old_api) {
+#ifdef ENABLE_ONEDNN_V3
+    test::FillValues<quint8>(&expected, {84, 60, 116, 52, 183, 168, 233, 178});
+#else
+    test::FillValues<quint8>(&expected, {84, 60, 116, 52, 184, 169, 234, 179});
+#endif  // ENABLE_ONEDNN_V3
+  } else {
+    // New api uses more numerical precision preserving equation. Old api scales
+    // up to 32-bit and then scales down from 32-bit to 8-bit. New api instead
+    // does a dequantization followed by a scaling to 8-bit.
+    // In this test,
+    //    input deq. scale =  ((255.0 * 127.0) / (255.0 * 127.0)) = 1.0
+    //    output req. scale = 255.0 / 255.0 = 1.0
+    //    combined scale = 1.0 * 1.0 = 1.0
+    // Note: new api scale value is 1.0, whereas the old api scale is 1.000392.
+    // Correct value is 1.0f. The closer it is to the correct value the better
+    // the formula is.
+    test::FillValues<quint8>(&expected, {84, 60, 116, 52, 183, 168, 233, 178});
+  }
 
   const Tensor& output = *GetOutput(0);
-  const Tensor& mkl_shape_tensor = *GetOutput(3);
-  ConvMklToTF conv_comp;
-  Tensor output_quantized;
-  conv_comp.ConvertMKL2TF<quint8>(DT_QUINT8, output, mkl_shape_tensor,
-                                  output_quantized);
-
-  test::ExpectTensorEqual<quint8>(expected, output_quantized);
+  test::ExpectTensorEqual<quint8>(expected, output);
 }
 
 // Two small matrices A of type uint8 and B of type int8  are multiplied
 // and the result is added with int32 bias and Requantization fusion
-TEST_F(QuantizedMatMulTest, Small_withBiasAndDeq) {
-  TF_ASSERT_OK(NodeDefBuilder("quantized_mat_mul_op",
-                              "_MklQuantizedMatMulWithBiasAndDequantize")
-                   .Input(FakeInput(DT_QUINT8))
-                   .Input(FakeInput(DT_QINT8))
-                   .Input(FakeInput(DT_QINT32))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Attr("Toutput", DataTypeToEnum<float>::v())
-                   .Attr("T", DataTypeToEnum<quint8>::v())
-                   .Attr("_kernel", "QuantizedMklOp")
-                   .Finalize(node_def()));
+TEST_P(QuantizedMatMulTest, Small_withBiasAndDeq) {
+  const bool is_old_api = GetParam();
+  if (is_old_api) {
+    TF_ASSERT_OK(NodeDefBuilder("quantized_mat_mul_op",
+                                "_MklQuantizedMatMulWithBiasAndDequantize")
+                     .Input(FakeInput(DT_QUINT8))
+                     .Input(FakeInput(DT_QINT8))
+                     .Input(FakeInput(DT_QINT32))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Attr("Toutput", DataTypeToEnum<float>::v())
+                     .Attr("_kernel", "QuantizedMklOp")
+                     .Finalize(node_def()));
+  } else {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_QuantizedMatMul")
+            .Attr("Thost_inputs", {DT_QUINT8, DT_QINT8, DT_QINT32, DT_FLOAT,
+                                   DT_FLOAT, DT_FLOAT, DT_FLOAT})
+            .Attr("Thost_outputs", {DT_FLOAT})
+            .Attr("Tdevice_inputs", std::vector<DataType>())
+            .Attr("Tdevice_outputs", std::vector<DataType>())
+            .Attr("T1", DT_QUINT8)
+            .Attr("T2", DT_QINT8)
+            .Attr("Tbias", DT_QINT32)
+            .Attr("Tout", DT_FLOAT)
+            .Attr("fused_ops", {"BiasAdd", "Dequantize"})
+            .Input(FakeInput())
+            .Input(FakeInput())
+            .Finalize(node_def()));
+  }
   TF_ASSERT_OK(InitOp());
   // A matrix is:
   // |  1 |  2 |  3 |
@@ -432,22 +424,15 @@ TEST_F(QuantizedMatMulTest, Small_withBiasAndDeq) {
   AddInputFromArray<qint8>(TensorShape({3, 4}),
                            {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
   AddInputFromArray<qint32>(TensorShape({4}), {10, -20, 30, -40});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<float>(TensorShape({1}), {-127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
+  AddInputFromArray<float>(TensorShape({}), {0});
+  AddInputFromArray<float>(TensorShape({}), {255.0f});
+  AddInputFromArray<float>(TensorShape({}), {-127.0f});
+  AddInputFromArray<float>(TensorShape({}), {127.0f});
 
+  if (is_old_api) {
+    AddInputFromArray<float>(TensorShape({}), {0});
+    AddInputFromArray<float>(TensorShape({}), {255.0f});
+  }
   TF_ASSERT_OK(RunOpKernel());
   // Here are the results we expect, from hand calculations:
   // (1 * 7) + (2 * 11) + (3 * 15) = 74
@@ -477,38 +462,43 @@ TEST_F(QuantizedMatMulTest, Small_withBiasAndDeq) {
   test::FillValues<float>(&expected, {84, 60, 116, 52, 183, 168, 233, 178});
 
   const Tensor& output = *GetOutput(0);
-  const Tensor& mkl_shape_tensor = *GetOutput(1);
-  ConvMklToTF conv_comp;
-  Tensor output_dequantized;
-  conv_comp.ConvertMKL2TF<float>(DT_FLOAT, output, mkl_shape_tensor,
-                                 output_dequantized);
-
-  test::ExpectTensorEqual<float>(expected, output_dequantized);
+  test::ExpectTensorEqual<float>(expected, output);
 }
 
 // Two small matrices A of type uint8 and B of type int8  are multiplied
 // and the result is added with float bias and then performed relu on the result
-TEST_F(QuantizedMatMulTest, Small_withBiasAndRelu) {
-  TF_ASSERT_OK(NodeDefBuilder("quantized_mat_mul_op",
-                              "_MklQuantizedMatMulWithBiasAndRelu")
-                   .Input(FakeInput(DT_QUINT8))
-                   .Input(FakeInput(DT_QINT8))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Attr("Toutput", DataTypeToEnum<qint32>::v())
-                   .Attr("T", DataTypeToEnum<qint32>::v())
-                   .Attr("_kernel", "QuantizedMklOp")
-                   .Finalize(node_def()));
+TEST_P(QuantizedMatMulTest, Small_withBiasAndRelu) {
+  const bool is_old_api = GetParam();
+  if (is_old_api) {
+    TF_ASSERT_OK(NodeDefBuilder("quantized_mat_mul_op",
+                                "_MklQuantizedMatMulWithBiasAndRelu")
+                     .Input(FakeInput(DT_QUINT8))
+                     .Input(FakeInput(DT_QINT8))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Input(FakeInput(DT_FLOAT))
+                     .Attr("Toutput", DataTypeToEnum<qint32>::v())
+                     .Attr("_kernel", "QuantizedMklOp")
+                     .Finalize(node_def()));
+  } else {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_QuantizedMatMul")
+            .Attr("Thost_inputs", {DT_QUINT8, DT_QINT8, DT_FLOAT, DT_FLOAT,
+                                   DT_FLOAT, DT_FLOAT, DT_FLOAT})
+            .Attr("Thost_outputs", {DT_QINT32, DT_FLOAT, DT_FLOAT})
+            .Attr("Tdevice_inputs", std::vector<DataType>())
+            .Attr("Tdevice_outputs", std::vector<DataType>())
+            .Attr("T1", DT_QUINT8)
+            .Attr("T2", DT_QINT8)
+            .Attr("Tbias", DT_FLOAT)
+            .Attr("Tout", DT_QINT32)
+            .Attr("fused_ops", {"BiasAdd", "Relu"})
+            .Input(FakeInput())
+            .Input(FakeInput())
+            .Finalize(node_def()));
+  }
   TF_ASSERT_OK(InitOp());
   // A matrix is:
   // |  1 |  2 |  3 |
@@ -522,17 +512,10 @@ TEST_F(QuantizedMatMulTest, Small_withBiasAndRelu) {
                            {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
   AddInputFromArray<float>(TensorShape({4}),
                            {100.0f, -200.0f, 300.0f, -400.0f});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<float>(TensorShape({1}), {-127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {127.0f});
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
+  AddInputFromArray<float>(TensorShape({}), {0});
+  AddInputFromArray<float>(TensorShape({}), {255.0f});
+  AddInputFromArray<float>(TensorShape({}), {-127.0f});
+  AddInputFromArray<float>(TensorShape({}), {127.0f});
 
   TF_ASSERT_OK(RunOpKernel());
   // Here are the results we expect, from hand calculations:
@@ -553,42 +536,46 @@ TEST_F(QuantizedMatMulTest, Small_withBiasAndRelu) {
   test::FillValues<qint32>(&expected, {174, 0, 386, 0, 273, 0, 503, 0});
 
   const Tensor& output = *GetOutput(0);
-  const Tensor& mkl_shape_tensor = *GetOutput(3);
-  ConvMklToTF conv_comp;
-  Tensor output_quantized;
-  conv_comp.ConvertMKL2TF<qint32>(DT_QINT32, output, mkl_shape_tensor,
-                                  output_quantized);
-
-  test::ExpectTensorEqual<qint32>(expected, output_quantized);
+  test::ExpectTensorEqual<qint32>(expected, output);
 }
 
 // Simple test for Matrix multiplication with Bias, Relu and
 // Requantization fusion
-TEST_F(QuantizedMatMulTest, Small_withBiasAndReluAndReq) {
-  TF_ASSERT_OK(NodeDefBuilder("quantized_mat_mul_op",
-                              "_MklQuantizedMatMulWithBiasAndReluAndRequantize")
-                   .Input(FakeInput(DT_QUINT8))
-                   .Input(FakeInput(DT_QINT8))
-                   .Input(FakeInput(DT_QINT32))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_FLOAT))
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Input(FakeInput(DT_UINT8))  // MKL second tensor
-                   .Attr("Toutput", DataTypeToEnum<quint8>::v())
-                   .Attr("T", DataTypeToEnum<quint8>::v())
-                   .Attr("_kernel", "QuantizedMklOp")
-                   .Finalize(node_def()));
+TEST_P(QuantizedMatMulTest, Small_withBiasAndReluAndReq) {
+  const bool is_old_api = GetParam();
+  if (is_old_api) {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op",
+                       "_MklQuantizedMatMulWithBiasAndReluAndRequantize")
+            .Input(FakeInput(DT_QUINT8))
+            .Input(FakeInput(DT_QINT8))
+            .Input(FakeInput(DT_QINT32))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Attr("Toutput", DataTypeToEnum<quint8>::v())
+            .Attr("_kernel", "QuantizedMklOp")
+            .Finalize(node_def()));
+  } else {
+    TF_ASSERT_OK(NodeDefBuilder("quantized_mat_mul_op", "_QuantizedMatMul")
+                     .Attr("Thost_inputs",
+                           {DT_QUINT8, DT_QINT8, DT_QINT32, DT_FLOAT, DT_FLOAT,
+                            DT_FLOAT, DT_FLOAT, DT_FLOAT, DT_FLOAT})
+                     .Attr("Thost_outputs", {DT_QUINT8, DT_FLOAT, DT_FLOAT})
+                     .Attr("Tdevice_inputs", std::vector<DataType>())
+                     .Attr("Tdevice_outputs", std::vector<DataType>())
+                     .Attr("T1", DT_QUINT8)
+                     .Attr("T2", DT_QINT8)
+                     .Attr("Tbias", DT_QINT32)
+                     .Attr("Tout", DT_QUINT8)
+                     .Attr("fused_ops", {"BiasAdd", "Relu", "Requantize"})
+                     .Input(FakeInput())
+                     .Input(FakeInput())
+                     .Finalize(node_def()));
+  }
   TF_ASSERT_OK(InitOp());
   // A matrix is:
   // |  1 |  2 |  3 |
@@ -601,21 +588,12 @@ TEST_F(QuantizedMatMulTest, Small_withBiasAndReluAndReq) {
   AddInputFromArray<qint8>(TensorShape({3, 4}),
                            {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
   AddInputFromArray<qint32>(TensorShape({4}), {10, -20, 30, -40});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<float>(TensorShape({1}), {-127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
+  AddInputFromArray<float>(TensorShape({}), {0});
+  AddInputFromArray<float>(TensorShape({}), {255.0f});
+  AddInputFromArray<float>(TensorShape({}), {-127.0f});
+  AddInputFromArray<float>(TensorShape({}), {127.0f});
+  AddInputFromArray<float>(TensorShape({}), {0});
+  AddInputFromArray<float>(TensorShape({}), {255.0f});
 
   TF_ASSERT_OK(RunOpKernel());
   // Here are the results we expect, from hand calculations:
@@ -645,45 +623,68 @@ TEST_F(QuantizedMatMulTest, Small_withBiasAndReluAndReq) {
   // 178 * 1.00392 ~= 178.698 ~= 179
 
   Tensor expected(allocator(), DT_QUINT8, TensorShape({2, 4}));
-  test::FillValues<quint8>(&expected, {84, 60, 116, 52, 184, 169, 234, 179});
+  if (is_old_api) {
+#ifdef ENABLE_ONEDNN_V3
+    test::FillValues<quint8>(&expected, {84, 60, 116, 52, 183, 168, 233, 178});
+#else
+    test::FillValues<quint8>(&expected, {84, 60, 116, 52, 184, 169, 234, 179});
+#endif  // ENABLE_ONEDNN_V3
+  } else {
+    // New api uses more numerical precision preserving equation. Old api scales
+    // up to 32-bit and then scales down from 32-bit to 8-bit. New api instead
+    // does a dequantization followed by a scaling to 8-bit.
+    // In this test,
+    //    input deq. scale =  ((255.0 * 127.0) / (255.0 * 127.0)) = 1.0
+    //    output req. scale = 255.0 / 255.0 = 1.0
+    //    combined scale = 1.0 * 1.0 = 1.0
+    // Note: new api scale value is 1.0, whereas the old api scale is 1.000392.
+    // Correct value is 1.0f. The closer it is to the correct value the better
+    // the formula is.
+    test::FillValues<quint8>(&expected, {84, 60, 116, 52, 183, 168, 233, 178});
+  }
 
   const Tensor& output = *GetOutput(0);
-  const Tensor& mkl_shape_tensor = *GetOutput(3);
-  ConvMklToTF conv_comp;
-  Tensor output_quantized;
-  conv_comp.ConvertMKL2TF<quint8>(DT_QUINT8, output, mkl_shape_tensor,
-                                  output_quantized);
-
-  test::ExpectTensorEqual<quint8>(expected, output_quantized);
+  test::ExpectTensorEqual<quint8>(expected, output);
 }
 
 // Two small matrices A of type uint8 and B of type int8 are multiplied
 // and the result is added with int32 bias
 // For the first time B matrix will be reordered and cached which will be
 // used for subsequent runs
-TEST_F(QuantizedMatMulTest, Small_withWeightCached) {
-  TF_ASSERT_OK(
-      NodeDefBuilder("quantized_mat_mul_op", "_MklQuantizedMatMulWithBias")
-          .Input(FakeInput(DT_QUINT8))
-          .Input(FakeInput(DT_QINT8))
-          .Input(FakeInput(DT_QINT32))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_FLOAT))
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Input(FakeInput(DT_UINT8))  // MKL second tensor
-          .Attr("Toutput", DataTypeToEnum<qint32>::v())
-          .Attr("T", DataTypeToEnum<qint32>::v())
-          .Attr("_kernel", "QuantizedMklOp")
-          .Finalize(node_def()));
+TEST_P(QuantizedMatMulTest, Small_withWeightCached) {
+  const bool is_old_api = GetParam();
+  if (is_old_api) {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_MklQuantizedMatMulWithBias")
+            .Input(FakeInput(DT_QUINT8))
+            .Input(FakeInput(DT_QINT8))
+            .Input(FakeInput(DT_QINT32))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Input(FakeInput(DT_FLOAT))
+            .Attr("Toutput", DataTypeToEnum<qint32>::v())
+            .Attr("_kernel", "QuantizedMklOp")
+            .Finalize(node_def()));
+  } else {
+    TF_ASSERT_OK(
+        NodeDefBuilder("quantized_mat_mul_op", "_QuantizedMatMul")
+            .Attr("Thost_inputs", {DT_QUINT8, DT_QINT8, DT_QINT32, DT_FLOAT,
+                                   DT_FLOAT, DT_FLOAT, DT_FLOAT})
+            .Attr("Thost_outputs", {DT_QINT32, DT_FLOAT, DT_FLOAT})
+            .Attr("Tdevice_inputs", std::vector<DataType>())
+            .Attr("Tdevice_outputs", std::vector<DataType>())
+            .Attr("T1", DT_QUINT8)
+            .Attr("T2", DT_QINT8)
+            .Attr("Tbias", DT_QINT32)
+            .Attr("Tout", DT_QINT32)
+            .Attr("fused_ops", {"BiasAdd"})
+            .Input(FakeInput())
+            .Input(FakeInput())
+            .Finalize(node_def()));
+  }
   TF_ASSERT_OK(InitOp());
-  // The tensor shape of (1,3) is selected to allow the mkldnn expected
+  // The tensor shape of (1,3) is selected to allow the oneDNN expected
   // weight format to be made as OI rather than IO for BS > 1
   // A matrix is:
   // |  1 |  2 |  3 |
@@ -695,17 +696,10 @@ TEST_F(QuantizedMatMulTest, Small_withWeightCached) {
   AddInputFromArray<qint8>(TensorShape({3, 4}),
                            {7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18});
   AddInputFromArray<qint32>(TensorShape({4}), {1, 2, 3, 4});
-  AddInputFromArray<float>(TensorShape({1}), {0});
-  AddInputFromArray<float>(TensorShape({1}), {255.0f});
-  AddInputFromArray<float>(TensorShape({1}), {-127.0f});
-  AddInputFromArray<float>(TensorShape({1}), {127.0f});
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
-  AddInputFromArray<uint8>(kDummyShape, kDummyTensor);
+  AddInputFromArray<float>(TensorShape({}), {0});
+  AddInputFromArray<float>(TensorShape({}), {255.0f});
+  AddInputFromArray<float>(TensorShape({}), {-127.0f});
+  AddInputFromArray<float>(TensorShape({}), {127.0f});
 
   int64 start_time = Env::Default()->NowMicros();
   TF_ASSERT_OK(RunOpKernel());
@@ -723,13 +717,7 @@ TEST_F(QuantizedMatMulTest, Small_withWeightCached) {
   test::FillValues<qint32>(&expected, {75, 82, 89, 96});
 
   const Tensor& output = *GetOutput(0);
-  const Tensor& mkl_shape_tensor = *GetOutput(3);
-  ConvMklToTF conv_comp;
-  Tensor output_quantized;
-  conv_comp.ConvertMKL2TF<qint32>(DT_QINT32, output, mkl_shape_tensor,
-                                  output_quantized);
-
-  test::ExpectTensorEqual<qint32>(expected, output_quantized);
+  test::ExpectTensorEqual<qint32>(expected, output);
 
   // Test for the second time to use the cached weight
   start_time = Env::Default()->NowMicros();
@@ -744,14 +732,11 @@ TEST_F(QuantizedMatMulTest, Small_withWeightCached) {
 
   // Compare the result with expected result
   const Tensor& output_new = *GetOutput(0);
-  const Tensor& mkl_shape_tensor_new = *GetOutput(3);
-  ConvMklToTF conv_comp_new;
-  Tensor output_quantized_new;
-  conv_comp_new.ConvertMKL2TF<qint32>(
-      DT_QINT32, output_new, mkl_shape_tensor_new, output_quantized_new);
-
-  test::ExpectTensorEqual<qint32>(expected, output_quantized_new);
+  test::ExpectTensorEqual<qint32>(expected, output_new);
 }
+
+INSTANTIATE_TEST_SUITE_P(All, QuantizedMatMulTest,
+                         ::testing::Values(true, false));
 
 }  // namespace tensorflow
 

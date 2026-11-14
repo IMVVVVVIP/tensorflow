@@ -13,13 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/common_runtime/kernel_benchmark_testlib.h"
 #include "tensorflow/core/framework/fake_input.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/kernels/ops_util.h"
@@ -33,7 +38,8 @@ namespace {
 class UnaryOpsCompositionTest : public OpsTestBase {
  protected:
   template <typename T>
-  void RunComposedOp(const std::vector<string> op_names, T input, T expected) {
+  void RunComposedOp(const std::vector<std::string> op_names, T input,
+                     T expected) {
     TF_ASSERT_OK(NodeDefBuilder("unary_op_composition", "_UnaryOpsComposition")
                      .Input(FakeInput(DataTypeToEnum<T>::v()))
                      .Attr("T", DataTypeToEnum<T>::v())
@@ -82,8 +88,9 @@ TEST_F(UnaryOpsCompositionTest, Compose_Tanh_Relu6_F) {
 
 // Performance benchmarks below.
 
-string Function(int i) {
-  std::vector<string> ops = {"Tanh", "Relu", "Sigmoid", "Sqrt", "Log", "Exp"};
+std::string Function(int i) {
+  std::vector<std::string> ops = {"Tanh", "Relu", "Sigmoid",
+                                  "Sqrt", "Log",  "Exp"};
   return ops[i % ops.size()];
 }
 
@@ -108,11 +115,15 @@ static Graph* UnaryOpsChain(int tensor_size, int repeat_graph,
   return g;
 }
 
-#define BM_UnaryOpsChain(N, R, F, type)                                \
-  static void BM_UnaryOpsChain##_##type##_##N##_##R##_##F(int iters) { \
-    testing::ItemsProcessed(static_cast<int64>(iters) * N * R * F);    \
-    test::Benchmark(#type, UnaryOpsChain(N, R, F)).Run(iters);         \
-  }                                                                    \
+#define BM_UnaryOpsChain(N, R, F, type)                                        \
+  static void BM_UnaryOpsChain##_##type##_##N##_##R##_##F(                     \
+      ::testing::benchmark::State& state) {                                    \
+    test::Benchmark(#type, UnaryOpsChain(N, R, F),                             \
+                    /*old_benchmark_api*/ false)                               \
+        .Run(state);                                                           \
+    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * N * R * \
+                            F);                                                \
+  }                                                                            \
   BENCHMARK(BM_UnaryOpsChain##_##type##_##N##_##R##_##F);
 
 // Unary ops fused together.
@@ -123,7 +134,7 @@ static Graph* UnaryOpsCompo(int tensor_size, int repeat_graph,
   Tensor t(DT_FLOAT, TensorShape({tensor_size}));
   t.flat<float>() = t.flat<float>().setRandom();
 
-  std::vector<string> functions;
+  std::vector<std::string> functions;
   for (int j = 0; j < num_functions; ++j) {
     functions.push_back(Function(j));
   }
@@ -140,11 +151,15 @@ static Graph* UnaryOpsCompo(int tensor_size, int repeat_graph,
   return g;
 }
 
-#define BM_UnaryOpsCompo(N, R, F, type)                                \
-  static void BM_UnaryOpsCompo##_##type##_##N##_##R##_##F(int iters) { \
-    testing::ItemsProcessed(static_cast<int64>(iters) * N * R * F);    \
-    test::Benchmark(#type, UnaryOpsCompo(N, R, F)).Run(iters);         \
-  }                                                                    \
+#define BM_UnaryOpsCompo(N, R, F, type)                                        \
+  static void BM_UnaryOpsCompo##_##type##_##N##_##R##_##F(                     \
+      ::testing::benchmark::State& state) {                                    \
+    test::Benchmark(#type, UnaryOpsCompo(N, R, F),                             \
+                    /*old_benchmark_api*/ false)                               \
+        .Run(state);                                                           \
+    state.SetItemsProcessed(static_cast<int64_t>(state.iterations()) * N * R * \
+                            F);                                                \
+  }                                                                            \
   BENCHMARK(BM_UnaryOpsCompo##_##type##_##N##_##R##_##F);
 
 // BenchmarkName(tensor_size, repeat_graph, num_ops, type)

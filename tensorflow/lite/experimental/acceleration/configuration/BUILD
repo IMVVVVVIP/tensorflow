@@ -13,30 +13,28 @@
 # limitations under the License.
 # ==============================================================================
 
-load("@flatbuffers//:build_defs.bzl", "flatbuffer_cc_library", "flatbuffer_java_library", "flatc_path")
+# buildifier: disable=out-of-order-load
+
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@com_google_protobuf//bazel:proto_library.bzl", "proto_library")
+load("@flatbuffers//:build_defs.bzl", "DEFAULT_FLATC_ARGS", "flatbuffer_android_library", "flatbuffer_cc_library", "flatbuffer_java_library")
+load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
+load("//tensorflow/lite:build_def.bzl", "tflite_copts", "tflite_copts_warnings")
+load("//tensorflow/lite:special_rules.bzl", "nnapi_plugin_impl_visibility_allowlist", "tflite_portable_test_suite")
+load("//tensorflow/lite/core/shims:cc_library_with_tflite.bzl", "cc_library_with_tflite")
+# copybara:uncomment load("//tools/build_defs/proto/cpp:cc_proto_library.bzl", "cc_proto_library")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:LICENSE"],
     default_visibility = [
         "//visibility:public",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
-genrule(
-    name = "configuration_schema",
-    srcs = ["configuration.proto"],
-    outs = ["configuration.fbs"],
-    # We rename the namespace since otherwise the proto classes and flatbuffer
-    # classes would have the same names.
-    cmd = """
-    $(location {}) --proto -o $(@D) $(location :configuration.proto)
-    perl -p -i -e 's/tflite.proto/tflite/' $(@D)/configuration.fbs
-    """.format(flatc_path),
-    tools = [
-        flatc_path,
-    ],
-)
-
+# Generate a C++ header containing the contents of the FlatBuffer schema
+# as a char array literal.  This is potentially useful for embedding in programs
+# (e.g. for JSON parsing using that schema).
 genrule(
     name = "configuration_fbs_contents_cc",
     srcs = ["configuration.fbs"],
@@ -46,13 +44,27 @@ genrule(
       cat < $(<) >> $(@)
       echo ')Delimiter";' >> $(@)
     """,
+    compatible_with = get_compatible_with_portable(),
+)
+
+genrule(
+    name = "configuration.fbs-backwards-compat-stub",
+    srcs = ["//tensorflow/lite/acceleration/configuration:configuration.fbs"],
+    outs = ["configuration.fbs"],
+    cmd = "cp $< $@",
+    compatible_with = get_compatible_with_portable(),
 )
 
 proto_library(
     name = "configuration_proto",
-    srcs = [
-        "configuration.proto",
-    ],
+    srcs = ["configuration.proto"],
+    exports = ["//tensorflow/lite/acceleration/configuration:configuration_proto"],
+    deps = ["//tensorflow/lite/acceleration/configuration:configuration_proto"],
+)
+
+alias(
+    name = "configuration_java_proto_lite",
+    actual = "//tensorflow/lite/acceleration/configuration:configuration_java_proto_lite",
 )
 
 cc_proto_library(
@@ -60,14 +72,11 @@ cc_proto_library(
     deps = [":configuration_proto"],
 )
 
-java_lite_proto_library(
-    name = "configuration_java_proto_lite",
-    deps = [":configuration_proto"],
-)
-
 flatbuffer_cc_library(
     name = "configuration_fbs",
     srcs = [":configuration.fbs"],
+    compatible_with = get_compatible_with_portable(),
+    flatc_args = DEFAULT_FLATC_ARGS + ["--gen-compare"],
 )
 
 flatbuffer_java_library(
@@ -75,64 +84,59 @@ flatbuffer_java_library(
     srcs = [":configuration.fbs"],
 )
 
+flatbuffer_android_library(
+    name = "configuration_fbs_android",
+    srcs = [":configuration.fbs"],
+)
+
 cc_library(
     name = "proto_to_flatbuffer",
-    srcs = [
-        "configuration_fbs_contents-inl.h",
-        "proto_to_flatbuffer.cc",
-    ],
     hdrs = ["proto_to_flatbuffer.h"],
     deps = [
-        ":configuration_cc_proto",
-        ":configuration_fbs",
-        "//tensorflow/core/platform:protobuf",
-        "//tensorflow/lite:minimal_logging",
-        "@flatbuffers",
+        "//tensorflow/lite/acceleration/configuration:proto_to_flatbuffer",
     ],
 )
 
 cc_library(
-    name = "delegate_registry",
-    srcs = ["delegate_registry.cc"],
-    hdrs = ["delegate_registry.h"],
+    name = "flatbuffer_to_proto",
+    hdrs = ["flatbuffer_to_proto.h"],
     deps = [
-        ":configuration_fbs",
-        "//tensorflow/lite/c:common",
-        "@com_google_absl//absl/synchronization",
+        "//tensorflow/lite/acceleration/configuration:flatbuffer_to_proto",
+    ],
+)
+
+cc_library_with_tflite(
+    name = "delegate_registry",
+    hdrs = ["delegate_registry.h"],
+    compatible_with = get_compatible_with_portable(),
+    tflite_deps = [
+        "//tensorflow/lite/acceleration/configuration:delegate_registry",
+    ],
+)
+
+cc_library_with_tflite(
+    name = "delegate_plugin_converter",
+    hdrs = ["delegate_plugin_converter.h"],
+    tflite_deps = [
+        "//tensorflow/lite/acceleration/configuration:delegate_plugin_converter",
     ],
 )
 
 cc_library(
     name = "nnapi_plugin",
-    srcs = ["nnapi_plugin.cc"],
+    compatible_with = get_compatible_with_portable(),
     deps = [
-        ":configuration_fbs",
-        ":delegate_registry",
-        "//tensorflow/lite/delegates/nnapi:nnapi_delegate",
-        "@com_google_absl//absl/memory",
+        ":nnapi_plugin_impl",
     ],
-    alwayslink = 1,  # For registration to always run.
 )
 
-cc_test(
-    name = "nnapi_plugin_test",
-    srcs = ["nnapi_plugin_test.cc"],
-    tags = [
-        "no_mac",
-        "no_windows",
-        "tflite_not_portable_ios",
-    ],
+cc_library(
+    name = "nnapi_plugin_impl",
+    hdrs = ["nnapi_plugin.h"],
+    compatible_with = get_compatible_with_portable(),
+    visibility = nnapi_plugin_impl_visibility_allowlist(),
     deps = [
-        ":configuration_fbs",
-        ":delegate_registry",
-        ":nnapi_plugin",
-        "//tensorflow/lite:framework",
-        "//tensorflow/lite/c:common",
-        "//tensorflow/lite/delegates/nnapi:nnapi_delegate",
-        "//tensorflow/lite/delegates/nnapi:nnapi_delegate_mock_test",
-        "//tensorflow/lite/kernels:test_util",
-        "@com_google_googletest//:gtest_main",
-        "@flatbuffers",
+        "//tensorflow/lite/core/acceleration/configuration:nnapi_plugin",
     ],
 )
 
@@ -141,10 +145,13 @@ cc_library(
     srcs = ["hexagon_plugin.cc"],
     deps = [
         ":configuration_fbs",
-        ":delegate_registry",
+        "//tensorflow/lite/core/acceleration/configuration:delegate_registry",
         "@com_google_absl//absl/memory",
     ] + select({
-        "//tensorflow:android": [
+        "@platforms//cpu:aarch64": [
+            "//tensorflow/lite/delegates/hexagon:hexagon_delegate",
+        ],
+        "@platforms//cpu:armv7": [
             "//tensorflow/lite/delegates/hexagon:hexagon_delegate",
         ],
         "//conditions:default": [],
@@ -154,12 +161,64 @@ cc_library(
 
 cc_library(
     name = "gpu_plugin",
-    srcs = ["gpu_plugin.cc"],
+    deps = [
+        ":gpu_plugin_impl",
+    ],
+)
+
+common_copts = tflite_copts() + tflite_copts_warnings()
+
+cc_library(
+    name = "gpu_plugin_impl",
+    hdrs = ["gpu_plugin.h"],
+    copts = common_copts + select({
+        "//tensorflow:ios": [
+            "-xobjective-c++",
+        ],
+        "//tensorflow:macos_arm64": [
+            "-xobjective-c++",
+        ],
+        "//conditions:default": [],
+    }),
+    deps = [
+        "//tensorflow/lite/acceleration/configuration:gpu_plugin_impl",
+    ],
+)
+
+cc_library(
+    name = "xnnpack_plugin",
+    deps = [
+        "//tensorflow/lite/acceleration/configuration:xnnpack_plugin",
+    ],
+)
+
+cc_library(
+    name = "coreml_plugin",
+    srcs = ["coreml_plugin.cc"],
     deps = [
         ":configuration_fbs",
-        ":delegate_registry",
-        "//tensorflow/lite/delegates/gpu:delegate",
+        "//tensorflow/lite:minimal_logging",
+        "//tensorflow/lite/core/acceleration/configuration:delegate_registry",
         "@com_google_absl//absl/memory",
-    ],
+    ] + select({
+        "//tensorflow:macos": [
+            "//tensorflow/lite/delegates/coreml:coreml_delegate",
+        ],
+        "//tensorflow:ios": [
+            "//tensorflow/lite/delegates/coreml:coreml_delegate",
+        ],
+        "//conditions:default": [],
+    }),
     alwayslink = 1,  # For registration to always run.
 )
+
+# TODO(b/260582614): Add support for TF Lite in Play Services.
+cc_library(
+    name = "stable_delegate_plugin",
+    hdrs = ["stable_delegate_plugin.h"],
+    deps = [
+        "//tensorflow/lite/acceleration/configuration:stable_delegate_plugin",
+    ],
+)
+
+tflite_portable_test_suite()

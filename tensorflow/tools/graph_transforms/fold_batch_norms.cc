@@ -28,9 +28,9 @@ namespace graph_transforms {
 // Converts Conv2D or MatMul ops followed by column-wise Muls into equivalent
 // ops with the Mul baked into the convolution weights, to save computation
 // during inference.
-Status FoldBatchNorms(const GraphDef& input_graph_def,
-                      const TransformFuncContext& context,
-                      GraphDef* output_graph_def) {
+absl::Status FoldBatchNorms(const GraphDef& input_graph_def,
+                            const TransformFuncContext& context,
+                            GraphDef* output_graph_def) {
   GraphDef replaced_graph_def;
   TF_RETURN_IF_ERROR(ReplaceMatchingOpTypes(
       input_graph_def,  // clang-format off
@@ -45,8 +45,8 @@ Status FoldBatchNorms(const GraphDef& input_graph_def,
           {"Const"},         // mul_values_node
         }
       },  // clang-format on
-      [](const NodeMatch& match, const std::set<string>& input_nodes,
-         const std::set<string>& output_nodes,
+      [](const NodeMatch& match, const std::set<std::string>& input_nodes,
+         const std::set<std::string>& output_nodes,
          std::vector<NodeDef>* new_nodes) {
         // Find all the nodes we expect in the subgraph.
         const NodeDef& mul_node = match.node;
@@ -62,7 +62,7 @@ Status FoldBatchNorms(const GraphDef& input_graph_def,
             new_nodes->insert(new_nodes->end(),
                               {mul_node, conv_node, input_node, weights_node,
                                mul_values_node});
-            return Status::OK();
+            return absl::OkStatus();
           }
         }
 
@@ -71,7 +71,7 @@ Status FoldBatchNorms(const GraphDef& input_graph_def,
 
         // Make sure all the inputs really are vectors, with as many entries as
         // there are columns in the weights.
-        int64 weights_cols;
+        int64_t weights_cols;
         if (conv_node.op() == "Conv2D") {
           weights_cols = weights.shape().dim_size(3);
         } else if (conv_node.op() == "DepthwiseConv2dNative") {
@@ -82,16 +82,16 @@ Status FoldBatchNorms(const GraphDef& input_graph_def,
         }
         if ((mul_values.shape().dims() != 1) ||
             (mul_values.shape().dim_size(0) != weights_cols)) {
-          return errors::InvalidArgument(
-              "Mul constant input to batch norm has bad shape: ",
-              mul_values.shape().DebugString());
+          return absl::InvalidArgumentError(
+              absl::StrCat("Mul constant input to batch norm has bad shape: ",
+                           mul_values.shape().DebugString()));
         }
 
         // Multiply the original weights by the scale vector.
         auto weights_vector = weights.flat<float>();
         Tensor scaled_weights(DT_FLOAT, weights.shape());
         auto scaled_weights_vector = scaled_weights.flat<float>();
-        for (int64 row = 0; row < weights_vector.dimension(0); ++row) {
+        for (int64_t row = 0; row < weights_vector.dimension(0); ++row) {
           scaled_weights_vector(row) =
               weights_vector(row) *
               mul_values.flat<float>()(row % weights_cols);
@@ -112,11 +112,11 @@ Status FoldBatchNorms(const GraphDef& input_graph_def,
         new_conv_node.set_name(mul_node.name());
         new_nodes->push_back(new_conv_node);
 
-        return Status::OK();
+        return absl::OkStatus();
       },
       {}, &replaced_graph_def));
   *output_graph_def = replaced_graph_def;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 REGISTER_GRAPH_TRANSFORM("fold_batch_norms", FoldBatchNorms);

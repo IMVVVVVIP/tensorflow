@@ -14,15 +14,13 @@
 # ==============================================================================
 """Functional tests for pooling operations."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.compiler.tests import xla_test
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import errors
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_nn_ops
@@ -39,7 +37,7 @@ def NHWCToNCHW(input_tensor):
   Returns:
     the converted tensor or a shape array
   """
-  if isinstance(input_tensor, ops.Tensor):
+  if isinstance(input_tensor, tensor.Tensor):
     return array_ops.transpose(input_tensor, [0, 3, 1, 2])
   else:
     return [input_tensor[0], input_tensor[3], input_tensor[1], input_tensor[2]]
@@ -54,7 +52,7 @@ def NCHWToNHWC(input_tensor):
   Returns:
     the converted tensor or a shape array
   """
-  if isinstance(input_tensor, ops.Tensor):
+  if isinstance(input_tensor, tensor.Tensor):
     return array_ops.transpose(input_tensor, [0, 2, 3, 1])
   else:
     return [input_tensor[0], input_tensor[2], input_tensor[3], input_tensor[1]]
@@ -543,19 +541,11 @@ class PoolGradTest(xla_test.XLATestCase):
         padding="SAME",
         pool_grad_grad_func=pool_grad_grad_func)
 
-  @test_util.disable_mlir_bridge("TODO(b/159845178): Implement support for "
-                                 "MaxPoolGradGrad op in MLIR-based bridge")
   def testMaxPool(self):
     self._TestPooling(
         nn_ops.max_pool,
         gen_nn_ops.max_pool_grad,
         pool_grad_grad_func=gen_nn_ops.max_pool_grad_grad)
-
-  # TODO(b/159845178): Remove this once MLIR bridge supports MaxPoolGradGrad
-  # (then `testMaxPool` test will be sufficient)
-  def testMaxPoolNoGradGrad(self):
-    self._TestPooling(
-        nn_ops.max_pool, gen_nn_ops.max_pool_grad, pool_grad_grad_func=None)
 
   def testAvgPool(self):
     # Wrapper around AvgPoolGrad that ignores extra arguments needed by
@@ -572,6 +562,34 @@ class PoolGradTest(xla_test.XLATestCase):
           data_format=data_format)
 
     self._TestPooling(nn_ops.avg_pool, AvgPoolGrad)
+
+  @test_util.disable_mlir_bridge(
+      "TODO(b/266613412): investigate FPE in AvgPoolGrad for TPU"
+  )
+  def testAvgPoolGradSamePaddingZeroStrideZeroSize(self):
+    output_gradient_vals = np.array([0.39117979], dtype=np.float32)
+    output_gradient_vals = output_gradient_vals.reshape([1, 1, 1, 1])
+    with self.session() as sess:
+      with self.test_scope():
+        output_gradients = array_ops.placeholder(
+            dtypes.float32, shape=output_gradient_vals.shape
+        )
+        t = gen_nn_ops.avg_pool_grad(
+            orig_input_shape=[1, 0, 0, 0],
+            grad=output_gradients,
+            ksize=[1, 0, 0, 0],
+            strides=[1, 0, 0, 0],
+            padding="SAME",
+            data_format="NCHW",
+        )
+      with self.assertRaisesRegex(
+          errors.InvalidArgumentError,
+          (
+              "Sliding window ksize field for dimension 1 must be positive but"
+              " is 0"
+          ),
+      ):
+        sess.run(t, {output_gradients: output_gradient_vals})
 
   # The CPU implementation of AvgPoolGrad doesn't accept kernels smaller than
   # the stride size, so we only run the following tests on MaxPoolGrad.

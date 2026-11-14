@@ -16,8 +16,9 @@ limitations under the License.
 // Util methods to read and write String tensors.
 // String tensors are considered to be char tensor with protocol.
 //   [0, 3] 4 bytes: N, num of strings in the tensor in little endian.
-//   [(i+1)*4, (i+1)*4+3] 4 bytes: offset of i-th string in little endian.
-//   [(N+2)*4, (N+2)*4+3] 4 bytes: length of the whole char buffer.
+//   [(i+1)*4, (i+1)*4+3] 4 bytes: offset of i-th string in little endian,
+//                                 for i from 0 to N-1.
+//   [(N+1)*4, (N+1)*4+3] 4 bytes: length of the whole char buffer.
 //   [offset(i), offset(i+1) - 1] : content of i-th string.
 // Example of a string tensor:
 // [
@@ -40,31 +41,33 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_STRING_UTIL_H_
 #define TENSORFLOW_LITE_STRING_UTIL_H_
 
+#include <stddef.h>
+
 #include <vector>
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/compiler/mlir/lite/utils/string_utils.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/string_type.h"
 
 namespace tflite {
 
-// Convenient structure to store string pointer and length.
-typedef struct {
-  const char* str;
-  int len;
-} StringRef;
+using ::mlir::TFL::GetString;
+using ::mlir::TFL::GetStringCount;
+using ::mlir::TFL::kDefaultMaxLength;
+using ::mlir::TFL::StringRef;
 
 // DynamicBuffer holds temporary buffer that will be used to create a dynamic
 // tensor. A typical usage is to initialize a DynamicBuffer object, fill in
 // content and call CreateStringTensor in op.Eval().
-class DynamicBuffer {
+class DynamicBuffer : public mlir::TFL::SimpleDynamicBuffer {
  public:
-  DynamicBuffer() : offset_({0}) {}
+  explicit DynamicBuffer(size_t max_length = kDefaultMaxLength)
+      : mlir::TFL::SimpleDynamicBuffer(max_length) {}
+  // Add string to dynamic buffer by resizing the buffer and copying the data.
+  TfLiteStatus AddString(const StringRef& string);
 
   // Add string to dynamic buffer by resizing the buffer and copying the data.
-  void AddString(const StringRef& string);
-
-  // Add string to dynamic buffer by resizing the buffer and copying the data.
-  void AddString(const char* str, size_t len);
+  TfLiteStatus AddString(const char* str, size_t len);
 
   // Join a list of string with separator, and add as a single string to the
   // buffer.
@@ -72,10 +75,7 @@ class DynamicBuffer {
   void AddJoinedString(const std::vector<StringRef>& strings,
                        StringRef separator);
 
-  // Fill content into a buffer and returns the number of bytes stored.
-  // The function allocates space for the buffer but does NOT take ownership.
-  int WriteToBuffer(char** buffer);
-
+  using mlir::TFL::SimpleDynamicBuffer::WriteToBuffer;
   // Fill content into a string tensor, with the given new_shape. The new shape
   // must match the number of strings in this object. Caller relinquishes
   // ownership of new_shape. If 'new_shape' is nullptr, keep the tensor's
@@ -84,22 +84,20 @@ class DynamicBuffer {
 
   // Fill content into a string tensor. Set shape to {num_strings}.
   void WriteToTensorAsVector(TfLiteTensor* tensor);
-
- private:
-  // Data buffer to store contents of strings, not including headers.
-  std::vector<char> data_;
-  // Offset of the starting index of each string in data buffer.
-  std::vector<int32_t> offset_;
 };
 
 // Return num of strings in a String tensor.
-int GetStringCount(const void* raw_buffer);
-int GetStringCount(const TfLiteTensor* tensor);
+inline int GetStringCount(const TfLiteTensor* tensor) {
+  // The first integers in the raw buffer is the number of strings.
+  return GetStringCount(tensor->data.raw);
+}
 
 // Get String pointer and length of index-th string in tensor.
 // NOTE: This will not create a copy of string data.
-StringRef GetString(const void* raw_buffer, int string_index);
-StringRef GetString(const TfLiteTensor* tensor, int string_index);
+inline StringRef GetString(const TfLiteTensor* tensor, int string_index) {
+  return GetString(tensor->data.raw, string_index);
+}
+
 }  // namespace tflite
 
 #endif  // TENSORFLOW_LITE_STRING_UTIL_H_

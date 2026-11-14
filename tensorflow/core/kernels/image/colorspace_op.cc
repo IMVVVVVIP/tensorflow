@@ -14,14 +14,13 @@ limitations under the License.
 ==============================================================================*/
 
 // See docs in ../ops/array_ops.cc.
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #define EIGEN_USE_THREADS
 
 #include "tensorflow/core/kernels/image/colorspace_op.h"
 
-#include <algorithm>
-#include <cmath>
-
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -36,9 +35,6 @@ namespace tensorflow {
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
-#ifdef TENSORFLOW_USE_SYCL
-typedef Eigen::SyclDevice SYCLDevice;
-#endif
 
 template <typename Device, typename T>
 class RGBToHSVOp : public OpKernel {
@@ -48,13 +44,13 @@ class RGBToHSVOp : public OpKernel {
   void Compute(OpKernelContext* context) override {
     const Tensor& input = context->input(0);
     OP_REQUIRES(context, input.dims() >= 1,
-                errors::InvalidArgument("input must be at least 1D",
-                                        input.shape().DebugString()));
+                absl::InvalidArgumentError(absl::StrCat(
+                    "input must be at least 1D", input.shape().DebugString())));
     auto channels = input.dim_size(input.dims() - 1);
     OP_REQUIRES(context, channels == 3,
-                errors::FailedPrecondition(
+                absl::FailedPreconditionError(absl::StrCat(
                     "input must have 3 channels but input only has ", channels,
-                    " channels."));
+                    " channels.")));
 
     // Create the output Tensor with the same dimensions as the input Tensor.
     Tensor* output = nullptr;
@@ -87,13 +83,13 @@ class HSVToRGBOp : public OpKernel {
   void Compute(OpKernelContext* context) override {
     const Tensor& input = context->input(0);
     OP_REQUIRES(context, input.dims() >= 1,
-                errors::InvalidArgument("input must be at least 1D",
-                                        input.shape().DebugString()));
+                absl::InvalidArgumentError(absl::StrCat(
+                    "input must be at least 1D", input.shape().DebugString())));
     auto channels = input.dim_size(input.dims() - 1);
     OP_REQUIRES(context, channels == 3,
-                errors::FailedPrecondition(
+                absl::FailedPreconditionError(absl::StrCat(
                     "input must have 3 channels but input only has ", channels,
-                    " channels."));
+                    " channels.")));
 
     // Create the output Tensor with the same dimensions as the input Tensor.
     Tensor* output = nullptr;
@@ -119,6 +115,8 @@ class HSVToRGBOp : public OpKernel {
   template class HSVToRGBOp<CPUDevice, T>;
 TF_CALL_float(REGISTER_CPU);
 TF_CALL_double(REGISTER_CPU);
+TF_CALL_half(REGISTER_CPU);
+TF_CALL_bfloat16(REGISTER_CPU);
 
 #if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
     (defined(TENSORFLOW_USE_ROCM) && TENSORFLOW_USE_ROCM)
@@ -148,18 +146,6 @@ TF_CALL_double(DECLARE_GPU);
       HSVToRGBOp<GPUDevice, T>);
 TF_CALL_float(REGISTER_GPU);
 TF_CALL_double(REGISTER_GPU);
-#endif
-
-#ifdef TENSORFLOW_USE_SYCL
-#define REGISTER_SYCL(T)                                           \
-  REGISTER_KERNEL_BUILDER(                                         \
-      Name("RGBToHSV").Device(DEVICE_SYCL).TypeConstraint<T>("T"), \
-      RGBToHSVOp<SYCLDevice, T>);                                  \
-  REGISTER_KERNEL_BUILDER(                                         \
-      Name("HSVToRGB").Device(DEVICE_SYCL).TypeConstraint<T>("T"), \
-      HSVToRGBOp<SYCLDevice, T>);
-TF_CALL_float(REGISTER_SYCL);
-TF_CALL_double(REGISTER_SYCL);
 #endif
 
 }  // namespace tensorflow

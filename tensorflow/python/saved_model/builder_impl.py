@@ -14,39 +14,41 @@
 # ==============================================================================
 """SavedModel builder implementation."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import functools
 import os
 
 from google.protobuf.any_pb2 import Any
-
 from tensorflow.core.framework import types_pb2
 from tensorflow.core.protobuf import meta_graph_pb2
 from tensorflow.core.protobuf import saved_model_pb2
 from tensorflow.core.protobuf import saver_pb2
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
 from tensorflow.python.lib.io import file_io
 from tensorflow.python.ops import variables
 from tensorflow.python.platform import tf_logging
-from tensorflow.python.saved_model import constants
+from tensorflow.python.saved_model import fingerprinting_utils
+from tensorflow.python.saved_model import path_helpers
 from tensorflow.python.saved_model import signature_def_utils
-from tensorflow.python.saved_model import utils_impl as saved_model_utils
+from tensorflow.python.saved_model.pywrap_saved_model import constants
+from tensorflow.python.saved_model.pywrap_saved_model import metrics
 from tensorflow.python.training import saver as tf_saver
 from tensorflow.python.util import compat
 from tensorflow.python.util.deprecation import deprecated_args
 from tensorflow.python.util.tf_export import tf_export
+# copybara:uncomment # Placeholder for protosplitter import.
+# API label for SavedModel metrics.
+_SAVE_BUILDER_LABEL = "save_v1_builder"
 
 
 # Base class for the SavedModelBuilder that is only used by Tensorflow
 # internally. Please use tf.compat.v1.saved_model.SavedModelBuilder instead.
+@tf_export("__internal__.saved_model.SavedModelBuilder", v1=[])
 class _SavedModelBuilder(object):
   """Builds the `SavedModel` protocol buffer and saves variables and assets.
 
-  The `SavedModelBuilder` class provides the functionality to build a 
+  The `SavedModelBuilder` class provides the functionality to build a
   `SavedModel` protocol buffer. Specifically, this allows multiple meta
   graphs to be saved as part of a single language-neutral `SavedModel`,
   while sharing variables and assets.
@@ -98,9 +100,9 @@ class _SavedModelBuilder(object):
     if file_io.file_exists(export_dir):
       if file_io.list_directory(export_dir):
         raise AssertionError(
-            "Export directory already exists, and isn't empty. Please choose "
-            "a different export directory, or delete all the contents of the "
-            "specified directory: %s" % export_dir)
+            f"Export directory {export_dir} already exists, and isn't empty. "
+            "Please choose a different export directory, or delete all the "
+            "contents of the specified directory.")
     else:
       file_io.recursive_create_dir(self._export_dir)
 
@@ -110,6 +112,7 @@ class _SavedModelBuilder(object):
     # on the SavedModel MUST use the add_meta_graph() API which does not save
     # weights.
     self._has_saved_variables = False
+    self._saved_asset_files = set()
 
   def _save_and_write_assets(self, meta_graph_def, assets_list=None):
     """Saves asset to the meta graph and writes asset files to disk.
@@ -128,7 +131,8 @@ class _SavedModelBuilder(object):
       return
 
     # Copy assets from source path to destination path.
-    copy_assets_to_destination_dir(asset_filename_map, self._export_dir)
+    copy_assets_to_destination_dir(asset_filename_map, self._export_dir,
+                                   self._saved_asset_files)
 
   def _tag_and_add_meta_graph(self, meta_graph_def, tags, signature_def_map):
     """Tags the meta graph def and adds it to the SavedModel.
@@ -140,7 +144,7 @@ class _SavedModelBuilder(object):
       meta_graph_def: The meta graph def to add to the SavedModel.
       tags: The set of tags to annotate the meta graph def with.
       signature_def_map: The map of signature defs to be added to the meta graph
-          def.
+        def.
     """
     for tag in tags:
       meta_graph_def.meta_info_def.tags.append(tag)
@@ -172,16 +176,16 @@ class _SavedModelBuilder(object):
     if tensor_info.WhichOneof("encoding") is None:
       # TODO(soergel) validate each of the fields of coo_sparse
       raise AssertionError(
-          "All TensorInfo protos used in the SignatureDefs must have one of "
-          "the 'encoding' fields (e.g., name or coo_sparse) set: %s"
-          % tensor_info)
+          f"Invalid `tensor_info`: {tensor_info}. All TensorInfo protos used "
+          "in the SignatureDefs must have one of the 'encoding' fields (e.g., "
+          "name or coo_sparse) set.")
     if tensor_info.WhichOneof("encoding") == "composite_tensor":
       for component in tensor_info.composite_tensor.components:
         self._validate_tensor_info(component)
     elif tensor_info.dtype == types_pb2.DT_INVALID:
       raise AssertionError(
-          "All TensorInfo protos used in the SignatureDefs must have the dtype "
-          "field set: %s" % tensor_info)
+          f"Invalid `tensor_info`: {tensor_info}. All TensorInfo protos used in"
+          " the SignatureDefs must have the dtype field set.")
 
   def _validate_signature_def_map(self, signature_def_map):
     """Validates the `SignatureDef` entries in the signature def map.
@@ -208,12 +212,12 @@ class _SavedModelBuilder(object):
         self._validate_tensor_info(outputs[outputs_key])
     if constants.INIT_OP_SIGNATURE_KEY in signature_def_map:
       raise KeyError(
-          "SignatureDef map key \"{}\" is reserved for initialization. Please "
-          "use a different key.".format(constants.INIT_OP_SIGNATURE_KEY))
+          f"SignatureDef map key \"{constants.INIT_OP_SIGNATURE_KEY}\" is "
+          "reserved for initialization. Please use a different key.")
     if constants.TRAIN_OP_SIGNATURE_KEY in signature_def_map:
       raise KeyError(
-          "SignatureDef map key \"{}\" is reserved for the train op. Please "
-          "use a different key.".format(constants.TRAIN_OP_SIGNATURE_KEY))
+          f"SignatureDef map key \"{constants.TRAIN_OP_SIGNATURE_KEY}\" is "
+          f"reserved for the train op. Please use a different key.")
 
   def _maybe_create_saver(self, saver=None):
     """Creates a sharded saver if one does not already exist."""
@@ -244,15 +248,15 @@ class _SavedModelBuilder(object):
     Args:
       tags: The set of tags to annotate the meta graph def with.
       signature_def_map: The map of signature defs to be added to the meta graph
-          def.
+        def.
       assets_list: Assets to be saved with SavedModel. Note
           that this list should be a subset of the assets saved as part of
           the first meta graph in the SavedModel.
       clear_devices: Set to true if the device info on the default graph should
-          be cleared.
+        be cleared.
       init_op: Op or group of ops to execute when the graph is loaded. Note
           that when the init_op is specified it is run after the restore op at
-          load-time.
+        load-time.
       train_op: Op or group of opts that trains the model when run. This will
         not be run automatically when the graph is loaded, instead saved in
         a SignatureDef accessible through the exported MetaGraph.
@@ -326,10 +330,10 @@ class _SavedModelBuilder(object):
         def.
       assets_list: Assets to be saved with SavedModel.
       clear_devices: Set to true if the device info on the default graph should
-          be cleared.
+        be cleared.
       init_op: Op or group of ops to execute when the graph is loaded. Note
           that when the init_op is specified it is run after the restore op at
-          load-time.
+        load-time.
       train_op: Op or group of ops that trains the model when run. This will
         not be run automatically when the graph is loaded, instead saved in
         a SignatureDef accessible through the exported MetaGraph.
@@ -359,8 +363,8 @@ class _SavedModelBuilder(object):
     _add_op_to_signature_def_map(signature_def_map, train_op,
                                  constants.TRAIN_OP_SIGNATURE_KEY)
 
-    saved_model_utils.get_or_create_variables_dir(self._export_dir)
-    variables_path = saved_model_utils.get_variables_path(self._export_dir)
+    path_helpers.get_or_create_variables_dir(self._export_dir)
+    variables_path = path_helpers.get_variables_path(self._export_dir)
 
     saver = self._maybe_create_saver(saver)
 
@@ -392,46 +396,86 @@ class _SavedModelBuilder(object):
     # subsequent attempts to save variables will fail.
     self._has_saved_variables = True
 
-  def save(self, as_text=False):
+  def save(self, as_text=False, experimental_image_format=False,
+           experimental_image_writer_options=None):
     """Writes a `SavedModel` protocol buffer to disk.
 
     The function writes the SavedModel protocol buffer to the export directory
     in a serialized format.
 
     Args:
-      as_text: Writes the SavedModel protocol buffer in text format to
-        disk. Protocol buffers in text format are useful for debugging, but
-        parsing fails when it encounters an unknown field and so is not forward
+      as_text: Writes the SavedModel protocol buffer in text format to disk.
+        Protocol buffers in text format are useful for debugging, but parsing
+        fails when it encounters an unknown field and so is not forward
         compatible. This means changes to TensorFlow may prevent deployment of
         new text format SavedModels to existing serving binaries. Do not deploy
         `as_text` SavedModels to production.
+      experimental_image_format: Writes the SavedModel protobuf in the
+        experimental image format. See
+      https://www.tensorflow.org/api_docs/python/tf/saved_model/SaveOptions for
+        more details. This allows `SavedModelBuilder` to save models larger than
+        2 GiB.
+      experimental_image_writer_options: Optional options for the experimental
+        image writer. See
+        https://github.com/google/riegeli/blob/master/doc/record_writer_options.md
+          for available options.
+
+    Raises:
+       RuntimeError: When trying to use `proto_splitter` but `proto_splitter` is
+         not imported. This check is here because `proto_splitter` is not
+         available in OSS at the moment.
 
     Returns:
       The path to which the SavedModel protocol buffer was written.
     """
+    metrics.IncrementWriteApi(_SAVE_BUILDER_LABEL)
     if not file_io.file_exists(self._export_dir):
       file_io.recursive_create_dir(self._export_dir)
 
     if as_text:
-      path = os.path.join(
+      path = file_io.join(
           compat.as_bytes(self._export_dir),
           compat.as_bytes(constants.SAVED_MODEL_FILENAME_PBTXT))
       file_io.write_string_to_file(path, str(self._saved_model))
     else:
-      path = os.path.join(
-          compat.as_bytes(self._export_dir),
-          compat.as_bytes(constants.SAVED_MODEL_FILENAME_PB))
-      file_io.write_string_to_file(
-          path, self._saved_model.SerializeToString(deterministic=True))
+      if experimental_image_format:
+        path = file_io.join(
+            self._export_dir,
+            constants.SAVED_MODEL_FILENAME_PREFIX,
+        )
+        if (
+            locals().get("proto_splitter", globals().get("proto_splitter"))
+            is None
+        ):
+          raise RuntimeError(
+              "No proto_splitter is provided, cannot use"
+              " experimental_image_format."
+          )
+        # Overwrites path to record whether the saved_model is split, i.e.,
+        # whether the suffix is `.pb` or `.cpb`.
+        path = proto_splitter.SavedModelSplitter(self._saved_model).write(
+            path, experimental_image_writer_options
+        )
+      else:
+        path = file_io.join(
+            compat.as_bytes(self._export_dir),
+            compat.as_bytes(constants.SAVED_MODEL_FILENAME_PB),
+        )
+        file_io.write_string_to_file(
+            path, self._saved_model.SerializeToString(deterministic=True)
+        )
+    # Placeholder for internal TF1 model fingerprint write
     tf_logging.info("SavedModel written to: %s", compat.as_text(path))
+    metrics.IncrementWrite(write_version="1")
 
     return path
 
 
 @tf_export(v1=["saved_model.Builder", "saved_model.builder.SavedModelBuilder"])  # pylint: disable=missing-docstring
 class SavedModelBuilder(_SavedModelBuilder):
-  __doc__ = _SavedModelBuilder.__doc__.replace("assets_list",
-                                               "assets_collection")
+  __doc__ = (_SavedModelBuilder.__doc__ or "").replace(
+      "assets_list", "assets_collection"
+  )
 
   def __init__(self, export_dir):
     super(SavedModelBuilder, self).__init__(export_dir=export_dir)
@@ -462,7 +506,8 @@ class SavedModelBuilder(_SavedModelBuilder):
       return
 
     # Copy assets from source path to destination path.
-    copy_assets_to_destination_dir(asset_filename_map, self._export_dir)
+    copy_assets_to_destination_dir(asset_filename_map, self._export_dir,
+                                   self._saved_asset_files)
 
   def _maybe_add_main_op(self, main_op):
     """Adds main op to the SavedModel.
@@ -479,7 +524,8 @@ class SavedModelBuilder(_SavedModelBuilder):
       return
 
     if not isinstance(main_op, ops.Operation):
-      raise TypeError("main_op needs to be an Operation: %r" % main_op)
+      raise TypeError(f"Expected {main_op} to be an Operation but got type "
+                      f"{type(main_op)} instead.")
 
     # Validate that no other init ops have been added to this graph already.
     # We check main_op and legacy_init_op for thoroughness and explicitness.
@@ -487,7 +533,7 @@ class SavedModelBuilder(_SavedModelBuilder):
       if ops.get_collection(init_op_key):
         raise ValueError(
             "Graph already contains one or more main ops under the "
-            "collection {}.".format(init_op_key))
+            f"collection {init_op_key}.")
 
     ops.add_to_collection(constants.MAIN_OP_KEY, main_op)
 
@@ -505,9 +551,9 @@ class SavedModelBuilder(_SavedModelBuilder):
       TypeError if Train op is not of type `Operation`.
     """
     if train_op is not None:
-      if (not isinstance(train_op, ops.Tensor) and
+      if (not isinstance(train_op, tensor.Tensor) and
           not isinstance(train_op, ops.Operation)):
-        raise TypeError("train_op needs to be a Tensor or Op: %r" % train_op)
+        raise TypeError(f"`train_op` {train_op} needs to be a Tensor or Op.")
       ops.add_to_collection(constants.TRAIN_OP_KEY, train_op)
 
   @deprecated_args(None,
@@ -534,7 +580,7 @@ class SavedModelBuilder(_SavedModelBuilder):
 
     # legacy_init_op is deprecated, and going away in TF 2.0.
     # Re-mapping to main_op, as treatment is identical regardless.
-    main_op = main_op or legacy_init_op
+    main_op = main_op if main_op is not None else legacy_init_op
 
     # Add assets and ops
     self._add_collections(assets_collection, main_op, None)
@@ -584,8 +630,8 @@ class SavedModelBuilder(_SavedModelBuilder):
     # Add assets and ops
     self._add_collections(assets_collection, main_op, None)
 
-    saved_model_utils.get_or_create_variables_dir(self._export_dir)
-    variables_path = saved_model_utils.get_variables_path(self._export_dir)
+    path_helpers.get_or_create_variables_dir(self._export_dir)
+    variables_path = path_helpers.get_variables_path(self._export_dir)
 
     saver = self._maybe_create_saver(saver)
 
@@ -614,11 +660,12 @@ class SavedModelBuilder(_SavedModelBuilder):
     # subsequent attempts to save variables will fail.
     self._has_saved_variables = True
 
-  add_meta_graph.__doc__ = _SavedModelBuilder.add_meta_graph.__doc__.replace(
-      "assets_list", "assets_collection")
-  add_meta_graph_and_variables.__doc__ = \
-      _SavedModelBuilder.add_meta_graph_and_variables.__doc__.replace(
-          "assets_list", "assets_collection")
+  add_meta_graph.__doc__ = (
+      _SavedModelBuilder.add_meta_graph.__doc__ or ""
+  ).replace("assets_list", "assets_collection")
+  add_meta_graph_and_variables.__doc__ = (
+      _SavedModelBuilder.add_meta_graph_and_variables.__doc__ or ""
+  ).replace("assets_list", "assets_collection")
 
 
 def _maybe_save_assets(write_fn, assets_to_add=None):
@@ -646,7 +693,7 @@ def _maybe_save_assets(write_fn, assets_to_add=None):
   for asset_tensor in assets_to_add:
     asset_source_filepath = _asset_path_from_tensor(asset_tensor)
     if not asset_source_filepath:
-      raise ValueError("Invalid asset filepath tensor %s" % asset_tensor)
+      raise ValueError(f"Asset filepath tensor {asset_tensor} in is invalid.")
 
     asset_filename = get_asset_filename_to_add(
         asset_source_filepath, asset_filename_map)
@@ -728,15 +775,17 @@ def _asset_path_from_tensor(path_tensor):
   Raises:
     TypeError if tensor does not match expected op type, dtype or value.
   """
-  if not isinstance(path_tensor, ops.Tensor):
-    raise TypeError("Asset path tensor must be a Tensor.")
+  if not isinstance(path_tensor, tensor.Tensor):
+    raise TypeError(f"Asset path tensor {path_tensor} must be a Tensor.")
   if path_tensor.op.type != "Const":
-    raise TypeError("Asset path tensor must be of type constant.")
+    raise TypeError(f"Asset path tensor {path_tensor} must be of type constant."
+                    f"Has type {path_tensor.op.type} instead.")
   if path_tensor.dtype != dtypes.string:
-    raise TypeError("Asset path tensor must be of dtype string.")
+    raise TypeError(f"Asset path tensor {path_tensor}` must be of dtype string."
+                    f"Has type {path_tensor.dtype} instead.")
   str_values = path_tensor.op.get_attr("value").string_val
   if len(str_values) != 1:
-    raise TypeError("Asset path tensor must be a scalar.")
+    raise TypeError(f"Asset path tensor {path_tensor} must be a scalar.")
   return str_values[0]
 
 
@@ -754,22 +803,37 @@ def _add_asset_to_metagraph(meta_graph_def, asset_filename, asset_tensor):
   asset_proto.tensor_info.name = asset_tensor.name
 
 
-def copy_assets_to_destination_dir(asset_filename_map, destination_dir):
-  """Copy all assets from source path to destination path."""
-  assets_destination_dir = saved_model_utils.get_or_create_assets_dir(
+def copy_assets_to_destination_dir(asset_filename_map, destination_dir,
+                                   saved_files=None):
+  """Copy all assets from source path to destination path.
+
+  Args:
+    asset_filename_map: a dict of filenames used for saving the asset in
+      the SavedModel to full paths from which the filenames were derived.
+    destination_dir: the destination directory that assets are stored in.
+    saved_files: a set of destination filepaths that have already been copied
+      and will be skipped
+  """
+  if saved_files is None:
+    saved_files = set()
+
+  assets_destination_dir = path_helpers.get_or_create_assets_dir(
       destination_dir)
 
   # Copy each asset from source path to destination path.
   for asset_basename, asset_source_filepath in asset_filename_map.items():
-    asset_destination_filepath = os.path.join(
+    asset_destination_filepath = file_io.join(
         compat.as_bytes(assets_destination_dir),
         compat.as_bytes(asset_basename))
 
-    # Only copy the asset file to the destination if it does not already
-    # exist. This is to ensure that an asset with the same name defined as
-    # part of multiple graphs is only copied the first time.
-    if not file_io.file_exists(asset_destination_filepath):
-      file_io.copy(asset_source_filepath, asset_destination_filepath)
+    # Copy if source file exists, src & dst are not the same, and dst is not in
+    # saved_files
+    if (file_io.file_exists(asset_source_filepath) and
+        asset_source_filepath != asset_destination_filepath and
+        asset_destination_filepath not in saved_files):
+      file_io.copy(
+          asset_source_filepath, asset_destination_filepath, overwrite=True)
+      saved_files.add(asset_destination_filepath)
 
   tf_logging.info("Assets written to: %s",
                   compat.as_text(assets_destination_dir))

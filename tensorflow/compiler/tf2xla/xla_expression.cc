@@ -17,6 +17,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/tf2xla/literal_util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
+#include "xla/hlo/builder/value_inference.h"
 #include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 
@@ -34,6 +35,16 @@ XlaExpression XlaExpression::Constant(Tensor value) {
   XlaExpression e;
   e.kind_ = Kind::kConstant;
   e.dtype_ = value.dtype();
+  e.constant_value_ = value;
+  return e;
+}
+
+XlaExpression XlaExpression::ConstantResource(Tensor value,
+                                              XlaResource* resource) {
+  XlaExpression e;
+  e.kind_ = Kind::kResource;
+  e.dtype_ = DT_RESOURCE;
+  e.resource_ = resource;
   e.constant_value_ = value;
   return e;
 }
@@ -62,7 +73,7 @@ XlaExpression XlaExpression::Resource(XlaResource* resource) {
   return e;
 }
 
-string XlaExpression::HumanString() const {
+std::string XlaExpression::HumanString() const {
   switch (kind_) {
     case Kind::kInvalid:
       return "invalid";
@@ -78,37 +89,36 @@ string XlaExpression::HumanString() const {
 }
 
 xla::XlaOp XlaExpression::AsXlaOp(xla::XlaBuilder* builder) const {
-  return builder->ReportErrorOrReturn([&]() -> xla::StatusOr<xla::XlaOp> {
+  return builder->ReportErrorOrReturn([&]() -> absl::StatusOr<xla::XlaOp> {
     switch (kind_) {
       case Kind::kConstant: {
         xla::BorrowingLiteral literal;
         TF_RETURN_IF_ERROR(
-            HostTensorToBorrowingLiteral(constant_value_, &literal));
+            HostTensorToBorrowingLiteral(*constant_value_, &literal));
         return xla::ConstantLiteral(builder, literal);
       }
       case Kind::kTensorList:
         TF_FALLTHROUGH_INTENDED;
       case Kind::kXlaOp:
         if (builder != handle_.builder()) {
-          return errors::InvalidArgument(
+          return absl::InvalidArgumentError(
               "Mismatched builders in XlaExpression::AsXlaOp");
         }
         return handle_;
       default:
-        return errors::InvalidArgument("AsXlaOp called on XlaExpression: ",
-                                       HumanString());
+        return absl::InvalidArgumentError(
+            absl::StrCat("AsXlaOp called on XlaExpression: ", HumanString()));
     }
   });
 }
 
-xla::StatusOr<Tensor> XlaExpression::ResolveDynamism(
-    xla::Client* client) const {
+absl::StatusOr<Tensor> XlaExpression::ResolveDynamism() const {
   switch (kind()) {
     case Kind::kConstant: {
       // Constant values are considered static.
-      Tensor constant_false(DT_BOOL, constant_value().shape());
+      Tensor constant_false(DT_BOOL, constant_value()->shape());
       auto flat = constant_false.flat<bool>();
-      for (int64 i = 0; i < flat.size(); ++i) flat(i) = false;
+      for (int64_t i = 0; i < flat.size(); ++i) flat(i) = false;
       return constant_false;
     }
     case Kind::kXlaOp:
@@ -118,65 +128,76 @@ xla::StatusOr<Tensor> XlaExpression::ResolveDynamism(
     case Kind::kResource:
       TF_FALLTHROUGH_INTENDED;
     case Kind::kInvalid:
-      return errors::InvalidArgument(
-          "ResolveDynamism called on unsupported XlaExpression: ",
-          HumanString());
+      return absl::InvalidArgumentError(
+          absl::StrCat("ResolveDynamism called on unsupported XlaExpression: ",
+                       HumanString()));
   }
-
-  if (!client)
-    return errors::InvalidArgument("client is required to resolve constant");
-
-  TF_ASSIGN_OR_RETURN(xla::XlaComputation constant_graph,
-                      handle().builder()->BuildDynamicInferenceGraph(handle()));
 
   TF_ASSIGN_OR_RETURN(TensorShape shape, GetShape());
 
   // The XLA layout is specified minor to major, and TensorFlow uses a major to
   // minor order.
-  std::vector<int64> layout_indices(shape.dims());
+  std::vector<int64_t> layout_indices(shape.dims());
   std::iota(layout_indices.rbegin(), layout_indices.rend(), 0);
-  xla::Layout layout = xla::LayoutUtil::MakeLayout(layout_indices);
-  TF_ASSIGN_OR_RETURN(xla::Literal literal,
-                      client->ComputeConstant(constant_graph, &layout));
+  xla::ValueInference value_inference(handle().builder());
+  TF_ASSIGN_OR_RETURN(xla::LiteralSlice literal,
+                      value_inference.AnalyzeIsDynamic(handle()));
   Tensor tensor(DT_BOOL);
   TF_RETURN_IF_ERROR(LiteralToHostTensor(literal, DT_BOOL, &tensor));
   return tensor;
 }
 
-xla::StatusOr<absl::optional<Tensor>> XlaExpression::ResolveConstant(
-    xla::Client* client, bool dynamic_dimension_is_minus_one) const {
+absl::StatusOr<std::optional<Tensor>> XlaExpression::ResolveConstant(
+    xla::Client* client, bool dynamic_dimension_is_minus_one,
+    xla::ValueInferenceMode mode) const {
   switch (kind()) {
     case Kind::kConstant:
-      return {constant_value()};
+    case Kind::kResource:
+      return constant_value();
     case Kind::kXlaOp:
       break;
     case Kind::kTensorList:
       TF_FALLTHROUGH_INTENDED;
-    case Kind::kResource:
-      TF_FALLTHROUGH_INTENDED;
     case Kind::kInvalid:
-      return errors::InvalidArgument(
-          "ResolveConstant called on XlaExpression: ", HumanString());
+      return absl::InvalidArgumentError(absl::StrCat(
+          "ResolveConstant called on XlaExpression: ", HumanString()));
+  }
+  TF_ASSIGN_OR_RETURN(TensorShape shape, GetShape());
+  // The XLA layout is specified minor to major, and TensorFlow uses a major to
+  // minor order.
+  std::vector<int64_t> layout_indices(shape.dims());
+  std::iota(layout_indices.rbegin(), layout_indices.rend(), 0);
+  xla::Layout layout = xla::LayoutUtil::MakeLayout(layout_indices);
+  if (mode == xla::ValueInferenceMode::kLowerBound ||
+      mode == xla::ValueInferenceMode::kUpperBound ||
+      mode == xla::ValueInferenceMode::kValue) {
+    std::vector<int64_t> layout_indices(shape.dims());
+    std::iota(layout_indices.rbegin(), layout_indices.rend(), 0);
+    xla::ValueInference value_inference(handle().builder());
+    TF_ASSIGN_OR_RETURN(xla::OptionalLiteral literal,
+                        value_inference.AnalyzeConstant(handle(), mode));
+    if (!literal.GetValue().has_value()) {
+      return {std::nullopt};
+    }
+    Tensor tensor;
+    TF_RETURN_IF_ERROR(LiteralToHostTensor(
+        literal.GetValue().value().Relayout(layout), dtype(), &tensor));
+    return {tensor};
   }
 
   TF_ASSIGN_OR_RETURN(bool is_constant,
                       handle().builder()->IsConstant(handle()));
-  if (!is_constant) return {absl::nullopt};
+  if (!is_constant) {
+    return {std::nullopt};
+  }
 
   if (!client)
-    return errors::InvalidArgument("client is required to resolve constant");
+    return absl::InvalidArgumentError("client is required to resolve constant");
 
   TF_ASSIGN_OR_RETURN(xla::XlaComputation constant_graph,
                       handle().builder()->BuildConstantSubGraph(
                           handle(), dynamic_dimension_is_minus_one));
 
-  TF_ASSIGN_OR_RETURN(TensorShape shape, GetShape());
-
-  // The XLA layout is specified minor to major, and TensorFlow uses a major to
-  // minor order.
-  std::vector<int64> layout_indices(shape.dims());
-  std::iota(layout_indices.rbegin(), layout_indices.rend(), 0);
-  xla::Layout layout = xla::LayoutUtil::MakeLayout(layout_indices);
   TF_ASSIGN_OR_RETURN(xla::Literal literal,
                       client->ComputeConstant(constant_graph, &layout));
   Tensor tensor;
@@ -184,10 +205,15 @@ xla::StatusOr<absl::optional<Tensor>> XlaExpression::ResolveConstant(
   return {tensor};
 }
 
-xla::StatusOr<TensorShape> XlaExpression::GetShape() const {
+absl::StatusOr<TensorShape> XlaExpression::GetShape() const {
   switch (kind_) {
     case Kind::kConstant:
-      return constant_value().shape();
+      return constant_value()->shape();
+    case Kind::kResource:
+      if (constant_value()) {
+        return constant_value()->shape();
+      }
+      return TensorShape({});
     case Kind::kXlaOp: {
       TF_ASSIGN_OR_RETURN(xla::Shape xla_shape,
                           handle().builder()->GetShape(handle()));
@@ -197,12 +223,18 @@ xla::StatusOr<TensorShape> XlaExpression::GetShape() const {
     }
     case Kind::kTensorList:
       return TensorShape({});
-    case Kind::kResource:
-      return TensorShape({});
     case Kind::kInvalid:
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           "GetShape() called on invalid XlaExpression");
   }
+}
+
+absl::StatusOr<xla::Shape> XlaExpression::GetXlaShape() const {
+  if (kind_ == Kind::kXlaOp) {
+    return handle().builder()->GetShape(handle());
+  }
+  TF_ASSIGN_OR_RETURN(TensorShape shape, GetShape());
+  return TensorShapeToXLAShape(dtype_, shape);
 }
 
 const XlaExpression* XlaExpression::CastExpressionFromTensor(

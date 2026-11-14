@@ -1,12 +1,27 @@
+// Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
 // RUN: flatbuffer_translate -mlir-to-tflite-flatbuffer %s -o - | flatbuffer_to_string - | FileCheck %s
 
-func @main(tensor<3x!quant.uniform<i8:f32, 1.0>>) -> tensor<3x!quant.uniform<i8:f32, 1.0>> {
+func.func @main(tensor<3x!quant.uniform<i8:f32, 1.0>>) -> tensor<3x!quant.uniform<i8:f32, 1.0>> {
 ^bb0(%arg0: tensor<3x!quant.uniform<i8:f32, 1.0>>):
   // CHECK:      {
   // CHECK-NEXT:  version: 3,
   // CHECK-NEXT:  operator_codes: [ {
-  // CHECK-NEXT:    builtin_code: MUL,
-  // CHECK-NEXT:    version: 3
+  // CHECK-NEXT:    deprecated_builtin_code: 18,
+  // CHECK-NEXT:    version: 3,
+  // CHECK-NEXT:    builtin_code: MUL
   // CHECK-NEXT:  } ],
   // CHECK-NEXT:  subgraphs: [ {
   // CHECK-NEXT:    tensors: [ {
@@ -17,7 +32,8 @@ func @main(tensor<3x!quant.uniform<i8:f32, 1.0>>) -> tensor<3x!quant.uniform<i8:
   // CHECK-NEXT:      quantization: {
   // CHECK-NEXT:        scale: [ 1.0 ],
   // CHECK-NEXT:        zero_point: [ 0 ]
-  // CHECK-NEXT:      }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:    }, {
   // CHECK-NEXT:      shape: [ 3 ],
   // CHECK-NEXT:      type: INT8,
@@ -26,7 +42,8 @@ func @main(tensor<3x!quant.uniform<i8:f32, 1.0>>) -> tensor<3x!quant.uniform<i8:
   // CHECK-NEXT:      quantization: {
   // CHECK-NEXT:        scale: [ 1.0 ],
   // CHECK-NEXT:        zero_point: [ 0 ]
-  // CHECK-NEXT:      }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:    }, {
   // CHECK-NEXT:      shape: [ 3 ],
   // CHECK-NEXT:      type: INT8,
@@ -35,7 +52,8 @@ func @main(tensor<3x!quant.uniform<i8:f32, 1.0>>) -> tensor<3x!quant.uniform<i8:
   // CHECK-NEXT:      quantization: {
   // CHECK-NEXT:        scale: [ 1.0 ],
   // CHECK-NEXT:        zero_point: [ 0 ]
-  // CHECK-NEXT:      }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:    } ],
   // CHECK-NEXT:    inputs: [ 0 ],
   // CHECK-NEXT:    outputs: [ 2 ],
@@ -65,9 +83,10 @@ func @main(tensor<3x!quant.uniform<i8:f32, 1.0>>) -> tensor<3x!quant.uniform<i8:
   // CHECK-NEXT:  name: "min_runtime_version",
   // CHECK-NEXT:  buffer: 4
   // CHECK-NEXT:  } ]
+  // CHECK-NEXT:  signature_defs: [ ]
   // CHECK-NEXT:}
 
   %0 = "tfl.pseudo_qconst"() { qtype = tensor<3x!quant.uniform<i8:f32, 1.0>>, value = dense<2> : tensor<3xi8>} : () -> tensor<3x!quant.uniform<i8:f32, 1.0>>
   %1 = "tfl.mul"(%arg0, %0) {fused_activation_function = "NONE"} : (tensor<3x!quant.uniform<i8:f32, 1.0>>, tensor<3x!quant.uniform<i8:f32, 1.0>>) -> tensor<3x!quant.uniform<i8:f32, 1.0>> loc("mul")
-  return %1 : tensor<3x!quant.uniform<i8:f32, 1.0>>
+  func.return %1 : tensor<3x!quant.uniform<i8:f32, 1.0>>
 }

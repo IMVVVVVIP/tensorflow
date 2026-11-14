@@ -19,8 +19,8 @@ limitations under the License.
 #include <memory>
 
 #include "absl/memory/memory.h"
-#include "tensorflow/compiler/xla/client/local_client.h"
-#include "tensorflow/compiler/xla/service/shaped_buffer.h"
+#include "xla/client/local_client.h"
+#include "xla/service/shaped_buffer.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -43,13 +43,16 @@ class XlaTensor {
   // which case the returned value is shaped_buffer()->root_buffer(), or a
   // normal Tensor in which case the returned value is
   // {tensor.tensor_data().data(), tensor.tensor_data().size}.
-  static se::DeviceMemoryBase DeviceMemoryFromTensor(const Tensor& tensor);
+  static stream_executor::DeviceAddressBase DeviceMemoryFromTensor(
+      const Tensor& tensor);
 
   // Assign the internal ShapedBuffer to new memory for the given dtype and
   // shape. If a ShapedBuffer exists already (has_shaped_buffer() == true), it
   // is replaced and the managed memory deallocated.
-  Status AllocateShapedBuffer(DataType dtype, const xla::Shape& on_host_shape,
-                              xla::LocalClient* client, int device_ordinal);
+  absl::Status AllocateShapedBuffer(DataType dtype,
+                                    const xla::Shape& on_device_shape,
+                                    xla::LocalClient* client,
+                                    int device_ordinal);
 
   // Some Tensors can have complex on-device shapes, including tuple shapes. To
   // manage the memory for these tensors a ShapedBuffer may be required.
@@ -71,18 +74,6 @@ class XlaTensor {
     shaped_buffer_ = std::move(shaped_buffer);
   }
 
-  // Some tensors on the device may have known values on the host. We use these
-  // in on-demand mode to avoid re-copying values from the device if we know the
-  // host value already.
-
-  // Return true if this XlaTensor contains a host tensor.
-  bool has_host_tensor() const { return host_tensor_.has_value(); }
-  // Return the contained host tensor.
-  // REQUIRES: has_host_tensor()
-  const Tensor& host_tensor() const { return *host_tensor_; }
-  // Sets the contained host tensor.
-  void set_host_tensor(const Tensor& tensor) { host_tensor_.emplace(tensor); }
-
   // Adds synchronization events to 'stream' that wait for this tensor to be
   // defined on 'stream'. Does nothing if the tensor is already defined on that
   // stream.
@@ -99,7 +90,7 @@ class XlaTensor {
 
   // Refresh the status of streams_defined_on_. Return the first not-OK stream's
   // status or OK.
-  Status RefreshStatusOfStreams();
+  absl::Status RefreshStatusOfStreams();
 
   // Convert from a raw pointer to an XlaTensor, removing the pointer tag.
   static XlaTensor* FromOpaquePointer(void* ptr);
@@ -108,9 +99,9 @@ class XlaTensor {
 
  private:
   // The optional contained ShapedBuffer.
-  absl::optional<xla::ScopedShapedBuffer> shaped_buffer_;
+  std::optional<xla::ScopedShapedBuffer> shaped_buffer_;
   // An optional host tensor value.
-  absl::optional<Tensor> host_tensor_;
+  std::optional<Tensor> host_tensor_;
   // An optional event that is triggered when the tensor's content has been
   // defined. If this event is nullptr, it is assumed that the tensor's content
   // is always defined.

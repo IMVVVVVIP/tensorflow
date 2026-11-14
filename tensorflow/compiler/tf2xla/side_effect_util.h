@@ -49,7 +49,7 @@ extern const char kXlaOriginalOutsideCompilationNodeName[];
 
 // Sets device ordinal attribute for nodes with attribute
 // `kXlaHasHostTransferAttrName`.
-Status SetDeviceOrdinalAttributeForNode(Node* node, int device_ordinal);
+absl::Status SetDeviceOrdinalAttributeForNode(Node* node, int device_ordinal);
 
 // Calculates side-effect dependencies for the graph's token output.
 // Returns a set of node names representing these dependencies.
@@ -61,20 +61,9 @@ bool HasSideEffectingNodes(const Graph& g);
 // Parse the mapping from outside_compilation_subgraph name to core number,
 // which is specified in an attr as a list of strings
 // <subgraph_name>:<core_index>.
-Status ParseHostComputeCoreList(absl::Span<const string> list_from_attr,
-                                std::map<string, int>* host_compute_core);
-
-// XLA frontend attribute name which specifies TensorFlow rendezvous name.
-extern const char kXlaHostTransferRendezvousNameAttr[];
-
-// XLA frontend attribute name which specifies original host transfer type.
-// Value is XLA primitive type in lower case.
-extern const char kXlaHostTransferOriginalTypeAttr[];
-
-// XLA frontend attribute name which specifies whether a host transfer
-// instruction is lower bits for a splitted X64 host transfer. Value is "true"
-// or "false".
-extern const char kXlaHostTransferIsLowerBitsAttr[];
+absl::Status ParseHostComputeCoreList(
+    absl::Span<const std::string> list_from_attr,
+    std::map<std::string, int>* host_compute_core);
 
 }  // namespace tensorflow
 

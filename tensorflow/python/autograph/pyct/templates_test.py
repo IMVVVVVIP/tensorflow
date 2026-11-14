@@ -14,11 +14,7 @@
 # ==============================================================================
 """Tests for templates module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import imp
+import types
 
 from absl.testing import parameterized
 import gast
@@ -117,14 +113,14 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
         template,
         block=[
             gast.Assign(
-                [
+                targets=[
                     gast.Name(
                         'a',
                         ctx=ShouldBeReplaced,
                         annotation=None,
                         type_comment=None)
                 ],
-                gast.BinOp(
+                value=gast.BinOp(
                     gast.Name(
                         'a',
                         ctx=ShouldBeReplaced,
@@ -144,7 +140,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
 
     node = templates.replace(template, foo='b')[0]
     result, _, _ = loader.load_ast(node)
-    mod = imp.new_module('test')
+    mod = types.ModuleType('test')
     mod.b = 3
     self.assertEqual(3, result.test_fn(mod))
 
@@ -221,7 +217,7 @@ class TemplatesTest(test.TestCase, parameterized.TestCase):
         template, foo=parser.parse_expression('foo(a[b]).bar'))[0]
     function_call_arg = node.body[0].targets[0].value.args[0]
     self.assertIsInstance(function_call_arg.ctx, gast.Load)
-    self.assertIsInstance(function_call_arg.slice.value.ctx, gast.Load)
+    self.assertIsInstance(function_call_arg.slice.ctx, gast.Load)
 
   def test_replace_call_keyword(self):
     template = """

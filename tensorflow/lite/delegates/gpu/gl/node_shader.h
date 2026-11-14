@@ -44,10 +44,10 @@ enum class IOStructure {
   ONLY_DEFINITIONS,
 
   // For inputs:
-  //   Source code runs computations using 'vec4 value_N' declared by
-  //   the compiler, where where N is an index of the input. Each value comes
-  //   from inputs using coordinates set by GlobalInvocationID and a dispatch
-  //   method, therefore, source code should not explicitly read values.
+  //   Source code runs computations using 'vec4 value_N' declared by the
+  //   compiler, where N is an index of the input. Each value comes from inputs
+  //   using coordinates set by GlobalInvocationID and a dispatch method,
+  //   therefore, source code should not explicitly read values.
   //
   // For outputs:
   //   Source code runs computations and leaves results in 'vec4 value_N'
@@ -101,7 +101,7 @@ class NodeShader {
 
     // Information extracted & copied from compiled graph.
     const std::string& op_type;
-    const absl::any& op_attr;
+    const std::any& op_attr;
     // Do NOT use StrongShape<Layout::BHWC> in preparation for
     // RankedTensorType::getShape() which returns ArrayRef<int64_t>.
     std::vector<std::array<int64_t, 4>> input_shapes;

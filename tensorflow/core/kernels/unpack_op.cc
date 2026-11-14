@@ -15,9 +15,14 @@ limitations under the License.
 
 // See docs in ../ops/array_ops.cc.
 
+#include <limits>
+
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #define EIGEN_USE_THREADS
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -32,10 +37,6 @@ namespace tensorflow {
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
-#ifdef TENSORFLOW_USE_SYCL
-typedef Eigen::SyclDevice SYCLDevice;
-#endif  // TENSORFLOW_USE_SYCL
-
 template <typename Device, typename T>
 class UnpackOp : public OpKernel {
  public:
@@ -44,7 +45,7 @@ class UnpackOp : public OpKernel {
   }
 
   void Compute(OpKernelContext* context) override {
-    const int32 num = num_outputs();
+    const int32_t num = num_outputs();
     const Tensor& input = context->input(0);
     const TensorShape& input_shape = input.shape();
 
@@ -52,26 +53,25 @@ class UnpackOp : public OpKernel {
     if (axis < 0) axis += input_shape.dims();
 
     OP_REQUIRES(context, 0 <= axis && axis < input_shape.dims(),
-                errors::InvalidArgument("axis = ", axis_, " not in [",
-                                        -input_shape.dims(), ", ",
-                                        input_shape.dims(), ")"));
+                absl::InvalidArgumentError(absl::StrCat(
+                    "axis = ", axis_, " not in [", -input_shape.dims(), ", ",
+                    input_shape.dims(), ")")));
 
-    OP_REQUIRES(
-        context, input_shape.dims() > 0 && input_shape.dim_size(axis) == num,
-        errors::InvalidArgument("Input shape axis ", axis, " must equal ", num,
-                                ", got shape ", input_shape.DebugString()));
+    OP_REQUIRES(context,
+                input_shape.dims() > 0 && input_shape.dim_size(axis) == num,
+                absl::InvalidArgumentError(
+                    absl::StrCat("Input shape axis ", axis, " must equal ", num,
+                                 ", got shape ", input_shape.DebugString())));
 
     auto output_shape = input_shape;
     output_shape.RemoveDim(axis);
-    const int64 output_size = output_shape.num_elements();
+    const int64_t output_size = output_shape.num_elements();
     OP_REQUIRES(
         context,
         FastBoundsCheck(output_size,
                         std::numeric_limits<Eigen::DenseIndex>::max()),
-        errors::InvalidArgument("output size must fit in Eigen DenseIndex"));
+        absl::InvalidArgumentError("output size must fit in Eigen DenseIndex"));
 
-// This optimization is currently not applicable for SYCL devices
-#ifndef TENSORFLOW_USE_SYCL
     // Special case: Aligned, so we can share the underlying buffer.
     //
     // Apply this optimization conservatively: if input is aligned,
@@ -88,7 +88,6 @@ class UnpackOp : public OpKernel {
       }
       return;
     }
-#endif  // TENSORFLOW_USE_SYCL
 
     Eigen::DenseIndex before_dim = 1;
     for (int i = 0; i < axis; ++i) {
@@ -134,6 +133,8 @@ class UnpackOp : public OpKernel {
       UnpackOp<CPUDevice, type>)
 
 TF_CALL_ALL_TYPES(REGISTER_UNPACK);
+TF_CALL_float8_e5m2(REGISTER_UNPACK);
+TF_CALL_float8_e4m3fn(REGISTER_UNPACK);
 
 #undef REGISTER_UNPACK
 
@@ -144,51 +145,26 @@ TF_CALL_ALL_TYPES(REGISTER_UNPACK);
       Name("Unpack").Device(DEVICE_GPU).TypeConstraint<type>("T"), \
       UnpackOp<GPUDevice, type>)
 
-TF_CALL_bfloat16(REGISTER_GPU);
 TF_CALL_uint8(REGISTER_GPU);
 TF_CALL_GPU_ALL_TYPES(REGISTER_GPU);
 #undef REGISTER_GPU
 
-// A special GPU kernel for int32.
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+// A special DEVICE_DEFAULT kernel for int32.
 // TODO(b/25387198): Also enable int32 in device memory. This kernel
 // registration requires all int32 inputs and outputs to be in host memory.
 REGISTER_KERNEL_BUILDER(Name("Unpack")
-                            .Device(DEVICE_GPU)
+                            .Device(DEVICE_DEFAULT)
                             .HostMemory("value")
                             .HostMemory("output")
-                            .TypeConstraint<int32>("T"),
-                        UnpackOp<CPUDevice, int32>);
+                            .TypeConstraint<int32_t>("T"),
+                        UnpackOp<CPUDevice, int32_t>);
 REGISTER_KERNEL_BUILDER(Name("Unpack")
-                            .Device(DEVICE_GPU)
+                            .Device(DEVICE_DEFAULT)
                             .HostMemory("value")
                             .HostMemory("output")
-                            .TypeConstraint<int64>("T"),
-                        UnpackOp<CPUDevice, int64>);
-
-#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-
-#ifdef TENSORFLOW_USE_SYCL
-#define REGISTER_SYCL(type)                                         \
-  REGISTER_KERNEL_BUILDER(                                          \
-      Name("Unpack").Device(DEVICE_SYCL).TypeConstraint<type>("T"), \
-      UnpackOp<SYCLDevice, type>)
-
-TF_CALL_GPU_NUMBER_TYPES_NO_HALF(REGISTER_SYCL);
-
-REGISTER_KERNEL_BUILDER(Name("Unpack")
-                            .Device(DEVICE_SYCL)
-                            .HostMemory("value")
-                            .HostMemory("output")
-                            .TypeConstraint<int32>("T"),
-                        UnpackOp<CPUDevice, int32>);
-
-REGISTER_KERNEL_BUILDER(Name("Unpack")
-                            .Device(DEVICE_SYCL)
-                            .HostMemory("value")
-                            .HostMemory("output")
-                            .TypeConstraint<int64>("T"),
-                        UnpackOp<CPUDevice, int64>);
-#undef REGISTER_SYCL
-#endif  // TENSORFLOW_USE_SYCL
+                            .TypeConstraint<int64_t>("T"),
+                        UnpackOp<CPUDevice, int64_t>);
 
 }  // end namespace tensorflow

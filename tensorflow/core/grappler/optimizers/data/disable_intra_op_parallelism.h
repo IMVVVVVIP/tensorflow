@@ -27,21 +27,19 @@ class DisableIntraOpParallelism : public TFDataOptimizerBase {
   DisableIntraOpParallelism() = default;
   ~DisableIntraOpParallelism() override = default;
 
-  string name() const override { return "disable_intra_op_parallelism"; };
+  std::string name() const override { return "disable_intra_op_parallelism"; };
 
   bool UsesFunctionLibrary() const override { return false; }
 
-  Status Init(
+  absl::Status Init(
       const tensorflow::RewriterConfig_CustomGraphOptimizer* config) override {
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status OptimizeAndCollectStats(Cluster* cluster, const GrapplerItem& item,
-                                 GraphDef* output,
-                                 OptimizationStats* stats) override;
-
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimize_output, double result) override;
+  absl::Status OptimizeAndCollectStats(Cluster* cluster,
+                                       const GrapplerItem& item,
+                                       GraphDef* output,
+                                       OptimizationStats* stats) override;
 };
 
 }  // namespace grappler

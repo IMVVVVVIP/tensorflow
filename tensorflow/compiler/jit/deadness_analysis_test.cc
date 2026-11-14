@@ -36,9 +36,9 @@ limitations under the License.
 namespace tensorflow {
 namespace {
 
-se::port::StatusOr<bool> HasInputsWithMismatchingDeadness(
+absl::StatusOr<bool> HasInputsWithMismatchingDeadness(
     const DeadnessAnalysis& deadness_analysis, const Node& n) {
-  absl::optional<DeadnessAnalysis::DeadnessPredicate> pred;
+  std::optional<DeadnessAnalysis::DeadnessPredicate> pred;
   for (const Edge* edge : n.in_edges()) {
     TF_ASSIGN_OR_RETURN(
         DeadnessAnalysis::DeadnessPredicate this_pred,
@@ -55,13 +55,13 @@ se::port::StatusOr<bool> HasInputsWithMismatchingDeadness(
 using deadness_analysis_internal::ComputePredicates;
 using deadness_analysis_internal::PredicateMapTy;
 
-Status AnalyzeDeadness(Graph* graph,
-                       std::unique_ptr<DeadnessAnalysis>* result) {
+absl::Status AnalyzeDeadness(Graph* graph,
+                             std::unique_ptr<DeadnessAnalysis>* result) {
   FixupSourceAndSinkEdges(graph);
   return DeadnessAnalysis::Run(*graph, result);
 }
 
-ops::Switch CreateSwitch(const Scope& root, const string& prefix) {
+ops::Switch CreateSwitch(const Scope& root, const std::string& prefix) {
   Output value = ops::Placeholder(root.WithOpName(prefix + "/value"), DT_FLOAT);
   Output predicate =
       ops::Placeholder(root.WithOpName(prefix + "/pred"), DT_BOOL);
@@ -76,7 +76,7 @@ void VLogGraphIfAsked(const Graph& graph) {
   if (VLOG_IS_ON(3)) {
     GraphDef graph_def;
     graph.ToGraphDef(&graph_def);
-    string serialized;
+    std::string serialized;
     ::tensorflow::protobuf::TextFormat::PrintToString(graph_def, &serialized);
     LOG(INFO) << serialized;
   }
@@ -127,8 +127,8 @@ struct InductionVarInfo {
 //    +-----> |     Exit      |
 //            +---------------+
 InductionVarInfo CreateInductionVariable(const Scope& root,
-                                         const string& prefix,
-                                         const string& frame_name,
+                                         const std::string& prefix,
+                                         const std::string& frame_name,
                                          const Output& initial_value) {
   Output enter_initial_value = ops::internal::Enter(
       root.WithOpName(prefix + "/enter"), initial_value, frame_name);
@@ -158,8 +158,9 @@ InductionVarInfo CreateInductionVariable(const Scope& root,
 }
 
 InductionVarInfo CreateInductionVariable(const Scope& root,
-                                         const string& prefix,
-                                         const string& frame_name, int32 init) {
+                                         const std::string& prefix,
+                                         const std::string& frame_name,
+                                         int32_t init) {
   return CreateInductionVariable(
       root, prefix, frame_name,
       ops::Const(root.WithOpName(prefix + "/init"), init));
@@ -200,7 +201,7 @@ struct DependentInductionVar {
 };
 
 DependentInductionVar CreateDependentLoopInvariantValue(
-    const Scope& root, const string& prefix, const string& frame_name,
+    const Scope& root, const std::string& prefix, const std::string& frame_name,
     const Output& loop_cond, const Output& value) {
   Output enter_value = ops::internal::Enter(root.WithOpName(prefix + "/enter"),
                                             value, frame_name);
@@ -217,8 +218,8 @@ DependentInductionVar CreateDependentLoopInvariantValue(
 }
 
 DependentInductionVar CreateDependentLoopInvariantValue(
-    const Scope& root, const string& prefix, const string& frame_name,
-    const Output& loop_cond, int32 value) {
+    const Scope& root, const std::string& prefix, const std::string& frame_name,
+    const Output& loop_cond, int32_t value) {
   return CreateDependentLoopInvariantValue(
       root, prefix, frame_name, loop_cond,
       ops::Const(root.WithOpName(prefix + "/init"), value));
@@ -1221,7 +1222,7 @@ TEST(DeadnessAnalysisTest, RefBoolSwitchCondition) {
 }
 
 void CreateSwitchN(const Scope& scope, Input data, Input output_index,
-                   int64 num_outs, OutputList* outputs) {
+                   int64_t num_outs, OutputList* outputs) {
   if (!scope.ok()) return;
   auto _data = ops::AsNodeOut(scope, data);
   if (!scope.ok()) return;
@@ -1237,7 +1238,7 @@ void CreateSwitchN(const Scope& scope, Input data, Input output_index,
   scope.UpdateStatus(builder.Finalize(scope.graph(), &ret));
   if (!scope.ok()) return;
   scope.UpdateStatus(scope.DoShapeInference(ret));
-  for (int32 i = 0; i < ret->num_outputs(); ++i) {
+  for (int32_t i = 0; i < ret->num_outputs(); ++i) {
     outputs->push_back(Output(ret, i));
   }
 }

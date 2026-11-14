@@ -37,7 +37,7 @@ namespace ctc {
 template <typename T, typename CTCBeamState>
 class BaseBeamScorer {
  public:
-  virtual ~BaseBeamScorer() {}
+  virtual ~BaseBeamScorer() = default;
   // State initialization.
   virtual void InitializeState(CTCBeamState* root) const {}
   // ExpandState is called when expanding a beam to one of its children.
@@ -74,4 +74,4 @@ class BaseBeamScorer {
 }  // namespace tensorflow
 
 #endif  // TENSORFLOW_CORE_UTIL_CTC_CTC_BEAM_SCORER_H_
-// LINT.ThenChange(//tensorflow/lite/experimental/kernels/ctc_beam_scorer.h)
+// LINT.ThenChange(//tensorflow/lite/kernels/ctc/ctc_beam_scorer.h)

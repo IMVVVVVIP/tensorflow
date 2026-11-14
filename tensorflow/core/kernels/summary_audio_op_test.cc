@@ -37,7 +37,7 @@ namespace tensorflow {
 namespace {
 
 static void EXPECT_SummaryMatches(const Summary& actual,
-                                  const string& expected_str) {
+                                  const std::string& expected_str) {
   Summary expected;
   CHECK(protobuf::TextFormat::ParseFromString(expected_str, &expected));
   EXPECT_EQ(expected.DebugString(), actual.DebugString());
@@ -67,7 +67,7 @@ class SummaryAudioOpTest : public OpsTestBase {
       if (VLOG_IS_ON(2)) {
         // When LOGGING, output the audio to disk for manual inspection.
         TF_CHECK_OK(WriteStringToFile(
-            Env::Default(), strings::StrCat("/tmp/", value->tag(), ".wav"),
+            Env::Default(), absl::StrCat("/tmp/", value->tag(), ".wav"),
             value->audio().encoded_audio_string()));
       }
       value->mutable_audio()->clear_encoded_audio_string();
@@ -140,6 +140,38 @@ TEST_F(SummaryAudioOpTest, Basic2D) {
     value { tag: 'tag/audio/2'
             audio { content_type: "audio/wav" sample_rate: 44100 num_channels: 1
                     length_frames: 4 } }
+  )");
+}
+
+TEST_F(SummaryAudioOpTest, ZeroLength) {
+  const float kSampleRate = 44100.0f;
+  const int kMaxOutputs = 3;
+  MakeOp(kMaxOutputs);
+
+  // Feed and run
+  AddInputFromArray<tstring>(TensorShape({}), {"tag"});
+  AddInputFromArray<float>(TensorShape({4, 0}), {});
+  AddInputFromArray<float>(TensorShape({}), {kSampleRate});
+
+  TF_ASSERT_OK(RunOpKernel());
+
+  // Check the output size.
+  Tensor* out_tensor = GetOutput(0);
+  ASSERT_EQ(0, out_tensor->dims());
+  Summary summary;
+  ParseProtoUnlimited(&summary, out_tensor->scalar<tstring>()());
+
+  CheckAndRemoveEncodedAudio(&summary);
+  EXPECT_SummaryMatches(summary, R"(
+    value { tag: 'tag/audio/0'
+            audio { content_type: "audio/wav" sample_rate: 44100 num_channels: 1
+                    length_frames: 0 } }
+    value { tag: 'tag/audio/1'
+            audio { content_type: "audio/wav" sample_rate: 44100 num_channels: 1
+                    length_frames: 0 } }
+    value { tag: 'tag/audio/2'
+            audio { content_type: "audio/wav" sample_rate: 44100 num_channels: 1
+                    length_frames: 0 } }
   )");
 }
 

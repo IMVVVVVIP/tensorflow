@@ -17,8 +17,8 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/lite/builtin_ops.h"
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
 namespace tflite {
@@ -94,19 +94,22 @@ bool CheckOpVersion(const TfLiteRegistration* registration) {
     case kTfLiteBuiltinSlice:
     case kTfLiteBuiltinSoftmax:
     case kTfLiteBuiltinSpaceToDepth:
+    case kTfLiteBuiltinDepthToSpace:
     case kTfLiteBuiltinSplit:
     case kTfLiteBuiltinStridedSlice:
     case kTfLiteBuiltinSub:
     case kTfLiteBuiltinTanh:
     case kTfLiteBuiltinTranspose:
-    case kTfLiteBuiltinTransposeConv:
       return registration->version <= 2;
+    case kTfLiteBuiltinSquaredDifference:
     case kTfLiteBuiltinRelu:
+    case kTfLiteBuiltinRsqrt:
       return registration->version == 2;
     case kTfLiteBuiltinConv2d:
     case kTfLiteBuiltinDepthwiseConv2d:
     case kTfLiteBuiltinResizeBilinear:
     case kTfLiteBuiltinResizeNearestNeighbor:
+    case kTfLiteBuiltinTransposeConv:
       return registration->version <= 3;
     case kTfLiteBuiltinFullyConnected:
       return registration->version <= 4;
@@ -203,6 +206,22 @@ bool IsNodeSupportedByHexagon(const TfLiteRegistration* registration,
         return false;
       }
 
+      const auto& filter_tensor = context->tensors[node->inputs->data[1]];
+      if (filter_tensor.quantization.type == kTfLiteBlockwiseQuantization) {
+        // Hexagon does not support blockwise quantization for MatMul.
+        return false;
+      }
+      if (filter_tensor.quantization.type == kTfLiteAffineQuantization) {
+        const auto* affine_quantization =
+            reinterpret_cast<TfLiteAffineQuantization*>(
+                filter_tensor.quantization.params);
+        if (affine_quantization && affine_quantization->scale &&
+            affine_quantization->scale->size > 1) {
+          // Hexagon does not support per-channel quantization for MatMul.
+          return false;
+        }
+      }
+
       bool bias_const_or_no_bias = true;
       if (node->inputs->data[2] != -1) {
         const auto& bias_tensor = context->tensors[node->inputs->data[2]];
@@ -219,6 +238,10 @@ bool IsNodeSupportedByHexagon(const TfLiteRegistration* registration,
                   kTfLiteFullyConnectedWeightsFormatDefault);
     }
     case kTfLiteBuiltinConcatenation: {
+      // Requires at least one input and one output tensor.
+      if (node->inputs == nullptr || node->outputs == nullptr ||
+          node->inputs->size < 1 || node->outputs->size < 1)
+        return false;
       // All concatenated tensors must be 8-bit.
       for (int i = 0; i < node->inputs->size; ++i) {
         if (!TensorTypeMatch(node->inputs->data[i], context, kTfLiteUInt8) &&
@@ -233,6 +256,12 @@ bool IsNodeSupportedByHexagon(const TfLiteRegistration* registration,
       // TODO(b/129276536): Add support for activation here.
       const TfLitePoolParams* pool_params =
           reinterpret_cast<const TfLitePoolParams*>(node->builtin_data);
+      // Disable max pool on delegate with activation SAME when filter is > 12.
+      if (pool_params->padding == kTfLitePaddingSame &&
+          (pool_params->filter_height >= 13 ||
+           pool_params->filter_width >= 13)) {
+        return false;
+      }
       return pool_params->activation == kTfLiteActNone;
     }
     case kTfLiteBuiltinAveragePool2d: {
@@ -244,11 +273,22 @@ bool IsNodeSupportedByHexagon(const TfLiteRegistration* registration,
               pool_params->activation == kTfLiteActNone);
     }
     case kTfLiteBuiltinTransposeConv: {
-      if (!InputsWithCorrectTypes(node, context,
-                                  {{kTfLiteInt32},
-                                   {kTfLiteUInt8, kTfLiteInt8},
-                                   {kTfLiteUInt8, kTfLiteInt8}}))
+      if (NumInputs(node) == 3) {
+        if (!InputsWithCorrectTypes(node, context,
+                                    {{kTfLiteInt32},
+                                     {kTfLiteUInt8, kTfLiteInt8},
+                                     {kTfLiteUInt8, kTfLiteInt8}}))
+          return false;
+      } else if (NumInputs(node) == 4) {
+        if (!InputsWithCorrectTypes(node, context,
+                                    {{kTfLiteInt32},
+                                     {kTfLiteUInt8, kTfLiteInt8},
+                                     {kTfLiteUInt8, kTfLiteInt8},
+                                     {kTfLiteInt32}}))
+          return false;
+      } else {
         return false;
+      }
       const TfLiteTransposeConvParams* params =
           reinterpret_cast<const TfLiteTransposeConvParams*>(
               node->builtin_data);
@@ -298,9 +338,15 @@ bool IsNodeSupportedByHexagon(const TfLiteRegistration* registration,
           conv_params->depth_multiplier == 1 ||
           (!dilation && input.dims->size == 4 && input.dims->data[3] == 1);
 
+      // Hexagon only supports filter height >= 2.
+      const auto& weights = context->tensors[node->inputs->data[1]];
+      const bool filter_height_not_supported =
+          (weights.dims->size >= 2 && weights.dims->data[1] < 2);
+
       return (IsActivationReluOrNone(conv_params->activation) &&
               conv_params->stride_height <= 3 &&
-              conv_params->stride_width <= 3 && supported_depth_multiplier);
+              conv_params->stride_width <= 3 && supported_depth_multiplier &&
+              !filter_height_not_supported);
     }
     case kTfLiteBuiltinReshape: {
       if (node->inputs->size > 2 ||
@@ -356,10 +402,7 @@ bool IsNodeSupportedByHexagon(const TfLiteRegistration* registration,
         return false;
       }
       const auto& size_tensor = context->tensors[node->inputs->data[1]];
-      // TODO(b/143105433): Latency increase significantly with large size
-      // value. Limiting to 65 for now.
-      return NumElements(&size_tensor) == 2 && size_tensor.data.i32[0] < 66 &&
-             size_tensor.data.i32[1] < 66;
+      return NumElements(&size_tensor) == 2;
     }
     case kTfLiteBuiltinNeg: {
       return InputsWithCorrectTypes(node, context,
@@ -399,6 +442,10 @@ bool IsNodeSupportedByHexagon(const TfLiteRegistration* registration,
                                      {kTfLiteInt32, kTfLiteInt64}});
     }
     case kTfLiteBuiltinPack: {
+      // Requires at least one input and one output tensor.
+      if (node->inputs == nullptr || node->outputs == nullptr ||
+          node->inputs->size < 1 || node->outputs->size < 1)
+        return false;
       // All tensors must be 8-bit.
       for (int i = 0; i < node->inputs->size; ++i) {
         if (!TensorTypeMatch(node->inputs->data[i], context, kTfLiteUInt8) &&
@@ -424,6 +471,13 @@ bool IsNodeSupportedByHexagon(const TfLiteRegistration* registration,
           reinterpret_cast<const TfLiteStridedSliceParams*>(node->builtin_data);
       // Hexagon doesn't support ellipsis/new-axis masks.
       return (params->ellipsis_mask == 0 && params->new_axis_mask == 0);
+    }
+    case kTfLiteBuiltinSquaredDifference: {
+      return InputsWithCorrectTypes(node, context,
+                                    {{kTfLiteInt8}, {kTfLiteInt8}});
+    }
+    case kTfLiteBuiltinRsqrt: {
+      return InputsWithCorrectTypes(node, context, {{kTfLiteInt8}});
     }
     default:
       return false;

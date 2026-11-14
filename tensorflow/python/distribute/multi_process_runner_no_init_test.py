@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for `multi_process_runner` for non-initialization."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.distribute import multi_process_runner
 from tensorflow.python.distribute import multi_worker_test_base
 from tensorflow.python.eager import test
@@ -30,7 +26,7 @@ class MultiProcessRunnerNoInitTest(test.TestCase):
     def simple_func():
       return 'foobar'
 
-    with self.assertRaisesRegex(RuntimeError,
+    with self.assertRaisesRegex(multi_process_runner.NotInitializedError,
                                 '`multi_process_runner` is not initialized.'):
       multi_process_runner.run(
           simple_func,

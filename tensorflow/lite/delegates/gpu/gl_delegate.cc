@@ -18,38 +18,44 @@ limitations under the License.
 #include <EGL/egl.h>
 #include <GLES3/gl31.h>
 
-#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "absl/types/span.h"
-#include "tensorflow/lite/builtin_ops.h"
-#include "tensorflow/lite/c/common.h"
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/verifier.h"  // from @flatbuffers
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/delegates/gpu/common/convert.h"
+#include "tensorflow/lite/delegates/gpu/common/gpu_info.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
 #include "tensorflow/lite/delegates/gpu/common/model_builder.h"
 #include "tensorflow/lite/delegates/gpu/common/model_transformer.h"
 #include "tensorflow/lite/delegates/gpu/common/shape.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/common/tensor.h"
-#include "tensorflow/lite/delegates/gpu/common/transformations/general_transformations.h"
+#include "tensorflow/lite/delegates/gpu/common/transformations/model_transformations.h"
 #include "tensorflow/lite/delegates/gpu/gl/api.h"
 #include "tensorflow/lite/delegates/gpu/gl/command_queue.h"
-#include "tensorflow/lite/delegates/gpu/gl/compiler.h"
+#include "tensorflow/lite/delegates/gpu/gl/compiler_options.h"
 #include "tensorflow/lite/delegates/gpu/gl/converters/bhwc_to_phwc4.h"
 #include "tensorflow/lite/delegates/gpu/gl/converters/phwc4_to_bhwc.h"
 #include "tensorflow/lite/delegates/gpu/gl/egl_environment.h"
-#include "tensorflow/lite/delegates/gpu/gl/gl_call.h"
+#include "tensorflow/lite/delegates/gpu/gl/gl_buffer.h"
 #include "tensorflow/lite/delegates/gpu/gl/kernels/registry.h"
+#include "tensorflow/lite/delegates/gpu/gl/object.h"
+#include "tensorflow/lite/delegates/gpu/gl/object_manager.h"
 #include "tensorflow/lite/delegates/gpu/gl/request_gpu_info.h"
+#include "tensorflow/lite/delegates/gpu/gl/runtime_options.h"
 #include "tensorflow/lite/delegates/gpu/gl/workgroups/best_effort_calculator.h"
+#include "tensorflow/lite/logger.h"
 #include "tensorflow/lite/minimal_logging.h"
 
 #ifndef TFLITE_GPU_BINARY_RELEASE
-#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
 #include "tensorflow/lite/delegates/gpu/gl/metadata_generated.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #endif  // TFLITE_GPU_BINARY_RELEASE
@@ -136,10 +142,9 @@ class Delegate {
     RETURN_IF_ERROR(BuildModel(context, delegate_params, &graph));
 
     // Apply general transformations on the graph.
-    NullTransformationReporter reporter;
-    ModelTransformer transformer(&graph, &reporter);
-    if (!ApplyGeneralTransformations(&transformer)) {
-      return absl::InternalError("Graph general transformations failed");
+    ModelTransformer transformer(&graph);
+    if (!ApplyModelTransformations(&transformer)) {
+      return absl::InternalError("Graph transformations failed");
     }
 
     if (!env_) RETURN_IF_ERROR(EglEnvironment::NewEglEnvironment(&env_));
@@ -277,13 +282,6 @@ class Delegate {
   }
 
   absl::Status Invoke(TfLiteContext* context) {
-    const EGLContext egl_context_at_delegate_init = env_->context().context();
-    const EGLContext egl_context_at_delegate_invoke = eglGetCurrentContext();
-    if (egl_context_at_delegate_init != egl_context_at_delegate_invoke) {
-      return absl::FailedPreconditionError(
-          "Delegate should run on the same thread where it was initialized.");
-    }
-
     // Push input data from a tensor to GPU.
     for (ValueId id : inputs_) {
       const ValueRef& ref = tensors_[id];

@@ -44,26 +44,31 @@ class CondBuilder {
               Graph* graph);
 
   // Constructs the basic conditional control flow using switch and merge nodes.
-  Status CreatePivotNodes();
+  absl::Status CreatePivotNodes();
 
   // Adds the inputs from the if node to the merge nodes of the lowered if.
-  Status AddInputs();
+  absl::Status AddInputs();
 
   // Adds the outputs from the if node to the merge nodes of the lowered if.
   // Note: no inputs can be added once outputs are added as the then and else
   // nodes are finalized while adding outputs.
-  Status AddOutputs();
+  absl::Status AddOutputs();
 
   // Builds an identity node with the same outputs as If.
-  Status BuildLoweredIfOutput();
+  absl::Status BuildLoweredIfOutput();
 
  private:
   // Returns unique name containing the name of the If op being rewritten
   // (name_), infix and a suffix to ensure it is unique within the graph.
-  string NewName(const string& infix);
+  std::string NewName(const std::string& infix);
 
   // Adds input to both the then and else nodes from src:src_output.
-  Status AddInput(Node* src, int src_output);
+  absl::Status AddInput(Node* src, int src_output);
+
+  // Finalizes the node described by `node_builder`. If `coloc_attr_` is not
+  // nullptr, adds the colocation attr to the node before finalizing it.
+  absl::Status SetColocationAndFinalize(NodeBuilder node_builder, Graph* graph,
+                                        Node** created_node);
 
   // The merged outputs of the then and else nodes.
   std::vector<NodeOut> outputs_;
@@ -72,6 +77,10 @@ class CondBuilder {
   Node* control_predecessor_;
   // The original If op.
   Node* if_op_;
+  // The colocation attr on the original If op. If it exists, control flow nodes
+  // created in the lowering (except the data Switch nodes) will inherit this
+  // attribute.
+  const AttrValue* coloc_attr_;
   // The node with the same name as the original If op:
   //   (a) IdentityN node with same outputs if 'keep_node_fetchable_ == true'
   //       and if the original If op had non-zero data outputs.
@@ -93,7 +102,7 @@ class CondBuilder {
   // executed for the side effects.
   Node* branch_executed_node_;
   Graph* graph_;
-  string name_;
+  std::string name_;
   bool keep_node_fetchable_;
 
   NodeDebugInfo debug_info_;
@@ -102,9 +111,10 @@ class CondBuilder {
 };
 
 CondBuilder::CondBuilder(Node* if_op, const NameAttrList& then_fn,
-                         const NameAttrList& else_fn,
-                         bool keep_node_fetchable, Graph* graph)
+                         const NameAttrList& else_fn, bool keep_node_fetchable,
+                         Graph* graph)
     : if_op_(if_op),
+      coloc_attr_(if_op_->attrs().Find(kColocationAttrName)),
       graph_(graph),
       name_(if_op->name()),
       keep_node_fetchable_(keep_node_fetchable),
@@ -126,59 +136,76 @@ CondBuilder::CondBuilder(Node* if_op, const NameAttrList& then_fn,
   }
 }
 
-Status CondBuilder::CreatePivotNodes() {
+absl::Status CondBuilder::SetColocationAndFinalize(NodeBuilder node_builder,
+                                                   Graph* graph,
+                                                   Node** created_node) {
+  if (coloc_attr_ != nullptr) {
+    node_builder = node_builder.Attr(kColocationAttrName, *coloc_attr_);
+  }
+  return node_builder.Finalize(graph, created_node);
+}
+
+absl::Status CondBuilder::CreatePivotNodes() {
   // Construct the basic cond body (consisting of feeding in the predicate to
   // create pivot nodes).
   Node* switch_pred;
-  TF_RETURN_IF_ERROR(NodeBuilder(NewName("switch_pred"), "Switch",
-                                 graph_->op_registry(), &debug_info_)
-                         .Input(NodeOut(pred_))
-                         .Input(NodeOut(pred_))
-                         .Device(if_op_->requested_device())
-                         .Finalize(graph_, &switch_pred));
+  TF_RETURN_IF_ERROR(
+      SetColocationAndFinalize(NodeBuilder(NewName("switch_pred"), "Switch",
+                                           graph_->op_registry(), &debug_info_)
+                                   .Input(NodeOut(pred_))
+                                   .Input(NodeOut(pred_))
+                                   .Device(if_op_->requested_device()),
+                               graph_, &switch_pred));
   control_predecessor_ = switch_pred;
-  TF_RETURN_IF_ERROR(NodeBuilder(NewName("pivot_f"), "Identity",
-                                 graph_->op_registry(), &debug_info_)
-                         .Input(switch_pred, kElseBranch)
-                         .Device(if_op_->requested_device())
-                         .Finalize(graph_, &pivot_f_));
-  TF_RETURN_IF_ERROR(NodeBuilder(NewName("pivot_t"), "Identity",
-                                 graph_->op_registry(), &debug_info_)
-                         .Input(switch_pred, kThenBranch)
-                         .Device(if_op_->requested_device())
-                         .Finalize(graph_, &pivot_t_));
-  return Status::OK();
+  TF_RETURN_IF_ERROR(
+      SetColocationAndFinalize(NodeBuilder(NewName("pivot_f"), "Identity",
+                                           graph_->op_registry(), &debug_info_)
+                                   .Input(switch_pred, kElseBranch)
+                                   .Device(if_op_->requested_device()),
+                               graph_, &pivot_f_));
+  TF_RETURN_IF_ERROR(
+      SetColocationAndFinalize(NodeBuilder(NewName("pivot_t"), "Identity",
+                                           graph_->op_registry(), &debug_info_)
+                                   .Input(switch_pred, kThenBranch)
+                                   .Device(if_op_->requested_device()),
+                               graph_, &pivot_t_));
+  return absl::OkStatus();
 }
 
-string CondBuilder::NewName(const string& infix) {
-  return graph_->NewName(strings::StrCat(name_, "/", infix));
+std::string CondBuilder::NewName(const std::string& infix) {
+  return graph_->NewName(absl::StrCat(name_, "/", infix));
 }
 
-Status CondBuilder::AddInput(Node* src, int src_output) {
+absl::Status CondBuilder::AddInput(Node* src, int src_output) {
   Node* input;
   NodeDebugInfo debug_info(*src);
   // Colocate the Switch node with the `src` node.
   //
   // This is to avoid unnecessary Host<->Device copies between src and the
-  // Switch node. This aligns with the implementation of legacy tf.cond in
-  // control_flow_ops.py. The legacy impl colocates the Switch with the
-  // input tensor which resets the device stack and forces the Switch to have
-  // the same device as the input node (if set) and sets the colocation _class
-  // attr. It also ignores the existing colocation constraints on the input node
-  // using colocate_with(ignore_existing=True).
-  TF_RETURN_IF_ERROR(NodeBuilder(NewName(src->name()), "Switch",
-                                 graph_->op_registry(), &debug_info)
-                         .Input(src, src_output)
-                         .Input(pred_)
-                         .Device(src->requested_device())
-                         .Attr("_class", {src->name()})
-                         .Finalize(graph_, &input));
+  // Switch node.
+  //
+  // NOTE(rachelim): Here, we don't use `CondBuilder::SetColocationAndFinalize`,
+  // and instead ignore the existing colocation stack. This is aligned with the
+  // legacy impl in control_flow_ops.py. The legacy impl colocates this Switch
+  // with the input tensor which resets the device stack and forces the Switch
+  // to have the same device as the input node (if set) and sets the colocation
+  // _class attr. It also ignores the existing colocation stack in the context
+  // by using colocate_with(ignore_existing=True).
+  TF_RETURN_IF_ERROR(
+      NodeBuilder(NewName(src->name()), "Switch", graph_->op_registry(),
+                  &debug_info)
+          .Input(src, src_output)
+          .Input(pred_)
+          .Device(src->requested_device())
+          .Attr(kColocationAttrName,
+                {absl::StrCat(kColocationGroupPrefix, src->name())})
+          .Finalize(graph_, &input));
   then_call_builder_.Input(input, kThenBranch);
   else_call_builder_.Input(input, kElseBranch);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status CondBuilder::AddInputs() {
+absl::Status CondBuilder::AddInputs() {
   // Add input data edges.
   std::vector<const Edge*> edges;
   TF_RETURN_IF_ERROR(if_op_->input_edges(&edges));
@@ -193,11 +220,13 @@ Status CondBuilder::AddInputs() {
       graph_->AddControlEdge(e->src(), control_predecessor_);
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status CondBuilder::AddOutputs() {
+absl::Status CondBuilder::AddOutputs() {
   // Construct the then and else nodes.
+  // NOTE(rachelim): Here, we don't use `CondBuilder::SetColocationAndFinalize`
+  // because the colocation for branch nodes is applied in python.
   TF_RETURN_IF_ERROR(then_call_builder_.Finalize(graph_, &then_call_node_));
   graph_->AddControlEdge(pivot_t_, then_call_node_);
   TF_RETURN_IF_ERROR(else_call_builder_.Finalize(graph_, &else_call_node_));
@@ -207,12 +236,12 @@ Status CondBuilder::AddOutputs() {
   std::vector<Node*> merges(then_call_node_->num_outputs());
   outputs_.resize(merges.size());
   for (int i = 0; i < then_call_node_->num_outputs(); ++i) {
-    TF_RETURN_IF_ERROR(
+    TF_RETURN_IF_ERROR(SetColocationAndFinalize(
         NodeBuilder(NewName("output"), "Merge", graph_->op_registry(),
                     &debug_info_)
             .Input({NodeOut(then_call_node_, i), NodeOut(else_call_node_, i)})
-            .Device(if_op_->requested_device())
-            .Finalize(graph_, &merges[i]));
+            .Device(if_op_->requested_device()),
+        graph_, &merges[i]));
     outputs_[i] = NodeOut(merges[i], 0);
   }
 
@@ -226,12 +255,13 @@ Status CondBuilder::AddOutputs() {
   //
   // We will use this node to rewrite outgoing control edges from lowered 'If'
   // node. All data edges will read tensors directly from Merge nodes.
-  TF_RETURN_IF_ERROR(NodeBuilder(NewName("branch_executed"), "Merge",
-                                 graph_->op_registry(), &debug_info_)
-                         .Input({pivot_t_, pivot_f_})
-                         .ControlInputs({then_call_node_, else_call_node_})
-                         .Device(if_op_->requested_device())
-                         .Finalize(graph_, &branch_executed_node_));
+  TF_RETURN_IF_ERROR(SetColocationAndFinalize(
+      NodeBuilder(NewName("branch_executed"), "Merge", graph_->op_registry(),
+                  &debug_info_)
+          .Input({pivot_t_, pivot_f_})
+          .ControlInputs({then_call_node_, else_call_node_})
+          .Device(if_op_->requested_device()),
+      graph_, &branch_executed_node_));
 
   TF_RETURN_IF_ERROR(BuildLoweredIfOutput());
 
@@ -246,10 +276,10 @@ Status CondBuilder::AddOutputs() {
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status CondBuilder::BuildLoweredIfOutput() {
+absl::Status CondBuilder::BuildLoweredIfOutput() {
   // If outputs are empty, it means that we might have only output control
   // edges (already connected to the `branch_executed_node`). Furthermore it's
   // illegal to have an IdentityN with empty inputs.
@@ -267,17 +297,17 @@ Status CondBuilder::BuildLoweredIfOutput() {
 
 }  // namespace
 
-Status RewriteIfNode(Node* n, Graph* g, bool keep_node_fetchable) {
+absl::Status RewriteIfNode(Node* n, Graph* g, bool keep_node_fetchable) {
   VLOG(2) << "Lower If node (keep_node_fetchable=" << keep_node_fetchable
           << "): " << SummarizeNode(*n);
 
   const AttrValue* then_attr = n->attrs().Find("then_branch");
   if (then_attr == nullptr) {
-    return errors::InvalidArgument("Then branch function missing");
+    return absl::InvalidArgumentError("Then branch function missing");
   }
   const AttrValue* else_attr = n->attrs().Find("else_branch");
   if (else_attr == nullptr) {
-    return errors::InvalidArgument("Else branch function missing");
+    return absl::InvalidArgumentError("Else branch function missing");
   }
 
   CondBuilder cb(n, then_attr->func(), else_attr->func(), keep_node_fetchable,
@@ -287,7 +317,7 @@ Status RewriteIfNode(Node* n, Graph* g, bool keep_node_fetchable) {
   TF_RETURN_IF_ERROR(cb.AddOutputs());
   g->RemoveNode(n);
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

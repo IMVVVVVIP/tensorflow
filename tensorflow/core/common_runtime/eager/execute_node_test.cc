@@ -16,6 +16,9 @@ limitations under the License.
 #include "tensorflow/core/common_runtime/eager/execute_node.h"
 
 #include <memory>
+#include <optional>
+#include <utility>
+#include <vector>
 
 #include "tensorflow/core/common_runtime/composite_device.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
@@ -37,8 +40,16 @@ class TestKernelAndDeviceFunc final : public KernelAndDeviceFunc {
             /*flr=*/nullptr, /*pflr=*/nullptr, /*input_devices=*/{},
             /*composite_devices=*/{}, /*input_resource_dtypes_and_shapes=*/{},
             /*runner=*/nullptr, /*collective_executor=*/nullptr,
-            host_cpu_device, /*name=*/"",
-            /*rendezvous_creator=*/nullptr, /*get_op_id=*/nullptr),
+            host_cpu_device, /*name=*/"", /*outputs_on_op_device=*/false,
+            /*allow_small_function_optimizations=*/false,
+            /*allow_control_flow_sync_execution=*/false,
+            /*shape_inference_on_tfe_dialect_import=*/true,
+            /*int_args_and_retvals_on_device=*/false,
+            /*function_runs_at_most_once=*/false,
+            /*xla_compile_device_type=*/std::nullopt,
+            /*allow_soft_placement=*/false,
+            /*rendezvous_factory=*/Rendezvous::Factory(),
+            /*get_op_id=*/nullptr),
         test_input_devices_(std::move(input_devices)) {}
 
   Device* InputDevice(int i) const override { return test_input_devices_[i]; }
@@ -51,14 +62,14 @@ TEST(ExecuteNodeTest, ExecuteNodeArgs) {
   StaticDeviceMgr device_mgr(
       DeviceFactory::NewDevice("CPU", {}, "/job:localhost/replica:0/task:0"));
   Device* device0 = device_mgr.ListDevices().at(0);
-  auto remote_device_mgr = absl::make_unique<DynamicDeviceMgr>();
+  auto remote_device_mgr = std::make_unique<DynamicDeviceMgr>();
   std::vector<std::unique_ptr<Device>> remote_devices;
   remote_devices.emplace_back(
       DeviceFactory::NewDevice("CPU", {}, "/job:localhost/replica:0/task:1"));
   TF_ASSERT_OK(remote_device_mgr->AddDevices(std::move(remote_devices)));
   Device* device1 = remote_device_mgr->ListDevices().at(0);
 
-  Status s;
+  absl::Status s;
   std::unique_ptr<CompositeDevice> composite_device =
       CompositeDevice::MakeDevice({device0->name(), device1->name()},
                                   /*unique_device_id=*/0,
@@ -67,12 +78,12 @@ TEST(ExecuteNodeTest, ExecuteNodeArgs) {
 
   auto ctx = new EagerContext(
       SessionOptions(),
-      tensorflow::ContextDevicePlacementPolicy::DEVICE_PLACEMENT_SILENT,
-      tensorflow::ContextMirroringPolicy::MIRRORING_NONE, false, false,
-      &device_mgr, false, nullptr, nullptr, nullptr);
+      tensorflow::ContextDevicePlacementPolicy::DEVICE_PLACEMENT_SILENT, false,
+      &device_mgr, false, nullptr, nullptr, nullptr,
+      /*run_eager_op_as_function=*/true);
 
   // Set a RemoteMgr to the EagerContext.
-  auto remote_mgr = absl::make_unique<eager::RemoteMgr>(
+  auto remote_mgr = std::make_unique<eager::RemoteMgr>(
       /*is_master=*/true, ctx);
   TF_ASSERT_OK(ctx->InitializeRemoteMaster(
       /*server=*/nullptr, /*worker_env=*/nullptr,
@@ -106,7 +117,7 @@ TEST(ExecuteNodeTest, ExecuteNodeArgs) {
 
   std::vector<Device*> input_devices;
   for (auto* h : inputs) {
-    input_devices.push_back(absl::get<Device*>(h->DeviceOrHostCPU(*ctx)));
+    input_devices.push_back(h->DeviceOrHostCPU(*ctx));
   }
   const core::RefCountPtr<KernelAndDevice> kernel(
       new TestKernelAndDeviceFunc(std::move(input_devices), device0));

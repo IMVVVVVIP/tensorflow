@@ -13,8 +13,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <string>
+#include <vector>
+
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/graph/node_builder.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -28,10 +32,10 @@ namespace {
 // Benchmark to simulate the overhead in training and serving workloads from too
 // many threads grabbing the ResourceMgr lock at the same time because of the
 // variable and queue ops.
-void ManyManyVariablesHelper(int threads, int variables, int iters) {
-  testing::StopTiming();
+void ManyManyVariablesHelper(int threads, int variables,
+                             ::testing::benchmark::State& state) {
   Graph g(OpRegistry::Global());
-  std::vector<string> targets;
+  std::vector<std::string> targets;
   for (int i = 0; i < variables; ++i) {
     Node* v;
     TF_CHECK_OK(
@@ -50,16 +54,16 @@ void ManyManyVariablesHelper(int threads, int variables, int iters) {
   Session* sess = NewSession(opts);
   TF_CHECK_OK(sess->Create(gd));
   TF_CHECK_OK(sess->Run({}, {}, targets, nullptr));
-  testing::StartTiming();
-  for (int i = 0; i < iters; ++i) {
+  for (auto s : state) {
     TF_CHECK_OK(sess->Run({}, {}, targets, nullptr));
   }
-  testing::StopTiming();
   delete sess;
 }
 
-void BM_ManyManyVariablesManyThreads(int iters, int threads) {
-  ManyManyVariablesHelper(threads, 1000, iters);
+void BM_ManyManyVariablesManyThreads(::testing::benchmark::State& state) {
+  const int threads = state.range(0);
+
+  ManyManyVariablesHelper(threads, 1000, state);
 }
 
 BENCHMARK(BM_ManyManyVariablesManyThreads)->Arg(50);

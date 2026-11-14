@@ -13,11 +13,20 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
+
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
-#include "tensorflow/compiler/xla/client/lib/matrix.h"
-#include "tensorflow/compiler/xla/client/lib/qr.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "tensorflow/compiler/tf2xla/xla_op_registry.h"
+#include "xla/hlo/builder/lib/matrix.h"
+#include "xla/hlo/builder/lib/qr.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/xla_data.pb.h"
+#include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 namespace {
@@ -30,31 +39,31 @@ class MatrixSolveOp : public XlaOpKernel {
 
   void Compile(XlaOpKernelContext* ctx) override {
     const TensorShape matrix_shape = ctx->InputShape(0);
-    int64 matrix_ndims = matrix_shape.dims();
+    int64_t matrix_ndims = matrix_shape.dims();
     OP_REQUIRES(ctx, matrix_ndims >= 2,
-                errors::InvalidArgument(
-                    "Input matrix must have rank >= 2, got ", matrix_ndims));
+                absl::InvalidArgumentError(absl::StrCat(
+                    "Input matrix must have rank >= 2, got ", matrix_ndims)));
     OP_REQUIRES(ctx,
                 matrix_shape.dim_size(matrix_ndims - 2) ==
                     matrix_shape.dim_size(matrix_ndims - 1),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "Input matrices must be square, got",
                     matrix_shape.dim_size(matrix_ndims - 2),
-                    " != ", matrix_shape.dim_size(matrix_ndims - 1)));
+                    " != ", matrix_shape.dim_size(matrix_ndims - 1))));
 
     xla::XlaOp matrix = ctx->Input(0);
     xla::XlaOp rhs = ctx->Input(1);
 
     // TODO(b/111271662): Using LU decomposition instead of QR should be faster.
-    auto qr = xla::QRDecomposition(matrix, /*full_matrices=*/false);
-    OP_REQUIRES_OK(ctx, qr.status());
+    xla::XlaOp q, r;
+    xla::QrExplicit(matrix, /*full_matrices=*/false, q, r);
 
-    xla::XlaOp inv = xla::TriangularSolve(
-        qr.ValueOrDie().r, xla::TransposeInMinorDims(qr.ValueOrDie().q),
-        /*left_side=*/true,
-        /*lower=*/false, /*unit_diagonal=*/false,
-        /*transpose_a=*/
-        xla::TriangularSolveOptions::NO_TRANSPOSE);
+    xla::XlaOp inv =
+        xla::TriangularSolve(r, xla::TransposeInMinorDims(q),
+                             /*left_side=*/true,
+                             /*lower=*/false, /*unit_diagonal=*/false,
+                             /*transpose_a=*/
+                             xla::TriangularSolveOptions::NO_TRANSPOSE);
 
     xla::XlaOp output =
         xla::BatchDot(inv, adjoint_, rhs,
@@ -65,7 +74,8 @@ class MatrixSolveOp : public XlaOpKernel {
  private:
   bool adjoint_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(MatrixSolveOp);
+  MatrixSolveOp(const MatrixSolveOp&) = delete;
+  void operator=(const MatrixSolveOp&) = delete;
 };
 
 // TODO(b/111271662): Support integer and complex types.

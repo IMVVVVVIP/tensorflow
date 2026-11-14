@@ -14,6 +14,11 @@ limitations under the License.
 ==============================================================================*/
 
 #include <fstream>
+#include <ios>
+#include <iterator>
+#include <sstream>
+#include <string>
+
 #include <gtest/gtest.h>
 #include "tensorflow/lite/schema/builtin_ops_header/generator.h"
 
@@ -40,8 +45,3 @@ TEST(BuiltinOpsHeaderTest, TestConsistency) {
 }
 
 }  // anonymous namespace
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

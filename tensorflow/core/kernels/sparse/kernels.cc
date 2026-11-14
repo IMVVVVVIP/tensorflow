@@ -15,44 +15,52 @@ limitations under the License.
 
 #include "tensorflow/core/kernels/sparse/kernels.h"
 
+#include <cstdint>
 #include <numeric>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "absl/status/status.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 namespace functor {
 
-Status SparseTensorToCSRSparseMatrixCPUFunctor::operator()(
-    const int64 batch_size, const int num_rows,
-    TTypes<int64>::ConstMatrix indices, TTypes<int32>::Vec batch_ptr,
-    TTypes<int32>::Vec csr_row_ptr, TTypes<int32>::Vec csr_col_ind) {
+absl::Status SparseTensorToCSRSparseMatrixCPUFunctor::operator()(
+    int64_t batch_size, int num_rows, int num_cols,
+    TTypes<int64_t>::ConstMatrix indices, TTypes<int32_t>::Vec batch_ptr,
+    TTypes<int32_t>::Vec csr_row_ptr, TTypes<int32_t>::Vec csr_col_ind) {
   // Validate inputs.
   if (batch_ptr.size() != batch_size + 1) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "Expected batch_ptr.size() == batch_size + 1. Got: ", batch_ptr.size(),
-        " vs. ", batch_size + 1);
+        " vs. ", batch_size + 1));
   }
   if (csr_row_ptr.size() != batch_size * (num_rows + 1)) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "Expected csr_row_ptr.size() == batch_size * (num_rows + 1). Got: ",
-        csr_row_ptr.size(), " vs. ", batch_size * (num_rows + 1));
+        csr_row_ptr.size(), " vs. ", batch_size * (num_rows + 1)));
   }
 
-  const int64 total_nnz = indices.dimension(0);
+  const int64_t total_nnz = indices.dimension(0);
   const int rank = indices.dimension(1);
   if (rank == 2 && batch_size != 1) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "Expected batch_size == 1 when rank is 2. Got batch_size: ",
-        batch_size);
+        batch_size));
+  }
+  if (rank < 2 || rank > 3) {
+    return errors::InvalidArgument(
+        "Indices must have either 2 or 3 columns.  Got size ",
+        indices.dimensions());
   }
   if (csr_col_ind.size() != total_nnz) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "Expected csr_col_ind.size() == total_nnz. Got: ", csr_col_ind.size(),
-        " vs. ", total_nnz);
+        " vs. ", total_nnz));
   }
 
   int prev_batch = -1;
@@ -61,17 +69,58 @@ Status SparseTensorToCSRSparseMatrixCPUFunctor::operator()(
     batch_ptr(0) = 0;
     ++prev_batch;
 
-    for (int64 i = 0; i < total_nnz; ++i) {
+    for (int64_t i = 0; i < total_nnz; ++i) {
+      int64_t row = indices(i, 0);
+      if (row < 0 || row >= num_rows) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("Row index ", row, " is outside of valid range [0, ",
+                         num_rows, ")"));
+      }
+      int64_t col = indices(i, 1);
+      if (col < 0 || col >= num_cols) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("Column index ", col,
+                         " is outside of valid range [0, ", num_cols, ")"));
+      }
       // For now, the rows pointers store the corresponding row counts.
-      csr_row_ptr(indices(i, 0) + 1) += 1;
-      csr_col_ind(i) = indices(i, 1);
+      int64_t ix = row + 1;
+      if (ix >= csr_row_ptr.size()) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Got an index ", ix, " that is outside of csr_row_ptr"));
+      }
+
+      csr_row_ptr(ix) += 1;
+      csr_col_ind(i) = col;
     }
   } else {  // rank == 3
-    for (int64 i = 0; i < total_nnz; ++i) {
+    for (int64_t i = 0; i < total_nnz; ++i) {
       const int cur_batch = indices(i, 0);
+      if (cur_batch < 0 || cur_batch >= batch_size) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("Batch index ", cur_batch,
+                         " is outside of valid range [0, ", batch_size, ")"));
+      }
+      int64_t row = indices(i, 1);
+      if (row < 0 || row >= num_rows) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("Row index ", row, " is outside of valid range [0, ",
+                         num_rows, ")"));
+      }
+      int64_t col = indices(i, 2);
+      if (col < 0 || col >= num_cols) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("Column index ", col,
+                         " is outside of valid range [0, ", num_cols, ")"));
+      }
+
       // For now, the rows pointers store the corresponding row counts.
-      csr_row_ptr(cur_batch * (num_rows + 1) + indices(i, 1) + 1) += 1;
-      csr_col_ind(i) = indices(i, 2);
+      int64_t ix = cur_batch * (num_rows + 1) + row + 1;
+      if (ix >= csr_row_ptr.size()) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Got an index ", ix, " that is outside of csr_row_ptr"));
+      }
+      csr_row_ptr(ix) += 1;
+      csr_col_ind(i) = col;
 
       // We're at a new batch and might have skipped over empty batches.
       while (prev_batch < cur_batch) {
@@ -93,7 +142,7 @@ Status SparseTensorToCSRSparseMatrixCPUFunctor::operator()(
     std::partial_sum(row_ptr_batch, row_ptr_batch + num_rows + 1,
                      row_ptr_batch);
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace functor

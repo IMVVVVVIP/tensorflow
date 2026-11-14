@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Ops for GPU collective operations implemented using NVIDIA nccl."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import threading
 
 from tensorflow.python.eager import context
@@ -62,7 +58,8 @@ def _all_sum_grad(op, grad):
     LookupError: If `reduction` is not `sum`.
   """
   if op.get_attr('reduction') != b'sum':
-    raise LookupError('No gradient defined for NcclAllReduce except sum.')
+    raise LookupError('No gradient defined for NcclAllReduce except for '
+                      'reduction="sum".')
 
   _check_device(grad, expected=op.device)
   num_devices = op.get_attr('num_devices')
@@ -161,7 +158,8 @@ def _reduce_sum_grad(op, grad):
     LookupError: If the reduction attribute of op is not `sum`.
   """
   if op.get_attr('reduction') != b'sum':
-    raise LookupError('No gradient defined for NcclReduce except sum.')
+    raise LookupError('No gradient defined for NcclAllReduce except for '
+                      'reduction="sum".')
   _check_device(grad, expected=op.device)
 
   with ops.device(op.device):
@@ -198,8 +196,14 @@ def _broadcast_grad(op, accumulated_grad):
   Returns:
     Gradients with respect to the input of `broadcast`.
   """
+  if (
+      accumulated_grad.op.type not in ('AddN', 'Add', 'AddV2')
+      or not accumulated_grad.op.inputs
+  ):
+    return accumulated_grad
+
   # Grab inputs of accumulated_grad and replace accumulation with reduce_sum.
-  grads = [t for t in accumulated_grad.op.inputs]
+  grads = list(accumulated_grad.op.inputs)
   for t in grads:
     _check_device(t)
 
@@ -246,8 +250,10 @@ def _apply_reduce(reduction, tensors):
   result = gen_nccl_ops.nccl_reduce(input=tensors, reduction=reduction)
   try:
     next(t for t in tensors if t.device == result.device)
-  except StopIteration:
-    raise ValueError('One input tensor must be assigned to current device')
+  except StopIteration as exc:
+    raise ValueError(
+        'One input tensor must be assigned to current device'
+    ) from exc
   return result
 
 
@@ -262,6 +268,8 @@ def _get_shared_name():
 
 def _check_device(tensor, expected=None):
   if not device.canonical_name(tensor.device):
-    raise ValueError('Device assignment required for nccl collective ops')
+    raise ValueError(f'Device assignment for tensor={tensor} required for nccl '
+                     'collective ops')
   if expected and expected != tensor.device:
-    raise ValueError('Expected device %s, got %s' % (expected, tensor.device))
+    raise ValueError(f'Expected device {expected}, got {tensor.device} for '
+                     f'tensor={tensor}.')

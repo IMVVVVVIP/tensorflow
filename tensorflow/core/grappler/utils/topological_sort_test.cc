@@ -14,6 +14,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/grappler/utils/topological_sort.h"
+
 #include "absl/strings/str_cat.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/graph/benchmark_testlib.h"
@@ -28,14 +29,15 @@ namespace grappler {
 class TopologicalSortTest : public ::testing::Test {
  protected:
   struct NodeConfig {
-    NodeConfig(string name, std::vector<string> inputs)
+    NodeConfig(std::string name, std::vector<std::string> inputs)
         : name(std::move(name)), inputs(std::move(inputs)) {}
-    NodeConfig(string name, string op, std::vector<string> inputs)
+    NodeConfig(std::string name, std::string op,
+               std::vector<std::string> inputs)
         : name(std::move(name)), op(std::move(op)), inputs(std::move(inputs)) {}
 
-    string name;
-    string op;
-    std::vector<string> inputs;
+    std::string name;
+    std::string op;
+    std::vector<std::string> inputs;
   };
 
   static GraphDef CreateGraph(const std::vector<NodeConfig>& nodes) {
@@ -45,7 +47,7 @@ class TopologicalSortTest : public ::testing::Test {
       NodeDef node_def;
       node_def.set_name(node.name);
       node_def.set_op(node.op);
-      for (const string& input : node.inputs) {
+      for (const std::string& input : node.inputs) {
         node_def.add_input(input);
       }
       *graph.add_node() = std::move(node_def);
@@ -68,7 +70,7 @@ TEST_F(TopologicalSortTest, NoLoop) {
   std::vector<const NodeDef*> topo_order;
   TF_EXPECT_OK(ComputeTopologicalOrder(graph, &topo_order));
 
-  const std::vector<string> order = {"5", "4", "2", "0", "3", "1"};
+  const std::vector<std::string> order = {"5", "4", "2", "0", "3", "1"};
 
   ASSERT_EQ(topo_order.size(), order.size());
   for (int i = 0; i < topo_order.size(); ++i) {
@@ -95,7 +97,7 @@ TEST_F(TopologicalSortTest, WithLoop) {
   std::vector<const NodeDef*> topo_order;
   TF_EXPECT_OK(ComputeTopologicalOrder(graph, &topo_order));
 
-  const std::vector<string> order = {"1", "2", "3", "4", "5"};
+  const std::vector<std::string> order = {"1", "2", "3", "4", "5"};
 
   ASSERT_EQ(topo_order.size(), order.size());
   for (int i = 0; i < topo_order.size(); ++i) {
@@ -119,7 +121,7 @@ TEST_F(TopologicalSortTest, WithIllegalLoop) {
   });
 
   EXPECT_FALSE(TopologicalSort(&graph).ok());
-  std::vector<string> order = {"2", "3", "1"};
+  std::vector<std::string> order = {"2", "3", "1"};
   for (int i = 0; i < order.size(); i++) {
     EXPECT_EQ(graph.node(i).name(), order[i]);
   }
@@ -132,7 +134,7 @@ TEST_F(TopologicalSortTest, DuplicatedInputs) {
   });
 
   TF_EXPECT_OK(TopologicalSort(&graph));
-  std::vector<string> order = {"1", "2"};
+  std::vector<std::string> order = {"1", "2"};
   for (int i = 0; i < order.size(); i++) {
     EXPECT_EQ(graph.node(i).name(), order[i]);
   }
@@ -148,7 +150,7 @@ TEST_F(TopologicalSortTest, Idempotent) {
   });
 
   TF_EXPECT_OK(TopologicalSort(&graph));
-  std::vector<string> order = {"1", "2", "3", "4", "5"};
+  std::vector<std::string> order = {"1", "2", "3", "4", "5"};
   for (int i = 0; i < order.size(); i++) {
     EXPECT_EQ(graph.node(i).name(), order[i]);
   }
@@ -177,12 +179,12 @@ TEST_F(TopologicalSortTest, ExtraDependencies) {
   std::vector<const NodeDef*> topo_order;
   TF_EXPECT_OK(ComputeTopologicalOrder(graph, extra_dependencies, &topo_order));
 
-  const std::vector<string> valid_order_1 = {"4", "5", "2", "0", "3", "1"};
-  const std::vector<string> valid_order_2 = {"4", "5", "0", "2", "3", "1"};
+  const std::vector<std::string> valid_order_1 = {"4", "5", "2", "0", "3", "1"};
+  const std::vector<std::string> valid_order_2 = {"4", "5", "0", "2", "3", "1"};
 
   ASSERT_EQ(topo_order.size(), valid_order_1.size());
 
-  std::vector<string> computed_order(6, "");
+  std::vector<std::string> computed_order(6, "");
   for (int i = 0; i < topo_order.size(); ++i) {
     const NodeDef* node = topo_order[i];
     computed_order[i] = node->name();
@@ -196,19 +198,17 @@ TEST_F(TopologicalSortTest, ExtraDependencies) {
       ComputeTopologicalOrder(graph, extra_dependencies, &topo_order).ok());
 }
 
-static void BM_ComputeTopologicalOrder(int iters, int size) {
-  testing::StopTiming();
+static void BM_ComputeTopologicalOrder(::testing::benchmark::State& state) {
+  const int size = state.range(0);
 
   GraphDef graph = test::CreateRandomGraph(size);
 
-  testing::StartTiming();
   std::vector<const NodeDef*> topo_order;
-  for (int i = 0; i < iters; i++) {
+  for (auto s : state) {
     topo_order.clear();
-    Status st = ComputeTopologicalOrder(graph, &topo_order);
+    absl::Status st = ComputeTopologicalOrder(graph, &topo_order);
     CHECK(st.ok()) << "Failed to compute topological order";
   }
-  testing::StopTiming();
 }
 BENCHMARK(BM_ComputeTopologicalOrder)
     ->Arg(10)

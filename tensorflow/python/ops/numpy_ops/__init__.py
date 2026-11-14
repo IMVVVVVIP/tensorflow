@@ -19,7 +19,7 @@ operations. APIs are based on and have been tested with NumPy 1.16 version.
 
 The set of supported APIs may be expanded over time. Also future releases may
 change the baseline version of NumPy API being supported. A list of some
-systematic differences with NumPy are listed later in the "Differences with
+systematic differences with NumPy is listed later in the "Differences with
 NumPy" section.
 
 ## Getting Started
@@ -31,18 +31,23 @@ In the code snippets below, we will assume that `tf.experimental.numpy` is
 imported as `tnp` and NumPy is imported as `np`
 
 ```python
-print(tnp.ones([2,1]) + tnp.ones([1, 2]))
+print(tnp.ones([2,1]) + np.ones([1, 2]))
 ```
 
 ## Types
 
 The module provides an `ndarray` class which wraps an immutable `tf.Tensor`.
 Additional functions are provided which accept array-like objects. Here
-array-like objects includes `ndarrays` as defined by this module, as well as
+array-like objects include `ndarrays` as defined by this module, as well as
 `tf.Tensor`, in addition to types accepted by NumPy.
 
-A subset of NumPy dtypes are supported. Type promotion follows NumPy
+A subset of NumPy dtypes are supported. Type promotion* follows NumPy
 semantics.
+
+**Note**: A new type promotion that offers a lot of advantages over the old
+type promotion is now available. Learn more about enabling the new
+type promotion
+[here](https://www.tensorflow.org/guide/tf_numpy_type_promotion).
 
 ```python
 print(tnp.ones([1, 2], dtype=tnp.int16) + tnp.ones([2, 1], dtype=tnp.uint8))
@@ -75,7 +80,7 @@ tnp.sum(tnp.ones([1, 2]) + tf.ones([2, 1]))
 Note that the `__array_priority__` is currently chosen to be lower than
 `tf.Tensor`. Hence the `+` operator above returns a `tf.Tensor`.
 
-Additional examples of interopability include:
+Additional examples of interoperability include:
 
 *  using `with tf.GradientTape()` scope to compute gradients through the
   TF-NumPy API calls.
@@ -148,53 +153,19 @@ tf_var.assign_add(tnp.square(tf_var))
 Here is a non-exhaustive list of differences:
 
 *   Not all dtypes are currently supported. e.g. `np.float96`, `np.float128`.
-    `np.object`, `np.str`, `np.recarray` types are not supported.
+    `np.object_`, `np.str_`, `np.recarray` types are not supported.
 *   `ndarray` storage is in C order only. Fortran order, views, `stride_tricks`
     are not supported.
 *   Only a subset of functions and modules are supported. This set will be
     expanded over time. For supported functions, some arguments or argument
-    values may not be supported. This differences are generally provide in the
+    values may not be supported. These differences are generally provided in the
     function comments. Full `ufunc` support is also not provided.
 *   Buffer mutation is currently not supported. `ndarrays` wrap immutable
-    tensors. This means that output buffer arguments (e..g `out` in ufuncs) are
-    not supported
+    tensors. This means that output buffer arguments (e.g. `out` in ufuncs) are
+    not supported.
 *   NumPy C API is not supported. NumPy's Cython and Swig integration are not
     supported.
+
+API docstring: tensorflow.experimental.numpy
 """
-# TODO(wangpeng): Append `np_export`ed symbols to the comments above.
-
-# pylint: disable=g-direct-tensorflow-import
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from tensorflow.python.ops.array_ops import newaxis
-from tensorflow.python.ops.numpy_ops import np_random as random
-from tensorflow.python.ops.numpy_ops import np_utils
-# pylint: disable=wildcard-import
-from tensorflow.python.ops.numpy_ops.np_array_ops import *
-from tensorflow.python.ops.numpy_ops.np_arrays import ndarray
-from tensorflow.python.ops.numpy_ops.np_dtypes import *
-from tensorflow.python.ops.numpy_ops.np_math_ops import *
-# pylint: enable=wildcard-import
-from tensorflow.python.ops.numpy_ops.np_utils import finfo
-from tensorflow.python.ops.numpy_ops.np_utils import promote_types
-from tensorflow.python.ops.numpy_ops.np_utils import result_type
-
-
-# pylint: disable=redefined-builtin,undefined-variable
-@np_utils.np_doc("max", link=np_utils.AliasOf("maximum"))
-def max(a, axis=None, keepdims=None):
-  return amax(a, axis=axis, keepdims=keepdims)
-
-
-@np_utils.np_doc("min", link=np_utils.AliasOf("minimum"))
-def min(a, axis=None, keepdims=None):
-  return amin(a, axis=axis, keepdims=keepdims)
-
-
-@np_utils.np_doc("round", link=np_utils.AliasOf("around"))
-def round(a, decimals=0):
-  return around(a, decimals=decimals)
-# pylint: enable=redefined-builtin,undefined-variable
+# TODO(wangpeng): Append `tf_export`ed symbols to the comments above.

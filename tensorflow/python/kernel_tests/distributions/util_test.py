@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for utility functions."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import importlib
 
 import numpy as np
@@ -300,6 +296,7 @@ class EmbedCheckCategoricalEventShapeTest(test.TestCase):
             param)
         checked_param.eval(feed_dict={param: np.ones([int(2**11+1)])})
 
+  @test_util.disable_tfrt("b/169901260")
   @test_util.run_in_graph_and_eager_modes
   def testUnsupportedDtype(self):
     param = ops.convert_to_tensor(
@@ -928,24 +925,25 @@ class SoftplusTest(test.TestCase):
       softplus_inverse = du.softplus_inverse(softplus)
       [tf_softplus, tf_softplus_inverse] = sess.run([
           softplus, softplus_inverse])
-    self.assertAllCloseAccordingToType(np_softplus, tf_softplus)
     rtol = {"float16": 0.07, "float32": 0.003, "float64": 0.002}.get(
         str(np_features.dtype), 1e-6)
+    self.assertAllCloseAccordingToType(np_softplus, tf_softplus, rtol=rtol)
     # This will test that we correctly computed the inverse by verifying we
     # recovered the original input.
     self.assertAllCloseAccordingToType(
         np_features, tf_softplus_inverse,
         atol=0., rtol=rtol)
-    self.assertAllEqual(np.ones_like(tf_softplus).astype(np.bool),
-                        tf_softplus > 0)
+    self.assertAllEqual(
+        np.ones_like(tf_softplus).astype(np.bool_), tf_softplus > 0)
 
     self.assertShapeEqual(np_softplus, softplus)
     self.assertShapeEqual(np_softplus, softplus_inverse)
 
-    self.assertAllEqual(np.ones_like(tf_softplus).astype(np.bool),
-                        np.isfinite(tf_softplus))
-    self.assertAllEqual(np.ones_like(tf_softplus_inverse).astype(np.bool),
-                        np.isfinite(tf_softplus_inverse))
+    self.assertAllEqual(
+        np.ones_like(tf_softplus).astype(np.bool_), np.isfinite(tf_softplus))
+    self.assertAllEqual(
+        np.ones_like(tf_softplus_inverse).astype(np.bool_),
+        np.isfinite(tf_softplus_inverse))
 
   @test_util.run_deprecated_v1
   def testNumbers(self):
@@ -1003,7 +1001,8 @@ class SoftplusTest(test.TestCase):
       y = du.softplus_inverse(x)
       grads = self.evaluate(gradients_impl.gradients(y, x)[0])
       # Equivalent to `assertAllFalse` (if it existed).
-      self.assertAllEqual(np.zeros_like(grads).astype(np.bool), np.isnan(grads))
+      self.assertAllEqual(
+          np.zeros_like(grads).astype(np.bool_), np.isnan(grads))
 
   @test_util.run_deprecated_v1
   def testInverseSoftplusGradientFinite(self):
@@ -1015,7 +1014,7 @@ class SoftplusTest(test.TestCase):
       grads = self.evaluate(gradients_impl.gradients(y, x)[0])
       # Equivalent to `assertAllTrue` (if it existed).
       self.assertAllEqual(
-          np.ones_like(grads).astype(np.bool), np.isfinite(grads))
+          np.ones_like(grads).astype(np.bool_), np.isfinite(grads))
 
 
 @test_util.run_all_in_graph_and_eager_modes

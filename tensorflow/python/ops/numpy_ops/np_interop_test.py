@@ -14,14 +14,16 @@
 # ==============================================================================
 """Tests for interop between TF ops, numpy_ops, and numpy methods."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as onp
 import tensorflow.compat.v2 as tf
 
-from tensorflow.python.ops import numpy_ops as np
+from tensorflow.python.framework import ops
+from tensorflow.python.framework import test_util
+from tensorflow.python.ops.numpy_ops import np_math_ops
+
+# Used instead of "import tensorflow(dot)experimental.numpy as np" due to
+# copybara issues.
+np = tf.experimental.numpy
 
 
 # Tests for code snippet put in README.md
@@ -174,16 +176,26 @@ class InteropTest(tf.test.TestCase):
     self.assertIsInstance(sq, onp.ndarray)
     self.assertEqual(100., sq[0])
 
-    # TODO(nareshmodi): Fails since the autopacking code doesn't use
-    # nest.flatten.
+# TODO(b/171313773): why doesn't tensor have __array_module__
+  def testArrayModule(self):
+    self.skipTest("Tensor doesn't have __array_module__")
+    arr = np.asarray([10])
 
+    module = arr.__array_module__((tf.Tensor,))
+    self.assertIs(module, tf.experimental.numpy)
 
+    class Dummy:
+      pass
+    module = arr.__array_module__((tf.Tensor, Dummy))
+    self.assertIs(module, NotImplemented)
+
+# TODO(nareshmodi): Fails since the autopacking code doesn't use
+# nest.flatten.
 #   def testAutopacking(self):
 #     arr1 = np.asarray(1.)
 #     arr2 = np.asarray(2.)
 #     arr3 = np.asarray(3.)
 #     t = ops.convert_to_tensor_v2([arr1, arr2, arr3])
-
 #     self.assertEqual(t.numpy(), [1., 2., 3.])
 
   def testDistStratInterop(self):
@@ -217,6 +229,7 @@ class InteropTest(tf.test.TestCase):
     # self.assertIsInstance(reduced, np.ndarray)
     self.assertAllClose(reduced, 15)
 
+  @test_util.disable_tfrt('b/180469928')
   def testPyFuncInterop(self):
     def py_func_fn(a, b):
       return a + b
@@ -274,7 +287,7 @@ class InteropTest(tf.test.TestCase):
     output_layer = tf.keras.layers.Lambda(np.square)(inputs)
     model = tf.keras.Model([inputs], output_layer)
 
-    values = onp.arange(10, dtype=onp.float32)
+    values = onp.arange(10, dtype=onp.float32).reshape((1, 10))
     values_as_array = np.asarray(values)
 
     result = model(values)
@@ -322,6 +335,11 @@ class InteropTest(tf.test.TestCase):
 
     self.assertIsInstance(c, np.ndarray)
     self.assertEqual(c.shape, (batch_size, 32, 32, 32, 32))
+
+    c = tf.vectorized_map(lambda x: x.T, a)
+
+    self.assertIsInstance(c, np.ndarray)
+    self.assertEqual(c.shape, (batch_size, 32, 32))
 
   def testJacobian(self):
     with tf.GradientTape() as g:
@@ -393,7 +411,9 @@ class FunctionTest(InteropTest):
 
   def testLen(self):
 
-    @tf.function
+    # len can be fixed by autograph.
+    # TODO(wangpeng): this test can just be removed
+    @tf.function(autograph=False)
     def f(x):
       # Note that shape of input to len is data dependent.
       return len(np.where(x)[0])
@@ -435,5 +455,7 @@ class VariableTest(InteropTest):
 
 
 if __name__ == '__main__':
+  ops.set_dtype_conversion_mode('legacy')
+  np_math_ops.enable_numpy_methods_on_tensor()
   tf.compat.v1.enable_eager_execution()
   tf.test.main()

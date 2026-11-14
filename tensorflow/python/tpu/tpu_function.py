@@ -15,10 +15,6 @@
 
 """Helper library for functions used during TPU compilation."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import contextlib
 import threading
 
@@ -45,8 +41,9 @@ _current_tpu_context = TpuContext()
 
 @contextlib.contextmanager
 def tpu_shard_context(number_of_shards):
+  """A context manager setting current number of shards."""
   if _current_tpu_context.number_of_shards is not None:
-    raise NotImplementedError("tpu_shard_context cannot be nested.")
+    raise NotImplementedError("tpu_shard_context cannot be nested")
   try:
     _current_tpu_context.set_number_of_shards(number_of_shards)
     yield

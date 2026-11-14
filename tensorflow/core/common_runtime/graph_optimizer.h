@@ -36,8 +36,8 @@ class GraphOptimizer {
     // pass may replace a node with a different node of the same name that has a
     // different number of outputs, or outputs with different known shapes.
     // TODO(b/65453533) introduce a unique way to name nodes in a graph.
-    std::unordered_map<string, std::vector<PartialTensorShape>>* shape_map =
-        nullptr;
+    std::unordered_map<std::string, std::vector<PartialTensorShape>>*
+        shape_map = nullptr;
 
     // If not null then only nodes for which cse_consider_fn returns true will
     // be considered for CSE.
@@ -74,25 +74,14 @@ class GraphOptimizer {
   void Optimize(FunctionLibraryRuntime* runtime, Env* env, const Device* device,
                 std::unique_ptr<Graph>* graph,
                 const Options& graph_optimizer_options);
-  // DEPRECATED: Consider passing a GraphOptimizer::Options object instead.
-  void Optimize(
-      FunctionLibraryRuntime* runtime, Env* env, const Device* device,
-      std::unique_ptr<Graph>* graph,
-      const std::unordered_map<string, std::vector<PartialTensorShape>>*
-          shape_map,
-      const NodePredicate& cse_consider_fn = nullptr,
-      const NodePredicate& cf_consider_fn = nullptr,
-      bool inline_multi_device_functions = false,
-      bool inline_impl_selection_group_functions = false,
-      bool inline_with_single_device_body_placer = false,
-      bool ignore_noinline = false);
 
   const OptimizerOptions& options() { return opts_; }
 
  private:
   OptimizerOptions opts_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(GraphOptimizer);
+  GraphOptimizer(const GraphOptimizer&) = delete;
+  void operator=(const GraphOptimizer&) = delete;
 };
 
 // Applies graph rewrite optimization such as inlining, dead code

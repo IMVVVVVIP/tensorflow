@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for tensorflow.ops.tf.gather."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
@@ -46,7 +42,7 @@ class GatherTest(test.TestCase, parameterized.TestCase):
   def testSimpleGather(self, indices_dtype):
     data = np.array([0, 1, 2, 3, 7, 5, 8, 9, 10, 11, 15, 13])
     indices = [3, 4]
-    with self.session(use_gpu=True):
+    with self.session():
       for dtype in _TEST_TYPES:
         params_np = self._buildParams(data, dtype)
         params = constant_op.constant(params_np)
@@ -62,7 +58,7 @@ class GatherTest(test.TestCase, parameterized.TestCase):
   def test2DArray(self, indices_dtype):
     data = np.array([[0, 1, 2, 3, 7, 5], [8, 9, 10, 11, 15, 13]])
     indices = [[3], [4]]
-    with self.session(use_gpu=True):
+    with self.session():
       for dtype in _TEST_TYPES:
         params_np = self._buildParams(data, dtype)
         params = constant_op.constant(params_np)
@@ -77,7 +73,7 @@ class GatherTest(test.TestCase, parameterized.TestCase):
   def testHigherRank(self):
     data = np.array([[[0, 1, 2], [3, 7, 5]], [[8, 9, 10], [11, 15, 13]]])
     indices = [[[2, 0], [1, 2]], [[2, 0], [0, 1]]]
-    with self.session(use_gpu=True):
+    with self.session():
       for dtype in _TEST_TYPES:
         params_np = self._buildParams(data, dtype)
         params = constant_op.constant(params_np)
@@ -112,8 +108,15 @@ class GatherTest(test.TestCase, parameterized.TestCase):
       with self.assertRaisesOpError(r"indices\[0\] = 7 is not in \[0, 2\)"):
         self.evaluate(array_ops.batch_gather(params, [7]))
 
+  @test_util.disable_xla("Cannot force cpu placement for xla_gpu test")
+  def testBadBatchedIndicesCPU(self):
+    with ops.device_v2("cpu:0"):
+      params = [[0, 1, 2], [3, 4, 5]]
+      with self.assertRaisesOpError(r"indices\[0,0\] = 3 is not in \[0, 3\)"):
+        self.evaluate(array_ops.batch_gather(params, [[3], [0]]))
+
   def testEmptySlices(self):
-    with self.session(use_gpu=True):
+    with self.session():
       for dtype in _TEST_TYPES:
         for itype in np.int32, np.int64:
           params = np.zeros((7, 0, 0), dtype=dtype.as_numpy_dtype)

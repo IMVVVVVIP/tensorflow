@@ -177,10 +177,10 @@ static OpDef MakeOpDef(int num_inputs, int num_outputs) {
   OpRegistrationData op_reg_data;
   OpDefBuilder b("dummy");
   for (int i = 0; i < num_inputs; ++i) {
-    b.Input(strings::StrCat("i", i, ": float"));
+    b.Input(absl::StrCat("i", i, ": float"));
   }
   for (int i = 0; i < num_outputs; ++i) {
-    b.Output(strings::StrCat("o", i, ": float"));
+    b.Output(absl::StrCat("o", i, ": float"));
   }
   CHECK(b.Attr("foo:string").Finalize(&op_reg_data).ok());
   return op_reg_data.op_def;
@@ -188,7 +188,7 @@ static OpDef MakeOpDef(int num_inputs, int num_outputs) {
 
 // Tests for shape inference
 
-PartialTensorShape S(std::initializer_list<int64> dims) {
+PartialTensorShape S(std::initializer_list<int64_t> dims) {
   return PartialTensorShape(dims);
 }
 

@@ -1,4 +1,4 @@
-/* Copyright 2016 The TensorFlow Authors All Rights Reserved.
+/* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -22,7 +22,10 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_TENSOR_H_
 #define TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_TENSOR_H_
 
+#include <memory>
+#include <sstream>
 #include <typeinfo>
+#include <utility>
 
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
@@ -41,13 +44,13 @@ class TFProfTensor {
   }
 
   // If pointers are provided, they are filled by the method.
-  void Display(string* formatted_str, TFProfTensorProto* tfprof_tensor_pb);
+  void Display(std::string* formatted_str, TFProfTensorProto* tfprof_tensor_pb);
 
  private:
   // Max length of tensor value displayed to CLI.
-  const int64 kTFProfTenosrMaxDisplayLen = 10000;
+  const int64_t kTFProfTenosrMaxDisplayLen = 10000;
   // Max length after which a latency warning will be printed.
-  const int64 kTFProfTensorMaxWarnLen = 100000;
+  const int64_t kTFProfTensorMaxWarnLen = 100000;
 
   void Build();
 
@@ -61,13 +64,13 @@ class TFProfTensor {
       dim->add_value_double(double_val);
       absl::StrAppendFormat(&formatted_str_, "%.2f ",
                             dim->value_double(dim->value_double_size() - 1));
-    } else if (typeid(value) == typeid(int64)) {
-      int64 int64_val = 0;
+    } else if (typeid(value) == typeid(int64_t)) {
+      int64_t int64_val = 0;
       CHECK(absl::SimpleAtoi(sstream.str(), &int64_val));  // Crash OK
       dim->add_value_int64(int64_val);
       absl::StrAppendFormat(&formatted_str_, "%d ",
                             dim->value_int64(dim->value_int64_size() - 1));
-    } else if (typeid(value) == typeid(string)) {
+    } else if (typeid(value) == typeid(std::string)) {
       dim->add_value_str(sstream.str());
       absl::StrAppend(&formatted_str_, "'",
                       dim->value_str(dim->value_str_size() - 1), "' ");
@@ -80,10 +83,10 @@ class TFProfTensor {
   // indirectly at various places:
   // TODO(xpan): Further verifying it.
   template <typename T>
-  int64 BuildOutput(int64 start, int depth, const std::vector<T>& values,
-                    TFProfTensorProto* dim) {
+  int64_t BuildOutput(int64_t start, int depth, const std::vector<T>& values,
+                      TFProfTensorProto* dim) {
     formatted_str_ += "[";
-    int64 nstart = start;
+    int64_t nstart = start;
     if (tensor_->dims() == 0 && values.size() == 1) {
       std::ostringstream sstream;
       sstream << values[nstart];
@@ -94,13 +97,13 @@ class TFProfTensor {
         dim->add_value_double(double_val);
         absl::StrAppendFormat(&formatted_str_, "%.2f ",
                               dim->value_double(dim->value_double_size() - 1));
-      } else if (typeid(values[nstart]) == typeid(int64)) {
-        int64 int64_val = 0;
+      } else if (typeid(values[nstart]) == typeid(int64_t)) {
+        int64_t int64_val = 0;
         CHECK(absl::SimpleAtoi(sstream.str(), &int64_val));  // Crash OK
         dim->add_value_int64(int64_val);
         absl::StrAppendFormat(&formatted_str_, "%d ",
                               dim->value_int64(dim->value_int64_size() - 1));
-      } else if (typeid(values[nstart]) == typeid(string)) {
+      } else if (typeid(values[nstart]) == typeid(std::string)) {
         dim->add_value_str(sstream.str());
         absl::StrAppend(&formatted_str_, "'",
                         dim->value_str(dim->value_str_size() - 1), "' ");
@@ -121,14 +124,14 @@ class TFProfTensor {
             absl::StrAppendFormat(
                 &formatted_str_, "%.2f ",
                 dim->value_double(dim->value_double_size() - 1));
-          } else if (typeid(values[nstart]) == typeid(int64)) {
-            int64 int64_val = 0;
+          } else if (typeid(values[nstart]) == typeid(int64_t)) {
+            int64_t int64_val = 0;
             CHECK(absl::SimpleAtoi(sstream.str(), &int64_val));  // Crash OK
             dim->add_value_int64(int64_val);
             absl::StrAppendFormat(
                 &formatted_str_, "%d ",
                 dim->value_int64(dim->value_int64_size() - 1));
-          } else if (typeid(values[nstart]) == typeid(string)) {
+          } else if (typeid(values[nstart]) == typeid(std::string)) {
             dim->add_value_str(sstream.str());
             absl::StrAppend(&formatted_str_, "'",
                             dim->value_str(dim->value_str_size() - 1), "' ");
@@ -157,14 +160,14 @@ class TFProfTensor {
       absl::FPrintF(stderr, "Showing huge tensor, the tool might halt...\n");
     }
     auto values = tensor_->flat<T>();
-    for (int64 i = 0; i < tensor_->NumElements(); i++) {
+    for (int64_t i = 0; i < tensor_->NumElements(); i++) {
       value_vec->push_back(static_cast<U>(values(i)));
     }
   }
 
   TFProfTensorProto tfprof_tensor_pb_;
   std::unique_ptr<Tensor> tensor_;
-  string formatted_str_;
+  std::string formatted_str_;
 };
 }  // namespace tfprof
 }  // namespace tensorflow

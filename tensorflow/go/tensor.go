@@ -43,28 +43,39 @@ type DataType C.TF_DataType
 
 // Types of scalar values in the TensorFlow type system.
 const (
-	Float      DataType = C.TF_FLOAT
-	Double     DataType = C.TF_DOUBLE
-	Int32      DataType = C.TF_INT32
-	Uint32     DataType = C.TF_UINT32
-	Uint8      DataType = C.TF_UINT8
-	Int16      DataType = C.TF_INT16
-	Int8       DataType = C.TF_INT8
-	String     DataType = C.TF_STRING
-	Complex64  DataType = C.TF_COMPLEX64
-	Complex    DataType = C.TF_COMPLEX
-	Int64      DataType = C.TF_INT64
-	Uint64     DataType = C.TF_UINT64
-	Bool       DataType = C.TF_BOOL
-	Qint8      DataType = C.TF_QINT8
-	Quint8     DataType = C.TF_QUINT8
-	Qint32     DataType = C.TF_QINT32
-	Bfloat16   DataType = C.TF_BFLOAT16
-	Qint16     DataType = C.TF_QINT16
-	Quint16    DataType = C.TF_QUINT16
-	Uint16     DataType = C.TF_UINT16
-	Complex128 DataType = C.TF_COMPLEX128
-	Half       DataType = C.TF_HALF
+	Float             DataType = C.TF_FLOAT
+	Double            DataType = C.TF_DOUBLE
+	Int32             DataType = C.TF_INT32
+	Uint32            DataType = C.TF_UINT32
+	Uint8             DataType = C.TF_UINT8
+	Int16             DataType = C.TF_INT16
+	Int8              DataType = C.TF_INT8
+	String            DataType = C.TF_STRING
+	Complex64         DataType = C.TF_COMPLEX64
+	Complex           DataType = C.TF_COMPLEX
+	Int64             DataType = C.TF_INT64
+	Uint64            DataType = C.TF_UINT64
+	Bool              DataType = C.TF_BOOL
+	Qint8             DataType = C.TF_QINT8
+	Quint8            DataType = C.TF_QUINT8
+	Qint32            DataType = C.TF_QINT32
+	Bfloat16          DataType = C.TF_BFLOAT16
+	Qint16            DataType = C.TF_QINT16
+	Quint16           DataType = C.TF_QUINT16
+	Uint16            DataType = C.TF_UINT16
+	Complex128        DataType = C.TF_COMPLEX128
+	Half              DataType = C.TF_HALF
+	Float8e5m2        DataType = C.TF_FLOAT8_E5M2
+	Float8e4m3fn      DataType = C.TF_FLOAT8_E4M3FN
+	Float8e4m3fnuz    DataType = C.TF_FLOAT8_E4M3FNUZ
+	Float8e4m3b11fnuz DataType = C.TF_FLOAT8_E4M3B11FNUZ
+	Float8e5m2fnuz    DataType = C.TF_FLOAT8_E5M2FNUZ
+	Float8e8m0fnu     DataType = C.TF_FLOAT8_E8M0FNU
+	Float4e2m1fn      DataType = C.TF_FLOAT4_E2M1FN
+	Int4              DataType = C.TF_INT4
+	Uint4             DataType = C.TF_UINT4
+	Int2              DataType = C.TF_INT2
+	Uint2             DataType = C.TF_UINT2
 )
 
 // Tensor holds a multi-dimensional array of elements of a single data type.
@@ -76,14 +87,14 @@ type Tensor struct {
 // NewTensor converts from a Go value to a Tensor. Valid values are scalars,
 // slices, and arrays. Every element of a slice must have the same length so
 // that the resulting Tensor has a valid shape.
-func NewTensor(value interface{}) (*Tensor, error) {
+func NewTensor(value any) (*Tensor, error) {
 	val := reflect.ValueOf(value)
 	shape, dataType, err := shapeAndDataTypeOf(val)
 	if err != nil {
 		return nil, err
 	}
 	nflattened := numElements(shape)
-	nbytes := typeOf(dataType, nil).Size() * uintptr(nflattened)
+	nbytes := TypeOf(dataType, nil).Size() * uintptr(nflattened)
 	if dataType == String {
 		nbytes = uintptr(nflattened) * C.sizeof_TF_TString
 	}
@@ -95,14 +106,17 @@ func NewTensor(value interface{}) (*Tensor, error) {
 		c:     C.TF_AllocateTensor(C.TF_DataType(dataType), shapePtr, C.int(len(shape)), C.size_t(nbytes)),
 		shape: shape,
 	}
-	runtime.SetFinalizer(t, (*Tensor).finalize)
+
 	raw := tensorData(t.c)
+
+	runtime.SetFinalizer(t, (*Tensor).finalize)
+
 	buf := bytes.NewBuffer(raw[:0:len(raw)])
 
 	if isAllArray(val.Type()) {
 		// We have arrays all the way down, or just primitive types. We can
 		// just copy the memory in as it is all contiguous.
-		if err := copyPtr(buf, unpackEFace(value).data, int(val.Type().Size())); err != nil {
+		if _, err := copyPtr(buf, unpackEFace(value).data, int(val.Type().Size())); err != nil {
 			return nil, err
 		}
 	} else {
@@ -110,7 +124,7 @@ func NewTensor(value interface{}) (*Tensor, error) {
 		// not be contiguous with the others or in the order we might
 		// expect, so we need to work our way down to each slice of
 		// primitives and copy them individually
-		if err := encodeTensorWithSlices(buf, val, shape); err != nil {
+		if _, err := encodeTensorWithSlices(buf, val, shape); err != nil {
 			return nil, err
 		}
 	}
@@ -156,7 +170,7 @@ type eface struct {
 // reference to the original value. But we just want a pointer to make it
 // efficient to read the value, so cheating like this should be safe and
 // reasonable.
-func unpackEFace(obj interface{}) *eface {
+func unpackEFace(obj any) *eface {
 	return (*eface)(unsafe.Pointer(&obj))
 }
 
@@ -168,11 +182,18 @@ func ReadTensor(dataType DataType, shape []int64, r io.Reader) (*Tensor, error) 
 	if err := isTensorSerializable(dataType); err != nil {
 		return nil, err
 	}
-	nbytes := typeOf(dataType, nil).Size() * uintptr(numElements(shape))
+
 	var shapePtr *C.int64_t
 	if len(shape) > 0 {
+		for _, dim := range shape {
+			if dim < 0 {
+				return nil, fmt.Errorf("all shape dimentions should be non-negative: %v", shape)
+			}
+		}
 		shapePtr = (*C.int64_t)(unsafe.Pointer(&shape[0]))
 	}
+
+	nbytes := TypeOf(dataType, nil).Size() * uintptr(numElements(shape))
 	t := &Tensor{
 		c:     C.TF_AllocateTensor(C.TF_DataType(dataType), shapePtr, C.int(len(shape)), C.size_t(nbytes)),
 		shape: shape,
@@ -207,6 +228,32 @@ func (t *Tensor) DataType() DataType { return DataType(C.TF_TensorType(t.c)) }
 // Shape returns the shape of the Tensor.
 func (t *Tensor) Shape() []int64 { return t.shape }
 
+// Reshape  updates tensor's shape in place if this is possible or returns an error otherwise.
+func (t *Tensor) Reshape(newShape []int64) error {
+	oldShapeSize := numElements(t.shape)
+	newShapeSize := numElements(newShape)
+
+	if oldShapeSize != newShapeSize {
+		return fmt.Errorf("unable to convert shape %v (num_elements: %d) into shape %v (num_elements: %d)", t.shape, oldShapeSize, newShape, newShapeSize)
+	}
+
+	if len(newShape) == 0 {
+		return nil
+	}
+
+	var shapePtr *C.int64_t
+	shapePtr = (*C.int64_t)(unsafe.Pointer(&newShape[0]))
+
+	status := newStatus()
+	C.TF_TensorBitcastFrom(t.c, C.TF_TensorType(t.c), t.c, shapePtr, C.int(len(newShape)), status.c)
+
+	if err := status.Err(); err != nil {
+		return err
+	}
+	t.shape = newShape
+	return nil
+}
+
 // Value converts the Tensor to a Go value. For now, not all Tensor types are
 // supported, and this function may panic if it encounters an unsupported
 // DataType.
@@ -215,7 +262,7 @@ func (t *Tensor) Shape() []int64 { return t.shape }
 // For example:
 // Tensor(int64, 0): int64
 // Tensor(float64, 3): [][][]float64
-func (t *Tensor) Value() interface{} {
+func (t *Tensor) Value() any {
 	raw := tensorData(t.c)
 	shape := t.Shape()
 	dt := t.DataType()
@@ -381,11 +428,17 @@ func shapeAndDataTypeOf(val reflect.Value) (shape []int64, dt DataType, err erro
 	typ := val.Type()
 	for typ.Kind() == reflect.Array || typ.Kind() == reflect.Slice {
 		shape = append(shape, int64(val.Len()))
+		// If slice elements are slices, verify that all of them have the same size.
+		// Go's type system makes that guarantee for arrays.
 		if val.Len() > 0 {
-			// In order to check tensor structure properly in general case we need to iterate over all slices of the tensor to check sizes match
-			// Since we already going to iterate over all elements in encodeTensor() let's
-			// 1) do the actual check in encodeTensor() to save some cpu cycles here
-			// 2) assume the shape is represented by lengths of elements with zero index in each dimension
+			if val.Type().Elem().Kind() == reflect.Slice {
+				expected := val.Index(0).Len()
+				for i := 1; i < val.Len(); i++ {
+					if val.Index(i).Len() != expected {
+						return shape, dt, fmt.Errorf("mismatched slice lengths: %d and %d", val.Index(i).Len(), expected)
+					}
+				}
+			}
 			val = val.Index(0)
 		}
 		typ = typ.Elem()
@@ -407,8 +460,8 @@ func typeForDataType(dt DataType) reflect.Type {
 	panic(bug("DataType %v is not supported (see https://www.tensorflow.org/code/tensorflow/core/framework/types.proto)", dt))
 }
 
-// typeOf converts from a DataType and Shape to the equivalent Go type.
-func typeOf(dt DataType, shape []int64) reflect.Type {
+// TypeOf converts from a DataType and Shape to the equivalent Go type.
+func TypeOf(dt DataType, shape []int64) reflect.Type {
 	ret := typeForDataType(dt)
 	for range shape {
 		ret = reflect.SliceOf(ret)
@@ -436,13 +489,13 @@ func sizeVarUint(v uint64) int {
 
 // encodeTensorWithSlices writes v to the specified buffer using the format specified in
 // c_api.h. Use stringEncoder for String tensors.
-func encodeTensorWithSlices(w *bytes.Buffer, v reflect.Value, shape []int64) error {
+func encodeTensorWithSlices(w *bytes.Buffer, v reflect.Value, shape []int64) (int, error) {
 	// If current dimension is a slice, verify that it has the expected size
 	// Go's type system makes that guarantee for arrays.
 	if v.Kind() == reflect.Slice {
 		expected := int(shape[0])
 		if v.Len() != expected {
-			return fmt.Errorf("mismatched slice lengths: %d and %d", v.Len(), expected)
+			return 0, fmt.Errorf("mismatched slice lengths: %d and %d", v.Len(), expected)
 		}
 	} else if v.Kind() == reflect.String {
 		s := v.Interface().(string)
@@ -451,7 +504,7 @@ func encodeTensorWithSlices(w *bytes.Buffer, v reflect.Value, shape []int64) err
 		ptr := unsafe.Pointer(&tstr)
 		return copyPtr(w, ptr, C.sizeof_TF_TString)
 	} else if v.Kind() != reflect.Array {
-		return fmt.Errorf("unsupported type %v", v.Type())
+		return 0, fmt.Errorf("unsupported type %v", v.Type())
 	}
 
 	// Once we have just a single dimension we can just copy the data
@@ -464,15 +517,17 @@ func encodeTensorWithSlices(w *bytes.Buffer, v reflect.Value, shape []int64) err
 		return copyPtr(w, ptr, v.Len()*int(elt.Type().Size()))
 	}
 
+	n := 0
 	subShape := shape[1:]
 	for i := 0; i < v.Len(); i++ {
-		err := encodeTensorWithSlices(w, v.Index(i), subShape)
+		j, err := encodeTensorWithSlices(w, v.Index(i), subShape)
 		if err != nil {
-			return err
+			return n + j, err
 		}
+		n += j
 	}
 
-	return nil
+	return n, nil
 }
 
 // It isn't safe to use reflect.SliceHeader as it uses a uintptr for Data and
@@ -486,18 +541,17 @@ type sliceHeader struct {
 // copyPtr copies the backing data for a slice or array directly into w. Note
 // we don't need to worry about byte ordering because we want the natural byte
 // order for the machine we're running on.
-func copyPtr(w *bytes.Buffer, ptr unsafe.Pointer, l int) error {
+func copyPtr(w *bytes.Buffer, ptr unsafe.Pointer, l int) (int, error) {
 	// Convert our slice header into a []byte so we can call w.Write
 	b := *(*[]byte)(unsafe.Pointer(&sliceHeader{
 		Data: ptr,
 		Len:  l,
 		Cap:  l,
 	}))
-	_, err := w.Write(b)
-	return err
+	return w.Write(b)
 }
 
-func bug(format string, args ...interface{}) error {
+func bug(format string, args ...any) error {
 	return fmt.Errorf("BUG: Please report at https://github.com/tensorflow/tensorflow/issues with the note: Go TensorFlow %v: %v", Version(), fmt.Sprintf(format, args...))
 }
 
@@ -511,7 +565,7 @@ func isTensorSerializable(dataType DataType) error {
 	// serialization and deserialization of Tensors.  Till then capitalize
 	// on knowledge of the implementation for numeric types.
 	switch dataType {
-	case Float, Double, Int32, Uint8, Int16, Int8, Complex, Int64, Bool, Quint8, Qint32, Bfloat16, Qint16, Quint16, Uint16, Complex128, Half:
+	case Float, Double, Int32, Uint8, Int16, Int8, Complex, Int64, Bool, Quint8, Qint32, Bfloat16, Qint16, Quint16, Uint16, Complex128, Half, Float8e5m2, Float8e4m3fn, Float8e4m3fnuz, Float8e4m3b11fnuz, Float8e5m2fnuz, Float8e8m0fnu, Float4e2m1fn, Int4, Uint4, Int2, Uint2:
 		return nil
 	default:
 		return fmt.Errorf("serialization of tensors with the DataType %d is not yet supported, see https://github.com/tensorflow/tensorflow/issues/6003", dataType)

@@ -14,10 +14,6 @@
 # ==============================================================================
 """Unified callbacks op execution and creation under eager and graph modes."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.eager import context
 from tensorflow.python.eager import execute
 
@@ -44,61 +40,47 @@ def add_op_callback(callback_fn):
        op type involved (b/140334369).
 
   Args:
-    callback_fn: A callback_fn that has the following signature:
-      def callback_fn(op_type,
-                      inputs,
-                      attrs,
-                      outputs,
-                      op_name=None,
-                      graph=None):
-        # op_type: The type of the op, as a string. E.g., "MatMul".
-        #          For the special case of FuncGraph execution, op_type
-        #          takes the name of the graph name, e.g.,
-        #          "__inference_my_func_24".
-        # inputs: (`tuple` of `Tensor`s) Input tensors to the op or the
-        #         FuncGraph.
-        #         - In eager execution, these are `EagerTensor`s.
-        #         - In graph construction, these are non-eager `Tensor`s
-        #           that form the inputs to the just-created op.
-        # attrs: The attributes of the op or FuncGraph of which the execution
-        #        or creation caused the current invocation of the callback.
-        #        This is applicable to both eager- and graph-based execution,
-        #        as well as graph construction.
-        #        This is a tuple of alternating attribute keys and attribute
-        #        values. E.g., `('adjoint_a', False, 'adjoint_b', False)`.
-        # outputs: (`tuple of `Tensor`s) Output tensors from the op or
-        #          FuncGraph.
-        #          In eager execution, these are `EagerTensor`s.
-        #          In graph construction, these are non-eager `Tensor`s that
-        #          are the outputs of the just-created op.
-        # op_name: Name of the op.
-        #          - If the current invocation of the callback is due to the
-        #            eager execution of an op or FuncGraph, this will be
-        #            `None`, as op names are meaningless in eager execution.
-        #          - In graph construction, this is the name of the op, e.g.,
-        #            "MatMul_2".
-        # graph: The graph that the op belongs to (if any).
-        #        - In eager execution of an op or FuncGraph, this is `None`.
-        #        - In graph construction, this is the op's enclosing graph
-        #          as a `tf.Graph` object.
+    callback_fn: A callback_fn that has the following signature: def
+      callback_fn(op_type, inputs, attrs, outputs, op_name=None, graph=None): #
+      op_type: The type of the op, as a string. E.g., "MatMul". #          For
+        the special case of FuncGraph execution, op_type #          takes the
+        name of the graph name, e.g., #          "__inference_my_func_24". #
+        inputs: (`tuple` of `Tensor`s) Input tensors to the op or the #
+        FuncGraph. #         - In eager execution, these are `EagerTensor`s. #
+        - In graph construction, these are non-eager `Tensor`s #           that
+        form the inputs to the just-created op. # attrs: The attributes of the
+        op or FuncGraph of which the execution #        or creation caused the
+        current invocation of the callback. #        This is applicable to both
+        eager- and graph-based execution, #        as well as graph
+        construction. # This is a tuple of alternating attribute keys and
+        attribute # values. E.g., `('adjoint_a', False, 'adjoint_b', False)`. #
+        outputs: (`tuple of `Tensor`s) Output tensors from the op or #
+        FuncGraph. #          In eager execution, these are `EagerTensor`s. #
+        In graph construction, these are non-eager `Tensor`s that #          are
+        the outputs of the just-created op. # op_name: Name of the op. #
+        - If the current invocation of the callback is due to the #
+        eager execution of an op or FuncGraph, this will be #            `None`,
+        as op names are meaningless in eager execution. #          - In graph
+        construction, this is the name of the op, e.g., #            "MatMul_2".
         #
-        # Return values:
-        #   This callback function is expected to return `None` or
-        #   a `list` or `tuple` of `Tensor`s with its length matching
-        #   `len(outputs)`, in the order that corresponds to that of the
-        #   `outputs` argument.
-        #   If the return value is `None`, downstream execution or graph
-        #   construction will be unaffected.
-        #   However, if the return value is a `list` or `tuple` of `Tensor`s,
-        #   - In eager execution, these returned `Tensor`s should be
-        #     `EagerTensor`s. Their values will replace the original values of
-        #     `outputs` for downstream eager execution. (*Not implemented yet*).
-        #   - In graph construction, these returned `Tensor`s should be
-        #     non-eager `Tensor`s. Their values will replace the original
-        #     `outputs` for downstream graph construction.
+      graph: The graph that the op belongs to (if any). #        - In eager
+        execution of an op or FuncGraph, this is `None`. #        - In graph
+        construction, this is the op's enclosing graph #          as a
+        `tf.Graph` object. # # Return values: #   This callback function is
+        expected to return `None` or #   a `list` or `tuple` of `Tensor`s with
+        its length matching #   `len(outputs)`, in the order that corresponds to
+        that of the #   `outputs` argument. #   If the return value is `None`,
+        downstream execution or graph #   construction will be unaffected. #
+        However, if the return value is a `list` or `tuple` of `Tensor`s, #   -
+        In eager execution, these returned `Tensor`s should be #
+        `EagerTensor`s. Their values will replace the original values of #
+        `outputs` for downstream eager execution. (*Not implemented yet*). #   -
+        In graph construction, these returned `Tensor`s should be #
+        non-eager `Tensor`s. Their values will replace the original #
+        `outputs` for downstream graph construction.
 
   Raises:
-    ValueEror: If `callback_fn` is `None` or not callable.
+    ValueError: If `callback_fn` is `None` or not callable.
   """
   # TODO(b/139668041): Implement support for overriding `EagerTensor`s from
   # callback.
@@ -107,7 +89,7 @@ def add_op_callback(callback_fn):
   if not callable(callback_fn):
     raise ValueError(
         "Callback function passed to op_callback() is expected to be callable, "
-        "but is not. Received %s" % callback_fn)
+        f"but got {callback_fn} of type {type(callback_fn)}.")
   ctx = context.context()
   ctx.add_op_callback(callback_fn)
   if ctx.executing_eagerly():
@@ -170,7 +152,7 @@ def invoke_op_callbacks(op_type,
       eager execution and are non-eager `Tensor`s in the case of graph
       construction.
     op_name: Name of the op. Applicable if and only if this method is invoked
-      due to the graph construction of an op or the eager execution of of a
+      due to the graph construction of an op or the eager execution of a
       `FuncGraph`.
     graph: The graph involved (if any).
       - In the case if the eager execution of an op or FuncGraph, this is
@@ -208,9 +190,9 @@ def invoke_op_callbacks(op_type,
             graph=graph)
         if new_outputs is not None and len(new_outputs) != len(outputs):
           raise ValueError(
-              "The op callback returned %s tensors, which does not match the "
-              "original number of outputs of op %s (%d)." %
-              (len(new_outputs), op_name, len(outputs)))
+              f"The op callback returned {len(new_outputs)} tensors, which "
+              f"does not match the original number of outputs of op {op_name} "
+              f"({len(outputs)}).")
       return new_outputs
     finally:
       ctx.invoking_op_callbacks = False

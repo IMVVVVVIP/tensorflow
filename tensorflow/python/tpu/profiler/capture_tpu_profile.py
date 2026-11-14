@@ -14,23 +14,20 @@
 # =============================================================================
 """Cloud TPU profiler client."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 import os
 import sys
 
 from absl import app
 from absl import flags
-from distutils.version import LooseVersion
+from packaging.version import Version
 
 from tensorflow.python.distribute.cluster_resolver import tpu_cluster_resolver as resolver
-from tensorflow.python.profiler import profiler_client
-from tensorflow.python.profiler import profiler_v2 as profiler
 from tensorflow.python.framework import errors
 from tensorflow.python.framework import versions
 from tensorflow.python.platform import gfile
 from tensorflow.python.platform import tf_logging as logging
+from tensorflow.python.profiler import profiler_client
+from tensorflow.python.profiler import profiler_v2 as profiler
 from tensorflow.python.tpu.profiler import version as profiler_version
 
 FLAGS = flags.FLAGS
@@ -55,8 +52,8 @@ flags.DEFINE_string(
     'localhost:8466, you must specify either this flag or --tpu.')
 flags.DEFINE_string(
     'workers_list', None, 'The list of worker TPUs that we are about to profile'
-    ' e.g. 10.0.1.2, 10.0.1.3. You can specify this flag with --tpu or '
-    '--service_addr to profile a subset of tpu nodes. You can also use only'
+    ' e.g. 10.0.1.2:8466, 10.0.1.3:8466. You can specify this flag with --tpu '
+    'or --service_addr to profile a subset of tpu nodes. You can also use only'
     '--tpu and leave this flag unspecified to profile all the tpus.')
 flags.DEFINE_string(
     'logdir', None, 'Path of TensorBoard log directory e.g. /tmp/tb_log, '
@@ -83,17 +80,17 @@ flags.DEFINE_boolean('display_timestamp', True, 'Deprecated.')
 
 
 def get_workers_list(cluster_resolver):
-  """Returns a comma separated list of TPU worker IP addresses.
+  """Returns a comma separated list of TPU worker host:port pairs.
 
   Gets cluster_spec from cluster_resolver. Use the worker's task indices to
-  obtain and return a list of ip addresses.
+  obtain and return a list of host:port pairs.
 
   Args:
     cluster_resolver: TensorFlow TPUClusterResolver instance.
 
   Returns:
-    A string of comma separated list of IP addresses. For example:
-    '10.2.0.1,10.2.0.2,10.2.0.3,10.2.0.4'
+    A string of comma separated list of host:port pairs. For example:
+    '10.2.0.1:8466,10.2.0.2:8466,10.2.0.3:8466,10.2.0.4:8466'
 
   Raises:
     UnavailableError: cluster_resolver doesn't contain a valid cluster_spec.
@@ -106,7 +103,7 @@ def get_workers_list(cluster_resolver):
         'Cluster spec not found, your client must run in GCE environment.')
   task_indices = cluster_spec.task_indices(worker_job_name)
   workers_list = [
-      cluster_spec.task_address(worker_job_name, i).split(':')[0]
+      cluster_spec.task_address(worker_job_name, i).replace(':8470', ':8466')
       for i in task_indices
   ]
   return ','.join(workers_list)
@@ -142,7 +139,7 @@ def main(unused_argv=None):
   print('TensorFlow version %s detected' % tf_version)
   print('Welcome to the Cloud TPU Profiler v%s' % profiler_version.__version__)
 
-  if LooseVersion(tf_version) < LooseVersion('2.2.0'):
+  if Version(tf_version) < Version('2.2.0'):
     sys.exit('You must install tensorflow >= 2.2.0 to use this plugin.')
 
   if not FLAGS.service_addr and not FLAGS.tpu:
@@ -191,7 +188,7 @@ def main(unused_argv=None):
       gfile.MakeDirs(FLAGS.logdir)
 
     try:
-      if LooseVersion(tf_version) < LooseVersion('2.3.0'):
+      if Version(tf_version) < Version('2.3.0'):
         profiler_client.trace(service_addr, os.path.expanduser(FLAGS.logdir),
                               duration_ms, workers_list,
                               FLAGS.num_tracing_attempts)

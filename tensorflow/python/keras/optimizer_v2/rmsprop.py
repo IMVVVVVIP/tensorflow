@@ -14,24 +14,21 @@
 # ==============================================================================
 """RMSprop optimizer implementation."""
 # pylint: disable=g-classes-have-attributes
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import numpy as np
 
 from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor
+from tensorflow.python.framework import tensor_conversion
 from tensorflow.python.keras import backend_config
 from tensorflow.python.keras.optimizer_v2 import optimizer_v2
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import gen_training_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import state_ops
-from tensorflow.python.training import gen_training_ops
-from tensorflow.python.util.tf_export import keras_export
 
 
-@keras_export("keras.optimizers.RMSprop")
 class RMSprop(optimizer_v2.OptimizerV2):
   r"""Optimizer that implements the RMSprop algorithm.
 
@@ -49,7 +46,7 @@ class RMSprop(optimizer_v2.OptimizerV2):
     learning_rate: A `Tensor`, floating point value, or a schedule that is a
       `tf.keras.optimizers.schedules.LearningRateSchedule`, or a callable
       that takes no arguments and returns the actual value to use. The
-      learning rate. Defeaults to 0.001.
+      learning rate. Defaults to 0.001.
     rho: Discounting factor for the history/coming gradient. Defaults to 0.9.
     momentum: A scalar or a scalar `Tensor`. Defaults to 0.0.
     epsilon: A small constant for numerical stability. This epsilon is
@@ -109,7 +106,7 @@ class RMSprop(optimizer_v2.OptimizerV2):
       learning_rate: A `Tensor`, floating point value, or a schedule that is a
         `tf.keras.optimizers.schedules.LearningRateSchedule`, or a callable
         that takes no arguments and returns the actual value to use. The
-        learning rate. Defeaults to 0.001.
+        learning rate. Defaults to 0.001.
       rho: Discounting factor for the history/coming gradient. Defaults to 0.9.
       momentum: A scalar or a scalar `Tensor`. Defaults to 0.0.
       epsilon: A small constant for numerical stability. This epsilon is
@@ -141,7 +138,8 @@ class RMSprop(optimizer_v2.OptimizerV2):
     self._set_hyper("rho", rho)
 
     self._momentum = False
-    if isinstance(momentum, ops.Tensor) or callable(momentum) or momentum > 0:
+    if isinstance(
+        momentum, tensor.Tensor) or callable(momentum) or momentum > 0:
       self._momentum = True
     if isinstance(momentum, (int, float)) and (momentum < 0 or momentum > 1):
       raise ValueError("`momentum` must be between [0, 1].")
@@ -167,10 +165,14 @@ class RMSprop(optimizer_v2.OptimizerV2):
     apply_state[(var_device, var_dtype)].update(
         dict(
             neg_lr_t=-apply_state[(var_device, var_dtype)]["lr_t"],
-            epsilon=ops.convert_to_tensor_v2(self.epsilon, var_dtype),
+            epsilon=tensor_conversion.convert_to_tensor_v2_with_dispatch(
+                self.epsilon, var_dtype
+            ),
             rho=rho,
             momentum=array_ops.identity(self._get_hyper("momentum", var_dtype)),
-            one_minus_rho=1. - rho))
+            one_minus_rho=1.0 - rho,
+        )
+    )
 
   def _resource_apply_dense(self, grad, var, apply_state=None):
     var_device, var_dtype = var.device, var.dtype.base_dtype
@@ -289,7 +291,7 @@ class RMSprop(optimizer_v2.OptimizerV2):
     config = super(RMSprop, self).get_config()
     config.update({
         "learning_rate": self._serialize_hyperparameter("learning_rate"),
-        "decay": self._serialize_hyperparameter("decay"),
+        "decay": self._initial_decay,
         "rho": self._serialize_hyperparameter("rho"),
         "momentum": self._serialize_hyperparameter("momentum"),
         "epsilon": self.epsilon,

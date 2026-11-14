@@ -1,20 +1,46 @@
+# Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 # Description:
 #   BenchmarkModel Android harness for TensorFlow Lite benchmarks.
 
+load("@build_bazel_rules_android//android:rules.bzl", "android_binary")
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("//tensorflow/lite:build_def.bzl", "tflite_jni_binary")
 load("//tensorflow/lite:special_rules.bzl", "tflite_hexagon_nn_skel_libraries")
-load("@build_bazel_rules_android//android:rules.bzl", "android_binary")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:LICENSE"],
     default_visibility = ["//visibility:private"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
-exports_files(["LICENSE"])
+# See README.md for details about building and executing the benchmark in APK
+# format.
 
-# See README.md for details about building and executing this benchmark.
-android_binary(
-    name = "benchmark_model",
+APK_VARIANTS = [
+    # (suffix, extra deps)
+    ("", []),
+    (
+        "_plus_flex",
+        ["//tensorflow/lite/delegates/flex:delegate"],
+    ),
+]
+
+[android_binary(
+    name = "benchmark_model%s" % suffix,
     srcs = glob([
         "src/**/*.java",
     ]),
@@ -26,12 +52,12 @@ android_binary(
     tags = ["manual"],
     deps = [
         ":hexagon_libs",
-        ":tensorflowlite_benchmark_native",
+        ":tensorflowlite_benchmark_native%s" % suffix,
     ],
-)
+) for suffix, _ in APK_VARIANTS]
 
-tflite_jni_binary(
-    name = "libtensorflowlite_benchmark.so",
+[tflite_jni_binary(
+    name = "libtensorflowlite_benchmark%s.so" % suffix,
     srcs = glob([
         "jni/**/*.cc",
         "jni/**/*.h",
@@ -39,14 +65,14 @@ tflite_jni_binary(
     deps = [
         "//tensorflow/lite/java/jni",
         "//tensorflow/lite/tools/benchmark:benchmark_tflite_model_lib",
-    ],
-)
+    ] + extra_deps,
+) for suffix, extra_deps in APK_VARIANTS]
 
-cc_library(
-    name = "tensorflowlite_benchmark_native",
-    srcs = ["libtensorflowlite_benchmark.so"],
+[cc_library(
+    name = "tensorflowlite_benchmark_native%s" % suffix,
+    srcs = ["libtensorflowlite_benchmark%s.so" % suffix],
     visibility = ["//visibility:private"],
-)
+) for suffix, _ in APK_VARIANTS]
 
 cc_library(
     name = "hexagon_libs",

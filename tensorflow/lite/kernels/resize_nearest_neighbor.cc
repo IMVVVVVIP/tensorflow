@@ -16,8 +16,8 @@ limitations under the License.
 
 #include <stdint.h>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/kernels/internal/optimized/neon_check.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
@@ -60,11 +60,15 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
 
-  const TfLiteTensor* input = GetInput(context, node, kInputTensor);
-  const TfLiteTensor* size = GetInput(context, node, kSizeTensor);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kInputTensor, &input));
+  const TfLiteTensor* size;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kSizeTensor, &size));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
 
-  // TODO(ahentz): Our current implementations rely on the input being 4D,
+  // Our current implementations relies on the input being 4D,
   // and the size being 1D tensor with exactly 2 elements.
   TF_LITE_ENSURE_EQ(context, NumDimensions(input), 4);
   TF_LITE_ENSURE_EQ(context, NumDimensions(size), 1);
@@ -73,7 +77,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
 
   output->type = input->type;
 
-  if (!IsConstantTensor(size)) {
+  if (!IsConstantOrPersistentTensor(size)) {
     SetTensorToDynamic(output);
     return kTfLiteOk;
   }
@@ -85,9 +89,13 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   auto* params =
       reinterpret_cast<TfLiteResizeNearestNeighborParams*>(node->builtin_data);
 
-  const TfLiteTensor* input = GetInput(context, node, kInputTensor);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
-  const TfLiteTensor* size = GetInput(context, node, kSizeTensor);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kInputTensor, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
+  const TfLiteTensor* size;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kSizeTensor, &size));
 
   if (IsDynamicTensor(output)) {
     TF_LITE_ENSURE_OK(context,
@@ -98,34 +106,39 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   op_params.align_corners = params->align_corners;
   op_params.half_pixel_centers = params->half_pixel_centers;
 
-  if (output->type == kTfLiteFloat32) {
-    reference_ops::ResizeNearestNeighbor(
-        op_params, GetTensorShape(input), GetTensorData<int32>(input),
-        GetTensorShape(size), GetTensorData<int32>(size),
-        GetTensorShape(output), GetTensorData<int32>(output));
-  } else if (output->type == kTfLiteUInt8) {
-    if (kernel_type == kReference) {
+  switch (TfLiteTypeGetSizeBits(output->type)) {
+    case 8: {
+      if (kernel_type == kReference) {
+        reference_ops::ResizeNearestNeighbor(
+            op_params, GetTensorShape(input), GetTensorData<uint8_t>(input),
+            GetTensorShape(size), GetTensorData<int32>(size),
+            GetTensorShape(output), GetTensorData<uint8_t>(output));
+      }
+      if (kernel_type == kGenericOptimized || kernel_type == kNeonOptimized) {
+        optimized_ops::ResizeNearestNeighbor(
+            op_params, GetTensorShape(input), GetTensorData<uint8_t>(input),
+            GetTensorShape(size), GetTensorData<int32>(size),
+            GetTensorShape(output), GetTensorData<uint8_t>(output));
+      }
+      break;
+    }
+    case 16: {
       reference_ops::ResizeNearestNeighbor(
-          op_params, GetTensorShape(input), GetTensorData<uint8_t>(input),
+          op_params, GetTensorShape(input), GetTensorData<int16_t>(input),
           GetTensorShape(size), GetTensorData<int32>(size),
-          GetTensorShape(output), GetTensorData<uint8_t>(output));
-    }
-    if (kernel_type == kGenericOptimized || kernel_type == kNeonOptimized) {
-      optimized_ops::ResizeNearestNeighbor(
-          op_params, GetTensorShape(input), GetTensorData<uint8_t>(input),
+          GetTensorShape(output), GetTensorData<int16_t>(output));
+    } break;
+    case 32: {
+      reference_ops::ResizeNearestNeighbor(
+          op_params, GetTensorShape(input), GetTensorData<int32>(input),
           GetTensorShape(size), GetTensorData<int32>(size),
-          GetTensorShape(output), GetTensorData<uint8_t>(output));
-    }
-  } else if (output->type == kTfLiteInt8) {
-    reference_ops::ResizeNearestNeighbor(
-        op_params, GetTensorShape(input), GetTensorData<int8_t>(input),
-        GetTensorShape(size), GetTensorData<int32>(size),
-        GetTensorShape(output), GetTensorData<int8_t>(output));
-  } else {
-    TF_LITE_KERNEL_LOG(context,
-                       "Output type is %s, requires float, uint8 or int8.",
-                       TfLiteTypeGetName(output->type));
-    return kTfLiteError;
+          GetTensorShape(output), GetTensorData<int32>(output));
+    } break;
+    default:
+      TF_LITE_KERNEL_LOG(
+          context, "Output type is %s, requires float, uint8, int8 or int16.",
+          TfLiteTypeGetName(output->type));
+      return kTfLiteError;
   }
 
   return kTfLiteOk;

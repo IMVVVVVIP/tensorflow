@@ -16,39 +16,93 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_TPU_KERNELS_TRANSFER_OPS_H_
 #define TENSORFLOW_CORE_TPU_KERNELS_TRANSFER_OPS_H_
 
-#include "tensorflow/compiler/jit/xla_device.h"
+#include <deque>
+
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "xla/literal.h"
+#include "xla/tpu/noncopyable_buffer.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/util/stream_executor_util.h"
-#include "tensorflow/stream_executor/tpu/tpu_transfer_manager_interface.h"
 
 namespace tensorflow {
 
+class TpuTransferOpInterface {
+ public:
+  virtual ~TpuTransferOpInterface() = default;
+  virtual void Cancel() = 0;
+  virtual absl::StatusOr<int> GetDeviceOrdinal(OpKernelContext* ctx) = 0;
+
+  virtual absl::Status TransferBuffersToInfeed(
+      int device_ordinal,
+      const std::deque<tensorflow::tpu::NoncopyableBuffer>& buffers) = 0;
+  virtual absl::Status TransferLiteralToInfeed(
+      int device_ordinal, const xla::LiteralSlice& literal) = 0;
+  virtual absl::Status TransferLiteralFromOutfeed(
+      int device_ordinal, xla::MutableBorrowingLiteral literal) = 0;
+};
+
 // Base class providing common functionality for async ops that transfer from
 // host to TPU.
-class TpuTransferAsyncOpKernel : public AsyncOpKernel {
+class TpuTransferAsyncOpKernelBase : public AsyncOpKernel {
  public:
-  explicit TpuTransferAsyncOpKernel(OpKernelConstruction* ctx,
-                                    const string& transfer_type,
-                                    int number_of_threads);
+  explicit TpuTransferAsyncOpKernelBase(
+      OpKernelConstruction* ctx, const std::string& transfer_type,
+      int number_of_threads,
+      std::unique_ptr<TpuTransferOpInterface> transfer_op);
 
   void ComputeAsync(OpKernelContext* ctx, DoneCallback done) override;
 
  protected:
-  virtual Status DoWork(OpKernelContext* context,
-                        xla::TpuTransferManagerInterface* transfer_manager,
-                        stream_executor::StreamExecutor* stream_executor) = 0;
+  virtual absl::Status DoWork(OpKernelContext* context, int device_ordinal) = 0;
+
+  absl::Status RunTransferWithOrdinal(OpKernelContext* ctx, int device_ordinal);
+  std::string transfer_type_;
+  std::unique_ptr<TpuTransferOpInterface> transfer_op_;
 
  private:
-  Status RunTransfer(OpKernelContext* ctx);
-  void Cancel();
+  virtual absl::Status RunTransfer(OpKernelContext* ctx) = 0;
 
   std::unique_ptr<thread::ThreadPool> thread_pool_;
-  int device_ordinal_;
   mutex mu_;
+
+  // TpuTransferAsyncOpKernelBase is neither copyable nor movable.
+  TpuTransferAsyncOpKernelBase(const TpuTransferAsyncOpKernelBase&) = delete;
+  TpuTransferAsyncOpKernelBase& operator=(const TpuTransferAsyncOpKernelBase&) =
+      delete;
+};
+
+class TpuTransferAsyncOpKernel : public TpuTransferAsyncOpKernelBase {
+ public:
+  explicit TpuTransferAsyncOpKernel(
+      OpKernelConstruction* ctx, const std::string& transfer_type,
+      int number_of_threads,
+      std::unique_ptr<TpuTransferOpInterface> transfer_op);
+
+ private:
+  absl::Status RunTransfer(OpKernelContext* ctx) override;
+  int device_ordinal_;
 
   // TpuTransferAsyncOpKernel is neither copyable nor movable.
   TpuTransferAsyncOpKernel(const TpuTransferAsyncOpKernel&) = delete;
   TpuTransferAsyncOpKernel& operator=(const TpuTransferAsyncOpKernel&) = delete;
+};
+
+class TpuTransferAsyncDynamicOrdinalOpKernel
+    : public TpuTransferAsyncOpKernelBase {
+ public:
+  explicit TpuTransferAsyncDynamicOrdinalOpKernel(
+      OpKernelConstruction* ctx, const std::string& transfer_type,
+      int number_of_threads,
+      std::unique_ptr<TpuTransferOpInterface> transfer_op);
+
+ private:
+  absl::Status RunTransfer(OpKernelContext* ctx) override;
+
+  // TpuTransferAsyncDynamicOpKernel is neither copyable nor movable.
+  TpuTransferAsyncDynamicOrdinalOpKernel(
+      const TpuTransferAsyncDynamicOrdinalOpKernel&) = delete;
+  TpuTransferAsyncDynamicOrdinalOpKernel& operator=(
+      const TpuTransferAsyncDynamicOrdinalOpKernel&) = delete;
 };
 
 }  // namespace tensorflow

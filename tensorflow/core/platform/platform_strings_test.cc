@@ -20,7 +20,10 @@ limitations under the License.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef _WIN32
 #include <unistd.h>
+#endif  // _WIN32
 
 #include <string>
 #include <vector>
@@ -41,7 +44,7 @@ typedef std::vector<std::string> string_vec;
 // magic prefix, and return true; or return false on error.
 
 // Print the platform strings embedded in the binary file_name and return 0,
-// on on error return 2.
+// or on error return 2.
 static int PrintStrings(const std::string file_name) {
   int rc = 0;
   string_vec str;

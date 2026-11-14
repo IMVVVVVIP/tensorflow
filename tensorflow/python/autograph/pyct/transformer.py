@@ -14,10 +14,6 @@
 # ==============================================================================
 """A node transformer that includes utilities for SCT."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import enum
 
@@ -318,13 +314,13 @@ class NodeStateTracker(object):
         in nodes
       after_visit: optional callable that takes in an AST node and returns a
         tuple (new_node, new_destination). It is called after visiting each item
-        in nodes. Is used in the same was as the
-          visit_* methods: new_node will replace the node; if not None,
-            new_destination must be a list, and subsequent nodes will be placed
-            in this list instead of the list returned by visit_block.
+        in nodes. Is used in the same was as the visit_* methods: new_node will
+        replace the node; if not None, new_destination must be a list, and
+        subsequent nodes will be placed in this list instead of the list
+        returned by visit_block.
 
     Returns:
-      A list of AST node objects containing the transformed items fron nodes,
+      A list of AST node objects containing the transformed items from nodes,
       except those nodes that have been relocated using after_visit.
     """
     if nodes is None:
@@ -412,7 +408,7 @@ class Base(NodeStateTracker, gast.NodeTransformer):
           if isinstance(values, (gast.Tuple, gast.List)):
             value_el = values.elts[i]
           else:
-            value_el = gast.Subscript(values, gast.Index(i), ctx=gast.Store())
+            value_el = gast.Subscript(values, i, ctx=gast.Store())
           self.apply_to_single_assignments(target_el, value_el, apply_fn)
       else:
         # TODO(mdan): Look into allowing to rewrite the AST here.

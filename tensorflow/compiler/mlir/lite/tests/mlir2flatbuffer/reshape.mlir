@@ -1,12 +1,27 @@
+// Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
 // RUN: flatbuffer_translate -mlir-to-tflite-flatbuffer %s -o - | flatbuffer_to_string - | FileCheck %s
 
-func @main(tensor<3x2xi32>) -> tensor<6xi32> {
+func.func @main(tensor<3x2xi32>) -> tensor<6xi32> {
 ^bb0(%arg0: tensor<3x2xi32>):
 // CHECK: {
 // CHECK-NEXT:   version: 3,
 // CHECK-NEXT:   operator_codes: [ {
-// CHECK-NEXT:     builtin_code: RESHAPE,
-// CHECK-NEXT:     version: 1
+// CHECK-NEXT:     deprecated_builtin_code: 22,
+// CHECK-NEXT:     version: 1,
+// CHECK-NEXT:     builtin_code: RESHAPE
 // CHECK-NEXT:   } ],
 // CHECK-NEXT:   subgraphs: [ {
 // CHECK-NEXT:     tensors: [ {
@@ -16,7 +31,8 @@ func @main(tensor<3x2xi32>) -> tensor<6xi32> {
 // CHECK-NEXT:       name: "arg0",
 // CHECK-NEXT:       quantization: {
 // CHECK-EMPTY:
-// CHECK-NEXT:       }
+// CHECK-NEXT:      },
+// CHECK-NEXT:      has_rank: true
 // CHECK-NEXT:     }, {
 // CHECK-NEXT:       shape: [ 1 ],
 // CHECK-NEXT:       type: INT32,
@@ -24,7 +40,8 @@ func @main(tensor<3x2xi32>) -> tensor<6xi32> {
 // CHECK-NEXT:       name: "Const",
 // CHECK-NEXT:       quantization: {
 // CHECK-EMPTY:
-// CHECK-NEXT:       }
+// CHECK-NEXT:      },
+// CHECK-NEXT:      has_rank: true
 // CHECK-NEXT:     }, {
 // CHECK-NEXT:       shape: [ 6 ],
 // CHECK-NEXT:       type: INT32,
@@ -32,7 +49,8 @@ func @main(tensor<3x2xi32>) -> tensor<6xi32> {
 // CHECK-NEXT:       name: "tfl.reshape",
 // CHECK-NEXT:       quantization: {
 // CHECK-EMPTY:
-// CHECK-NEXT:       }
+// CHECK-NEXT:      },
+// CHECK-NEXT:      has_rank: true
 // CHECK-NEXT:     } ],
 // CHECK-NEXT:     inputs: [ 0 ],
 // CHECK-NEXT:     outputs: [ 2 ],
@@ -58,9 +76,10 @@ func @main(tensor<3x2xi32>) -> tensor<6xi32> {
 // CHECK-NEXT:   name: "min_runtime_version",
 // CHECK-NEXT:   buffer: 4
 // CHECK-NEXT:   } ]
+// CHECK-NEXT:   signature_defs: [ ]
 // CHECK-NEXT: }
 
   %0 = "tfl.pseudo_const" () {value = dense<[6]> : tensor<1xi32>} : () -> tensor<1xi32> loc("Const")
   %1 = "tfl.reshape" (%arg0, %0) : (tensor<3x2xi32>, tensor<1xi32>) -> tensor<6xi32>
-  return %1 : tensor<6xi32>
+  func.return %1 : tensor<6xi32>
 }

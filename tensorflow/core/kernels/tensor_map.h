@@ -93,14 +93,14 @@ class TensorMap {
 
   static const char kTypeName[];
 
-  string TypeName() const { return kTypeName; }
+  std::string TypeName() const { return kTypeName; }
 
   void Encode(VariantTensorData* data) const;
 
   bool Decode(const VariantTensorData& data);
 
   // TODO(apassos) fill this out
-  string DebugString() const { return "TensorMap"; }
+  std::string DebugString() const { return "TensorMap"; }
 
   // Access to the underlying tensor container.
   absl::flat_hash_map<TensorKey, Tensor>& tensors() {
@@ -144,7 +144,19 @@ class TensorMap {
   size_t erase(TensorKey key) { return tensors_->values_.erase(key); }
 
   // Size returns the number of elements in the map
-  size_t size() { return tensors_->values_.size(); }
+  size_t size() const { return tensors_->values_.size(); }
+
+  std::vector<Tensor> keys() const {
+    std::vector<Tensor> keys;
+    keys.reserve(tensors_->values_.size());
+    absl::flat_hash_map<TensorKey, Tensor>::iterator it =
+        tensors_->values_.begin();
+    while (it != tensors_->values_.end()) {
+      keys.push_back(it->first);
+      it++;
+    }
+    return keys;
+  }
 
   // Is this TensorMap the only one with a reference to the underlying
   // container?

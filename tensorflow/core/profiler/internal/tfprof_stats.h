@@ -1,4 +1,4 @@
-/* Copyright 2016 The TensorFlow Authors All Rights Reserved.
+/* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -55,21 +55,21 @@ class TFStats {
           std::unique_ptr<OpLogProto> op_log,
           std::unique_ptr<checkpoint::CheckpointReader> ckpt_reader);
 
-  TFStats(const string& filename,
+  TFStats(const std::string& filename,
           std::unique_ptr<checkpoint::CheckpointReader> ckpt_reader);
 
-  ~TFStats() {}
+  ~TFStats() = default;
 
-  const std::map<string, std::unique_ptr<TFGraphNode>>& nodes() const {
+  const std::map<std::string, std::unique_ptr<TFGraphNode>>& nodes() const {
     return nodes_map_;
   }
-  const std::set<int64>& steps() const { return steps_; }
+  const std::set<int64_t>& steps() const { return steps_; }
   bool has_code_traces() const { return has_code_traces_; }
   double run_coverage() const {
     return covered_nodes_.size() / (nodes_map_.size() + 1e-10);
   }
 
-  void BuildView(const string& cmd);
+  void BuildView(const std::string& cmd);
   void BuildAllViews();
 
   // Note: Must first BuildView(view_foo) before ShowXXX(view_foo) methods.
@@ -77,31 +77,31 @@ class TFStats {
   // Organize the TensorFlow model as different types of views, and generate
   // outputs for profiling.
   // TODO(xpan): Should it return reference here?
-  const GraphNodeProto& ShowGraphNode(const string& cmd,
+  const GraphNodeProto& ShowGraphNode(const std::string& cmd,
                                       const Options& opts) const;
-  const MultiGraphNodeProto& ShowMultiGraphNode(const string& cmd,
+  const MultiGraphNodeProto& ShowMultiGraphNode(const std::string& cmd,
                                                 const Options& opts) const;
 
   // Add a (partial) graph to existing graph.
   void AddGraph(std::unique_ptr<GraphDef> graph);
 
   // Add a step of run time meta data.
-  void AddRunMeta(int64 step, std::unique_ptr<RunMetadata> run_meta);
+  void AddRunMeta(int64_t step, std::unique_ptr<RunMetadata> run_meta);
   // Add tfprof operation meta data, such as customized op type, float_ops,
   // and code traces.
   void AddOpLogProto(std::unique_ptr<OpLogProto> op_log);
 
-  void SerializeToString(string* content);
-  void WriteProfile(const string& filename);
+  void SerializeToString(std::string* content);
+  void WriteProfile(const std::string& filename);
 
   // For test purpose only.
-  void AddNodeForTest(int64 step, std::unique_ptr<TFGraphNode> node);
+  void AddNodeForTest(int64_t step, std::unique_ptr<TFGraphNode> node);
 
  private:
   bool Validate(const Options& opts) const;
-  string MaybeReportMissingTrace() const;
+  std::string MaybeReportMissingTrace() const;
 
-  std::set<int64> steps_;
+  std::set<int64_t> steps_;
   bool has_code_traces_;
   bool miss_accelerator_stream_;
   std::unique_ptr<TFScope> scope_view_;
@@ -112,13 +112,13 @@ class TFStats {
   // TODO(xpan): Store TFGraphNode instead of TFGraphNode* to avoid large
   // number of dynamic alloc.
   // Maps from graph node name to TFGraphNode.
-  std::map<string, std::unique_ptr<TFGraphNode>> nodes_map_;
+  std::map<std::string, std::unique_ptr<TFGraphNode>> nodes_map_;
   GraphNodeProto empty_graph_node_;
   MultiGraphNodeProto empty_multi_graph_node_;
 
-  std::map<int64, string> id_to_string_;
+  std::map<int64_t, std::string> id_to_string_;
   // Graph nodes covered by RunMetadata, that is traced with run time stats.
-  std::set<int64> covered_nodes_;
+  std::set<int64_t> covered_nodes_;
 };
 
 }  // namespace tfprof

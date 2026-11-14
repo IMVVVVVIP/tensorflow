@@ -12,10 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.eager import backprop
@@ -268,6 +264,8 @@ class DirichletMultinomialTest(test.TestCase):
       self.assertAllClose(sample_var_, analytic_var, atol=0.05, rtol=0.)
       self.assertAllClose(sample_stddev_, analytic_stddev, atol=0.02, rtol=0.)
 
+  @test_util.run_without_tensor_float_32(
+      "Tests DirichletMultinomial.covariance, which calls matmul")
   def testCovariance(self):
     # Shape [2]
     alpha = [1., 2]

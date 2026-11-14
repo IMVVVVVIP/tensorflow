@@ -19,30 +19,28 @@ limitations under the License.
 
 namespace tensorflow {
 
-void CollectiveRemoteAccessLocal::StartAbort(const Status& s) {
+void CollectiveRemoteAccessLocal::StartAbort(const absl::Status& s) {
   buf_rendezvous_.StartAbort(s);
-  if (errors::IsFailedPrecondition(s)) {
-    dev_resolver_->ClearCache();
-  }
 }
 
 void CollectiveRemoteAccessLocal::RecvFromPeer(
-    const string& peer_device, const string& peer_task, bool peer_is_local,
-    const string& key, Device* to_device, DeviceContext* to_device_ctx,
-    const AllocatorAttributes& to_alloc_attr, Tensor* to_tensor,
-    const DeviceLocality& client_locality, int dev_to_dev_stream_index,
+    const std::string& peer_device, const std::string& peer_task,
+    bool peer_is_local, const std::string& key, Device* to_device,
+    DeviceContext* to_device_ctx, const AllocatorAttributes& to_alloc_attr,
+    Tensor* to_tensor, const DeviceLocality& client_locality,
+    int dev_to_dev_stream_index, CancellationManager* cancellation_manager,
     const StatusCallback& done) {
   VLOG(1) << "RecvFromPeer " << this << " from " << peer_device << " key "
           << key;
   if (!peer_is_local) {
     done(
-        errors::Internal("CollectiveRemoteAccessLocal::RecvFromPeer "
-                         "called with peer_is_local=false"));
+        absl::InternalError("CollectiveRemoteAccessLocal::RecvFromPeer "
+                            "called with peer_is_local=false"));
     return;
   }
 
   Device* from_device;
-  Status status = dev_mgr_->LookupDevice(peer_device, &from_device);
+  absl::Status status = dev_mgr_->LookupDevice(peer_device, &from_device);
   if (!status.ok()) {
     done(status);
     return;
@@ -50,12 +48,12 @@ void CollectiveRemoteAccessLocal::RecvFromPeer(
 
   auto consumer_callback = [to_tensor, to_device_ctx, to_device, to_alloc_attr,
                             dev_to_dev_stream_index,
-                            done](const Status& status,
+                            done](const absl::Status& status,
                                   BufRendezvous::Hook* hook) {
-    Status s = status;
+    absl::Status s = status;
     if (s.ok()) {
       if (hook == nullptr) {
-        s = errors::Internal("Invalid null hook in ConsumeBuf callback");
+        s = absl::InternalError("Invalid null hook in ConsumeBuf callback");
       }
     } else {
       if (hook != nullptr) {
@@ -65,7 +63,7 @@ void CollectiveRemoteAccessLocal::RecvFromPeer(
     }
 
     if (s.ok()) {
-      int64 recv_bytes = to_tensor->TotalBytes();
+      int64_t recv_bytes = to_tensor->TotalBytes();
       CHECK_EQ(recv_bytes, hook->prod_value->TotalBytes());
       MemCpyAsync(hook->prod_ctx,    // src DeviceContext
                   to_device_ctx,     // dst DeviceContext
@@ -76,7 +74,7 @@ void CollectiveRemoteAccessLocal::RecvFromPeer(
                   hook->prod_value,  // src Tensor*
                   to_tensor,         // dst Tensor*
                   dev_to_dev_stream_index,
-                  [hook, done](const Status& memcpy_status) {
+                  [hook, done](const absl::Status& memcpy_status) {
                     // This callback may be executing in the GPUEventMgr
                     // pool in which case it must be very short duration
                     // and non-blocking (except e.g. for queue insertion).
@@ -94,18 +92,27 @@ void CollectiveRemoteAccessLocal::RecvFromPeer(
   };
   buf_rendezvous_.ConsumeBuf(key, from_device->name(),
                              from_device->attributes().incarnation(),
-                             consumer_callback);
+                             consumer_callback, cancellation_manager);
 }
 
 void CollectiveRemoteAccessLocal::PostToPeer(
-    const string& peer_device, const string& peer_task, const string& key,
-    Device* from_device, DeviceContext* from_device_ctx,
+    const std::string& peer_device, const std::string& peer_task,
+    const std::string& key, Device* from_device, DeviceContext* from_device_ctx,
     const AllocatorAttributes& from_alloc_attr, const Tensor* from_tensor,
-    const DeviceLocality& client_locality, const StatusCallback& done) {
+    const DeviceLocality& client_locality,
+    CancellationManager* cancellation_manager, const StatusCallback& done) {
   VLOG(1) << "PostToPeer " << this << " key " << key
           << " step_id_=" << step_id_;
   buf_rendezvous_.ProvideBuf(key, from_device, from_device_ctx, from_tensor,
-                             from_alloc_attr, done);
+                             from_alloc_attr, done, cancellation_manager);
+}
+
+void CollectiveRemoteAccessLocal::CheckPeerHealth(const std::string& peer_task,
+                                                  int64_t timeout_in_ms,
+                                                  const StatusCallback& done) {
+  // Assume local devices are always healthy.
+  done(absl::InternalError(
+      "CheckPeerHealth is not supposed to be called for local collectives"));
 }
 
 /*static*/
@@ -130,14 +137,14 @@ void CollectiveRemoteAccessLocal::MemCpyAsync(
   // the OpKernelContext does not supply a DeviceContext.  It's assumed
   // that all nodes use the default context.
   if (src_dev_ctx == nullptr && src_device_type == DEVICE_GPU) {
-    const DeviceBase::GpuDeviceInfo* dev_info =
-        src_dev->tensorflow_gpu_device_info();
+    const DeviceBase::AcceleratorDeviceInfo* dev_info =
+        src_dev->tensorflow_accelerator_device_info();
     CHECK(dev_info);
     src_dev_ctx = dev_info->default_context;
   }
   if (dst_dev_ctx == nullptr && dst_device_type == DEVICE_GPU) {
-    const DeviceBase::GpuDeviceInfo* dev_info =
-        src_dev->tensorflow_gpu_device_info();
+    const DeviceBase::AcceleratorDeviceInfo* dev_info =
+        src_dev->tensorflow_accelerator_device_info();
     CHECK(dev_info);
     dst_dev_ctx = dev_info->default_context;
   }
@@ -148,10 +155,10 @@ void CollectiveRemoteAccessLocal::MemCpyAsync(
                        src_dev_ctx, dst_dev_ctx, src_dev, dst_dev, src_attr,
                        dst_attr, src, dst, dev_to_dev_stream_index, done);
   } else {
-    int64 bytes = src->TotalBytes();
+    int64_t bytes = src->TotalBytes();
     DCHECK_EQ(dst->TotalBytes(), bytes);
     memcpy(DMAHelper::base(dst), DMAHelper::base(src), bytes);
-    done(Status::OK());
+    done(absl::OkStatus());
   }
 }
 

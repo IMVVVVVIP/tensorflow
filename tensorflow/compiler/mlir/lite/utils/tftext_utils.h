@@ -20,10 +20,11 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_MLIR_LITE_UTILS_TFTEXT_UTILS_H_
 
 #include "llvm/ADT/StringRef.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
-#include "mlir/IR/Function.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
-#include "mlir/IR/StandardTypes.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Support/LogicalResult.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/lite/ir/tfl_ops.h"
@@ -34,7 +35,7 @@ namespace mlir {
 namespace TFL {
 
 // Fuse TF.Text APIs annotated by tf.function to a TFLite custom op.
-LogicalResult ConvertTFTextAPI(mlir::FuncOp func, llvm::StringRef api,
+LogicalResult ConvertTFTextAPI(mlir::func::FuncOp func, llvm::StringRef api,
                                mlir::TF::FuncAttr attr);
 
 // Check if TF.Text Tensorflow ops are registered.

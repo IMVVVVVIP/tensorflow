@@ -20,7 +20,9 @@ limitations under the License.
 #include <limits>
 #include <memory>
 
+#include "absl/strings/match.h"
 #include "absl/strings/substitute.h"
+#include "absl/synchronization/notification.h"
 #include "tensorflow/cc/ops/standard_ops.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
@@ -31,10 +33,10 @@ limitations under the License.
 #include "tensorflow/core/lib/core/threadpool.h"
 #include "tensorflow/core/platform/bfloat16.h"
 #include "tensorflow/core/platform/env.h"
-#include "tensorflow/core/platform/notification.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 namespace grappler {
@@ -43,7 +45,7 @@ namespace {
 class UtilsTest : public ::testing::Test {
  protected:
   NodeDef CreateConcatOffsetNode() const {
-    const string gdef_ascii =
+    const std::string gdef_ascii =
         " name: 'gradients/InceptionV3/Mixed_7c/Branch_1/concat_v2_grad/"
         "ConcatOffset'"
         " op: 'ConcatOffset'"
@@ -63,7 +65,7 @@ class UtilsTest : public ::testing::Test {
   }
 
   NodeDef CreateDequeueNode() const {
-    const string gdef_ascii =
+    const std::string gdef_ascii =
         " name: 'Train/TrainInput/input_producer_Dequeue'"
         " op: 'QueueDequeueV2'"
         " input: 'Train/TrainInput/input_producer'"
@@ -88,7 +90,7 @@ class UtilsTest : public ::testing::Test {
   }
 
   NodeDef CreateFusedBatchNormNode() const {
-    const string gdef_ascii =
+    const std::string gdef_ascii =
         " name: 'InceptionV3/Conv2d_1a_3x3/BatchNorm/FusedBatchNorm'"
         " op: 'FusedBatchNorm'"
         " input: 'InceptionV3/Conv2d_1a_3x3/BatchNorm/FusedBatchNorm'"
@@ -191,7 +193,7 @@ TEST_F(UtilsTest, ExecuteWithTimeout) {
       1000 /* timeout_in_ms */, thread_pool.get()));
 
   // This should time out.
-  Notification notification;
+  absl::Notification notification;
   ASSERT_FALSE(ExecuteWithTimeout(
       [&notification]() { notification.WaitForNotification(); },
       1 /* timeout_in_ms */, thread_pool.get()));
@@ -199,8 +201,9 @@ TEST_F(UtilsTest, ExecuteWithTimeout) {
   notification.Notify();
 
   // This should run till the end.
-  ASSERT_TRUE(ExecuteWithTimeout([]() { sleep(1); }, 0 /* timeout_in_ms */,
-                                 thread_pool.get()));
+  ASSERT_TRUE(ExecuteWithTimeout(
+      []() { Env::Default()->SleepForMicroseconds(1000000); },
+      0 /* timeout_in_ms */, thread_pool.get()));
 
   // Deleting before local variables go off the stack.
   thread_pool.reset();
@@ -429,12 +432,12 @@ TEST(CheckAttrExists, All) {
   TF_EXPECT_OK(CheckAttrsExist(node, {"apple", "pear"}));
   TF_EXPECT_OK(CheckAttrsExist(node, {"pear", "apple"}));
 
-  Status status = CheckAttrExists(node, "banana");
+  absl::Status status = CheckAttrExists(node, "banana");
   EXPECT_FALSE(status.ok());
-  EXPECT_EQ(status.ToString(),
-            "Invalid argument: Node 'node' lacks 'banana' attr: name: \"node\" "
-            "attr { key: \"apple\" value { i: 7 } } attr { key: \"pear\" value "
-            "{ b: true } }");
+  EXPECT_EQ(status.code(), error::INVALID_ARGUMENT);
+  EXPECT_TRUE(absl::StrContains(
+      status.message(), absl::StrFormat("Node 'node' lacks 'banana' attr: %s",
+                                        node.ShortDebugString())));
   EXPECT_FALSE(CheckAttrsExist(node, {""}).ok());
   EXPECT_FALSE(CheckAttrsExist(node, {"pear", "cherry"}).ok());
   EXPECT_FALSE(CheckAttrsExist(node, {"banana", "apple"}).ok());
@@ -470,15 +473,16 @@ TEST(IsKernelRegisteredForNode, All) {
   EXPECT_FALSE(IsKernelRegisteredForNode(node).ok());
 }
 
-#define BM_NodePositionIfSameNode(I, N, NAME)               \
-  static void BM_NodePositionIfSameNode_##NAME(int iters) { \
-    string input = I;                                       \
-    string node = N;                                        \
-    for (int i = 0; i < iters; ++i) {                       \
-      const int pos = NodePositionIfSameNode(input, node);  \
-      CHECK_GT(pos, -3);                                    \
-    }                                                       \
-  }                                                         \
+#define BM_NodePositionIfSameNode(I, N, NAME)              \
+  static void BM_NodePositionIfSameNode_##NAME(            \
+      ::testing::benchmark::State& state) {                \
+    string input = I;                                      \
+    string node = N;                                       \
+    for (auto s : state) {                                 \
+      const int pos = NodePositionIfSameNode(input, node); \
+      CHECK_GT(pos, -3);                                   \
+    }                                                      \
+  }                                                        \
   BENCHMARK(BM_NodePositionIfSameNode_##NAME)
 
 BM_NodePositionIfSameNode("foo/bar/baz:7", "foo/bar/baz", Match_7);
@@ -487,20 +491,23 @@ BM_NodePositionIfSameNode("^foo/bar/baz", "foo/bar/baz", Match_Ctrl);
 BM_NodePositionIfSameNode("blah", "foo/bar/baz", NoMatch_0);
 BM_NodePositionIfSameNode("foo/bar/baz/gnu", "foo/bar/baz", NoMatch_end);
 
-static void BM_NodeNameAsStringPiece(int iters, int size) {
-  string input(size + 3, 'x');
+void BM_NodeNameAsStringPiece(::testing::benchmark::State& state) {
+  const int size = state.range(0);
+
+  std::string input(size + 3, 'x');
   input[size] = ':';
-  for (int i = 0; i < iters; ++i) {
-    StringPiece node_name = NodeNameAsStringPiece(input);
+  for (auto s : state) {
+    absl::string_view node_name = NodeNameAsStringPiece(input);
     CHECK_GT(node_name.size(), 0);
   }
 }
 BENCHMARK(BM_NodeNameAsStringPiece)->Range(1, 1024);
 
 #define BM_ParseNodeNameAsStringPiece(I, NAME)                               \
-  static void BM_ParseNodeNameAsStringPiece_##NAME(int iters) {              \
+  static void BM_ParseNodeNameAsStringPiece_##NAME(                          \
+      ::testing::benchmark::State& state) {                                  \
     string input = I;                                                        \
-    for (int i = 0; i < iters; ++i) {                                        \
+    for (auto s : state) {                                                   \
       int position;                                                          \
       const StringPiece name = ParseNodeNameAsStringPiece(input, &position); \
       CHECK_GE(position, -1);                                                \
@@ -593,12 +600,12 @@ template <typename T>
 void TestSetTensorValue(DataType type, int val, bool success,
                         absl::string_view error_msg) {
   Tensor t(type, TensorShape({}));
-  Status s = SetTensorValue(t.dtype(), val, &t);
+  absl::Status s = SetTensorValue(t.dtype(), val, &t);
   EXPECT_EQ(s.ok(), success);
   if (s.ok()) {
     test::ExpectTensorEqual<T>(Tensor(static_cast<T>(val)), t);
   } else {
-    EXPECT_EQ(s.error_message(), error_msg);
+    EXPECT_EQ(s.message(), error_msg);
   }
 }
 
@@ -683,25 +690,23 @@ TEST(SetTensorValueTest, Quantized) {
                              /*error_msg=*/"");
 }
 
-static void BM_NodeMapConstruct(int iters, int size) {
-  testing::StopTiming();
+void BM_NodeMapConstruct(::testing::benchmark::State& state) {
+  const int size = state.range(0);
+
   GraphDef graph = test::CreateRandomGraph(size);
-  testing::StartTiming();
-  for (int i = 0; i < iters; i++) {
+  for (auto s : state) {
     NodeMap node_map(&graph);
   }
-  testing::StopTiming();
 }
 BENCHMARK(BM_NodeMapConstruct)->Range(1, 1 << 20);
 
-static void BM_ImmutableNodeMapConstruct(int iters, int size) {
-  testing::StopTiming();
+void BM_ImmutableNodeMapConstruct(::testing::benchmark::State& state) {
+  const int size = state.range(0);
+
   GraphDef graph = test::CreateRandomGraph(size);
-  testing::StartTiming();
-  for (int i = 0; i < iters; i++) {
+  for (auto s : state) {
     ImmutableNodeMap node_map(&graph);
   }
-  testing::StopTiming();
 }
 BENCHMARK(BM_ImmutableNodeMapConstruct)->Range(1, 1 << 20);
 

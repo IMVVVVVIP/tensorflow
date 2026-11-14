@@ -18,12 +18,12 @@ limitations under the License.
 #include <cstdio>
 #include <vector>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
+#include "ruy/profiler/instrumentation.h"  // from @ruy
 #include "tensorflow/lite/core/api/error_reporter.h"
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/internal/kernel_utils.h"
-#include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
-#include "tensorflow/lite/kernels/internal/tensor.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/interpreter.h"
+#include "tensorflow/lite/kernels/internal/portable_tensor_utils.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/internal/tensor_utils.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/kernels/lstm_shared.h"
@@ -47,7 +47,7 @@ inline void CalculateLstmGateFloat(
     const int n_output, const int n_cell,
     const TfLiteFusedActivation activation, float* gate,
     const bool is_input_all_zeros, const bool is_aux_input_all_zeros,
-    Logger* logger, int intermediate_tensor_index,
+    Logger* logger, int intermediate_tensor_index, const int subgraph_index,
     ErrorReporter* error_reporter) {
   const bool use_peephole = (cell_to_gate_weights != nullptr);
   const bool use_layer_norm = (layer_norm_coefficients != nullptr);
@@ -82,8 +82,8 @@ inline void CalculateLstmGateFloat(
   }
   // Do layer normalization (if layer norm LSTM)
   if (use_layer_norm) {
-    logger->LogTensorValue(intermediate_tensor_index, gate, n_cell * n_batch,
-                           error_reporter);
+    logger->LogTensorValue(subgraph_index, intermediate_tensor_index, gate,
+                           n_cell * n_batch, error_reporter);
 
     tensor_utils::MeanStddevNormalization(gate, gate, n_cell, n_batch);
     tensor_utils::VectorBatchVectorCwiseProduct(layer_norm_coefficients, n_cell,
@@ -125,14 +125,14 @@ void CalculateLstmOutputCalibration(
     const float* output_gate, TfLiteFusedActivation activation,
     const float* projection_weights, const float* projection_bias,
     const float proj_clip, float* output_state, float* scratch, Logger* logger,
-    const std::vector<int>& intermediate_tensor_indexes,
+    int intermediate_tensor_index, const int subgraph_index,
     ErrorReporter* error_reporter) {
   tensor_utils::ApplyActivationToVector(cell_state, n_batch * n_cell,
                                         activation, scratch);
   tensor_utils::VectorVectorCwiseProduct(output_gate, scratch, n_batch * n_cell,
                                          scratch);
 
-  logger->LogTensorValue(intermediate_tensor_indexes[4], scratch,
+  logger->LogTensorValue(subgraph_index, intermediate_tensor_index, scratch,
                          n_cell * n_batch, error_reporter);
 
   const bool use_projection = (projection_weights != nullptr);
@@ -183,7 +183,7 @@ inline void LstmStepCalibration(
     float* output_state_ptr, float* cell_state_ptr, float* scratch0,
     float* scratch1, float* scratch2, float* scratch3, float* output_ptr,
     Logger* logger, const std::vector<int>& intermediate_tensor_indexes,
-    ErrorReporter* error_reporter) {
+    const int subgraph_index, ErrorReporter* error_reporter) {
   ruy::profiler::ScopeLabel label("LstmStepCalibration");
   // Since we have already checked that weights are all there or none, we can
   // check the existence of only one to the get the condition.
@@ -211,7 +211,7 @@ inline void LstmStepCalibration(
         input_gate_bias_ptr, n_batch, n_input, n_aux_input, n_output, n_cell,
         /*activation=*/kTfLiteActSigmoid, input_gate_scratch,
         is_input_all_zeros, is_aux_input_all_zeros, logger,
-        intermediate_tensor_indexes[0], error_reporter);
+        intermediate_tensor_indexes[0], subgraph_index, error_reporter);
   }
   // Calculate the forget gate.
   CalculateLstmGateFloat(
@@ -222,17 +222,17 @@ inline void LstmStepCalibration(
       forget_gate_bias_ptr, n_batch, n_input, n_aux_input, n_output, n_cell,
       /*activation=*/kTfLiteActSigmoid, forget_gate_scratch, is_input_all_zeros,
       is_aux_input_all_zeros, logger, intermediate_tensor_indexes[1],
-      error_reporter);
+      subgraph_index, error_reporter);
   // Calculate the cell update gate.
-  CalculateLstmGateFloat(input_ptr, input_to_cell_weights_ptr, aux_input_ptr,
-                         aux_input_to_cell_weights_ptr, output_state_ptr,
-                         recurrent_to_cell_weights_ptr, /*cell_state=*/nullptr,
-                         /*cell_to_gate_weights=*/nullptr,
-                         cell_layer_norm_coefficients_ptr, cell_gate_bias_ptr,
-                         n_batch, n_input, n_aux_input, n_output, n_cell,
-                         params->activation, cell_gate_scratch,
-                         is_input_all_zeros, is_aux_input_all_zeros, logger,
-                         intermediate_tensor_indexes[2], error_reporter);
+  CalculateLstmGateFloat(
+      input_ptr, input_to_cell_weights_ptr, aux_input_ptr,
+      aux_input_to_cell_weights_ptr, output_state_ptr,
+      recurrent_to_cell_weights_ptr, /*cell_state=*/nullptr,
+      /*cell_to_gate_weights=*/nullptr, cell_layer_norm_coefficients_ptr,
+      cell_gate_bias_ptr, n_batch, n_input, n_aux_input, n_output, n_cell,
+      params->activation, cell_gate_scratch, is_input_all_zeros,
+      is_aux_input_all_zeros, logger, intermediate_tensor_indexes[2],
+      subgraph_index, error_reporter);
   // Update the cell state.
   UpdateLstmCellFloat(n_batch, n_cell, cell_state_ptr, input_gate_scratch,
                       forget_gate_scratch, cell_gate_scratch, use_cifg,
@@ -246,13 +246,13 @@ inline void LstmStepCalibration(
       output_gate_bias_ptr, n_batch, n_input, n_aux_input, n_output, n_cell,
       /*activation=*/kTfLiteActSigmoid, output_gate_scratch, is_input_all_zeros,
       is_aux_input_all_zeros, logger, intermediate_tensor_indexes[3],
-      error_reporter);
+      subgraph_index, error_reporter);
   // Update the output state.
   CalculateLstmOutputCalibration(
       n_batch, n_cell, n_output, cell_state_ptr, output_gate_scratch,
       params->activation, projection_weights_ptr, projection_bias_ptr,
       params->proj_clip, output_state_ptr, scratch2, logger,
-      intermediate_tensor_indexes, error_reporter);
+      intermediate_tensor_indexes[4], subgraph_index, error_reporter);
   // Copy output state to the output. Note that the output's rows may not be
   // contiguous (output_batch_leading_dim != n_output).
   for (int b = 0; b < n_batch; b++) {
@@ -289,7 +289,7 @@ TfLiteStatus EvalCalibration(
     int output_offset, TfLiteTensor* scratch_buffer, TfLiteTensor* output_state,
     TfLiteTensor* cell_state, TfLiteTensor* output, Logger* logger,
     const std::vector<int>& intermediate_tensor_indexes,
-    ErrorReporter* error_reporter) {
+    const int subgraph_index, ErrorReporter* error_reporter) {
   TF_LITE_ASSERT(input->dims->size >= 2 && input->dims->size <= 3);
   int max_time, n_batch;
   if (input->dims->size == 3) {
@@ -376,7 +376,7 @@ TfLiteStatus EvalCalibration(
           GetTensorData<float>(output_state), GetTensorData<float>(cell_state),
           input_gate_scratch, forget_gate_scratch, cell_gate_scratch,
           output_gate_scratch, output_ptr_time, logger,
-          intermediate_tensor_indexes, error_reporter);
+          intermediate_tensor_indexes, subgraph_index, error_reporter);
     }
   } else {
     for (int b = 0; b < n_batch; b++) {
@@ -438,7 +438,7 @@ TfLiteStatus EvalCalibration(
             output_state_ptr, cell_state_ptr, input_gate_scratch_ptr,
             forget_gate_scratch_ptr, cell_gate_scratch_ptr,
             output_gate_scratch_ptr, output_ptr, logger,
-            intermediate_tensor_indexes, error_reporter);
+            intermediate_tensor_indexes, subgraph_index, error_reporter);
       }
     }
   }
@@ -462,30 +462,54 @@ struct OpData {
 // Resize the output, state tensors based on the sizes of the input tensors.
 // Allocate a temporary scratch tensor. Also check that the sizes of the input
 // tensors match each other.
-TfLiteStatus lstm_eval(TfLiteContext* context, TfLiteNode* node, Logger* logger,
+TfLiteStatus lstm_eval(TfLiteContext* context, int subgraph_index,
+                       TfLiteNode* node, LSTMType lstm_type, Logger* logger,
                        ErrorReporter* error_reporter) {
-  const auto* params = static_cast<TfLiteLSTMParams*>(node->builtin_data);
-
-  const TfLiteTensor* input =
-      GetInput(context, node, ops::builtin::lstm::full::kInputTensor);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(
+      context, GetInputSafe(context, node,
+                            ops::builtin::lstm::full::kInputTensor, &input));
 
   const TfLiteTensor* input_to_input_weights = GetOptionalInputTensor(
       context, node, ops::builtin::lstm::full::kInputToInputWeightsTensor);
-  const TfLiteTensor* input_to_forget_weights = GetInput(
-      context, node, ops::builtin::lstm::full::kInputToForgetWeightsTensor);
-  const TfLiteTensor* input_to_cell_weights = GetInput(
-      context, node, ops::builtin::lstm::full::kInputToCellWeightsTensor);
-  const TfLiteTensor* input_to_output_weights = GetInput(
-      context, node, ops::builtin::lstm::full::kInputToOutputWeightsTensor);
+  const TfLiteTensor* input_to_forget_weights;
+  TF_LITE_ENSURE_OK(
+      context,
+      GetInputSafe(context, node,
+                   ops::builtin::lstm::full::kInputToForgetWeightsTensor,
+                   &input_to_forget_weights));
+  const TfLiteTensor* input_to_cell_weights;
+  TF_LITE_ENSURE_OK(
+      context, GetInputSafe(context, node,
+                            ops::builtin::lstm::full::kInputToCellWeightsTensor,
+                            &input_to_cell_weights));
+  const TfLiteTensor* input_to_output_weights;
+  TF_LITE_ENSURE_OK(
+      context,
+      GetInputSafe(context, node,
+                   ops::builtin::lstm::full::kInputToOutputWeightsTensor,
+                   &input_to_output_weights));
 
   const TfLiteTensor* recurrent_to_input_weights = GetOptionalInputTensor(
       context, node, ops::builtin::lstm::full::kRecurrentToInputWeightsTensor);
-  const TfLiteTensor* recurrent_to_forget_weights = GetInput(
-      context, node, ops::builtin::lstm::full::kRecurrentToForgetWeightsTensor);
-  const TfLiteTensor* recurrent_to_cell_weights = GetInput(
-      context, node, ops::builtin::lstm::full::kRecurrentToCellWeightsTensor);
-  const TfLiteTensor* recurrent_to_output_weights = GetInput(
-      context, node, ops::builtin::lstm::full::kRecurrentToOutputWeightsTensor);
+  const TfLiteTensor* recurrent_to_forget_weights;
+  TF_LITE_ENSURE_OK(
+      context,
+      GetInputSafe(context, node,
+                   ops::builtin::lstm::full::kRecurrentToForgetWeightsTensor,
+                   &recurrent_to_forget_weights));
+  const TfLiteTensor* recurrent_to_cell_weights;
+  TF_LITE_ENSURE_OK(
+      context,
+      GetInputSafe(context, node,
+                   ops::builtin::lstm::full::kRecurrentToCellWeightsTensor,
+                   &recurrent_to_cell_weights));
+  const TfLiteTensor* recurrent_to_output_weights;
+  TF_LITE_ENSURE_OK(
+      context,
+      GetInputSafe(context, node,
+                   ops::builtin::lstm::full::kRecurrentToOutputWeightsTensor,
+                   &recurrent_to_output_weights));
 
   const TfLiteTensor* cell_to_input_weights = GetOptionalInputTensor(
       context, node, ops::builtin::lstm::full::kCellToInputWeightsTensor);
@@ -509,12 +533,21 @@ TfLiteStatus lstm_eval(TfLiteContext* context, TfLiteNode* node, Logger* logger,
 
   const TfLiteTensor* input_gate_bias = GetOptionalInputTensor(
       context, node, ops::builtin::lstm::full::kInputGateBiasTensor);
-  const TfLiteTensor* forget_gate_bias =
-      GetInput(context, node, ops::builtin::lstm::full::kForgetGateBiasTensor);
-  const TfLiteTensor* cell_gate_bias =
-      GetInput(context, node, ops::builtin::lstm::full::kCellGateBiasTensor);
-  const TfLiteTensor* output_gate_bias =
-      GetInput(context, node, ops::builtin::lstm::full::kOutputGateBiasTensor);
+  const TfLiteTensor* forget_gate_bias;
+  TF_LITE_ENSURE_OK(
+      context, GetInputSafe(context, node,
+                            ops::builtin::lstm::full::kForgetGateBiasTensor,
+                            &forget_gate_bias));
+  const TfLiteTensor* cell_gate_bias;
+  TF_LITE_ENSURE_OK(
+      context,
+      GetInputSafe(context, node, ops::builtin::lstm::full::kCellGateBiasTensor,
+                   &cell_gate_bias));
+  const TfLiteTensor* output_gate_bias;
+  TF_LITE_ENSURE_OK(
+      context, GetInputSafe(context, node,
+                            ops::builtin::lstm::full::kOutputGateBiasTensor,
+                            &output_gate_bias));
 
   const TfLiteTensor* projection_weights = GetOptionalInputTensor(
       context, node, ops::builtin::lstm::full::kProjectionWeightsTensor);
@@ -522,7 +555,9 @@ TfLiteStatus lstm_eval(TfLiteContext* context, TfLiteNode* node, Logger* logger,
       context, node, ops::builtin::lstm::full::kProjectionBiasTensor);
 
   // Index the scratch buffers pointers to the global scratch buffer.
-  TfLiteTensor* scratch_buffer = GetTemporary(context, node, /*index=*/0);
+  TfLiteTensor* scratch_buffer;
+  TF_LITE_ENSURE_OK(
+      context, GetTemporarySafe(context, node, /*index=*/0, &scratch_buffer));
 
   TfLiteTensor* output_state = GetVariableInput(
       context, node, ops::builtin::lstm::full::kOutputStateTensor);
@@ -531,12 +566,41 @@ TfLiteStatus lstm_eval(TfLiteContext* context, TfLiteNode* node, Logger* logger,
       context, node, ops::builtin::lstm::full::kCellStateTensor);
   TF_LITE_ENSURE(context, cell_state != nullptr);
 
-  TfLiteTensor* output =
-      GetOutput(context, node, ops::builtin::lstm::full::kOutputTensor);
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(
+      context, GetOutputSafe(context, node,
+                             ops::builtin::lstm::full::kOutputTensor, &output));
 
   std::vector<int> intermediate_tensor_indexes(node->intermediates->size);
+  // LSTM expect 5 intermediate tensors.
+  TF_LITE_ENSURE_EQ(context, node->intermediates->size, 5);
   for (int i = 0; i < node->intermediates->size; ++i) {
     intermediate_tensor_indexes[i] = node->intermediates->data[i];
+  }
+
+  TfLiteLSTMParams lstm_params;
+  bool time_major = true;
+  switch (lstm_type) {
+    case LSTMType::kLSTM: {
+      lstm_params = *(static_cast<TfLiteLSTMParams*>(node->builtin_data));
+      time_major = true;
+      break;
+    }
+    case LSTMType::kUnidirectionalSequenceLSTM: {
+      const auto* params = static_cast<TfLiteUnidirectionalSequenceLSTMParams*>(
+          node->builtin_data);
+      // Copy out the LSTM specific params so they can be passed in the
+      // function.
+      lstm_params.activation = params->activation;
+      lstm_params.cell_clip = params->cell_clip;
+      lstm_params.proj_clip = params->proj_clip;
+      lstm_params.asymmetric_quantize_inputs =
+          params->asymmetric_quantize_inputs;
+      time_major = params->time_major;
+      break;
+    }
+    default:
+      return kTfLiteError;
   }
 
   switch (input_to_output_weights->type) {
@@ -555,11 +619,11 @@ TfLiteStatus lstm_eval(TfLiteContext* context, TfLiteNode* node, Logger* logger,
           /*aux_input_to_cell_weights=*/nullptr,
           /*aux_input_to_output_weights=*/nullptr, input_gate_bias,
           forget_gate_bias, cell_gate_bias, output_gate_bias,
-          projection_weights, projection_bias, params,
+          projection_weights, projection_bias, &lstm_params,
           /*forward_sequence=*/true,
-          /*time_major=*/true,
+          /*time_major=*/time_major,
           /*output_offset=*/0, scratch_buffer, output_state, cell_state, output,
-          logger, intermediate_tensor_indexes, error_reporter);
+          logger, intermediate_tensor_indexes, subgraph_index, error_reporter);
     }
     case kTfLiteUInt8:
     case kTfLiteInt8:
@@ -571,10 +635,20 @@ TfLiteStatus lstm_eval(TfLiteContext* context, TfLiteNode* node, Logger* logger,
 }
 }  // namespace
 
-TfLiteStatus lstm_logging_kernel(TfLiteContext* context, TfLiteNode* node,
+TfLiteStatus lstm_logging_kernel(TfLiteContext* context,
+                                 const int subgraph_index, TfLiteNode* node,
                                  Logger* logger,
                                  ErrorReporter* error_reporter) {
-  return lstm_eval(context, node, logger, error_reporter);
+  return lstm_eval(context, subgraph_index, node, LSTMType::kLSTM, logger,
+                   error_reporter);
+}
+
+TfLiteStatus unidirectional_sequence_lstm_logging_kernel(
+    TfLiteContext* context, const int subgraph_index, TfLiteNode* node,
+    Logger* logger, ErrorReporter* error_reporter) {
+  return lstm_eval(context, subgraph_index, node,
+                   LSTMType::kUnidirectionalSequenceLSTM, logger,
+                   error_reporter);
 }
 
 }  // namespace builtin

@@ -13,13 +13,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include "tensorflow/compiler/tf2xla/shape_util.h"
-#include "tensorflow/compiler/tf2xla/xla_compiler.h"
+#include <optional>
+#include <string>
+
+#include "tensorflow/compiler/tf2xla/mlir_xla_op_kernel.h"
+#include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/xla_data.pb.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -27,18 +35,19 @@ namespace {
 class XlaDotOp : public XlaOpKernel {
  public:
   explicit XlaDotOp(OpKernelConstruction* context) : XlaOpKernel(context) {
-    string dnums_attr;
+    std::string dnums_attr;
     OP_REQUIRES_OK(context, context->GetAttr("dimension_numbers", &dnums_attr));
     OP_REQUIRES(
         context, dnums_.ParsePartialFromString(dnums_attr),
         errors::InvalidArgument("Error parsing convolution dimension numbers"));
-    string precision_config_attr;
+    std::string precision_config_attr;
     OP_REQUIRES_OK(
         context, context->GetAttr("precision_config", &precision_config_attr));
     OP_REQUIRES(
         context,
         precision_config_.ParsePartialFromString(precision_config_attr),
         errors::InvalidArgument("Error parsing convolution dimension numbers"));
+    preferred_element_type_ = std::nullopt;
   }
 
   void Compile(XlaOpKernelContext* context) override {
@@ -47,19 +56,42 @@ class XlaDotOp : public XlaOpKernel {
 
     // We do only minimal checking, relying on XLA to check the shape
     // invariants.
-    xla::XlaOp output = xla::DotGeneral(context->Input(0), context->Input(1),
-                                        dnums_, &precision_config_);
+    xla::XlaOp output =
+        xla::DotGeneral(context->Input(0), context->Input(1), dnums_,
+                        &precision_config_, preferred_element_type_);
     context->SetOutput(0, output);
   }
+
+ protected:
+  std::optional<xla::PrimitiveType> preferred_element_type_;
 
  private:
   xla::DotDimensionNumbers dnums_;
   xla::PrecisionConfig precision_config_;
-
-  TF_DISALLOW_COPY_AND_ASSIGN(XlaDotOp);
+  XlaDotOp(const XlaDotOp&) = delete;
+  void operator=(const XlaDotOp&) = delete;
 };
 
-REGISTER_XLA_OP(Name("XlaDot"), XlaDotOp);
+REGISTER_XLA_OP(Name("XlaDot"), MlirXlaOpKernel);
+
+class XlaDotV2Op : public XlaDotOp {
+ public:
+  explicit XlaDotV2Op(OpKernelConstruction* context) : XlaDotOp(context) {
+    DataType preferred_element_dtype;
+    OP_REQUIRES_OK(context, context->GetAttr("preferred_element_type",
+                                             &preferred_element_dtype));
+    xla::PrimitiveType preferred_element_type;
+    OP_REQUIRES_OK(context, DataTypeToPrimitiveType(preferred_element_dtype,
+                                                    &preferred_element_type));
+    preferred_element_type_ = preferred_element_type;
+  }
+
+ private:
+  XlaDotV2Op(const XlaDotV2Op&) = delete;
+  void operator=(const XlaDotV2Op&) = delete;
+};
+
+REGISTER_XLA_OP(Name("XlaDotV2"), MlirXlaOpKernel);
 
 }  // namespace
 }  // namespace tensorflow

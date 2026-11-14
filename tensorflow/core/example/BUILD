@@ -1,23 +1,38 @@
-load(
-    "@io_bazel_rules_closure//closure:defs.bzl",
-    "closure_proto_library",
-)
+# Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_test",
     "tf_copts",
 )
+load("//tensorflow:tensorflow.default.bzl", "filegroup")
 load(
     "//tensorflow/core/platform:build_config.bzl",
+    "tf_jspb_proto_library",
     "tf_proto_library",
     "tf_pyclif_proto_library",
 )
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = [
-        "//tensorflow/core:__subpackages__",
+        "//visibility:public",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 # TODO(bmzhao): Refactor this target to use granular dependencies
@@ -29,7 +44,6 @@ cc_library(
     hdrs = ["example_parser_configuration.h"],
     copts = tf_copts(),
     linkstatic = 1,
-    visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_internal",
@@ -49,10 +63,23 @@ cc_library(
         ":example_protos_cc",
         "//tensorflow/core/platform:protobuf",
         "//tensorflow/core/platform:stringpiece",
-        "//tensorflow/core/platform:types",
-        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/strings",
     ],
     alwayslink = 1,
+)
+
+tf_cc_test(
+    name = "feature_util_test",
+    size = "small",
+    srcs = ["feature_util_test.cc"],
+    deps = [
+        ":example_protos_cc",
+        ":feature_util",
+        "//tensorflow/core:test",
+        "//tensorflow/core:test_main",
+        "//tensorflow/core/platform:types",
+        "@com_google_absl//absl/strings",
+    ],
 )
 
 # TODO(bmzhao): Refactor this target to use granular dependencies
@@ -67,7 +94,6 @@ tf_cc_test(
         "//tensorflow/cc:cc_ops",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:core_cpu_internal",
-        "//tensorflow/core:direct_session_internal",
         "//tensorflow/core:example_parser_configuration",
         "//tensorflow/core:framework",
         "//tensorflow/core:framework_internal",
@@ -78,34 +104,29 @@ tf_cc_test(
         "//tensorflow/core:test",
         "//tensorflow/core:test_main",
         "//tensorflow/core:testlib",
+        "//tensorflow/core/common_runtime:direct_session_internal",
         "//tensorflow/core/kernels:example_parsing_ops",
     ],
 )
 
-filegroup(
+alias(
     name = "example_parser_configuration_testdata",
-    srcs = [
-        "testdata/parse_example_graph_def.pbtxt",
-    ],
+    actual = "//tensorflow/core/example/testdata:example_parser_configuration_testdata",
 )
 
-# TODO(bmzhao): Split this target into separate tf_proto_libraries.
-# This target is a holdover from the target tensorflow/core:example_protos,
-# but splitting it while require multiple LSCs.
 tf_proto_library(
     name = "example_protos",
     srcs = [
         "example.proto",
         "feature.proto",
     ],
-    cc_api_version = 2,
     make_default_target_header_only = True,
+    tags = ["alt_dep=//third_party/tensorflow/core:protos_all"],
 )
 
 tf_proto_library(
     name = "example_parser_configuration_proto",
     srcs = ["example_parser_configuration.proto"],
-    cc_api_version = 2,
     make_default_target_header_only = True,
     protodeps = [
         "//tensorflow/core/framework:tensor_shape_proto",
@@ -116,11 +137,13 @@ tf_proto_library(
 
 tf_proto_library(
     name = "protos_all",
-    cc_api_version = 2,
     make_default_target_header_only = True,
     protodeps = [
         ":example_protos",
         ":example_parser_configuration_proto",
+    ],
+    tags = [
+        "alt_dep=//third_party/tensorflow/core:protos_all",
     ],
 )
 
@@ -136,9 +159,8 @@ tf_pyclif_proto_library(
     proto_srcfile = "feature.proto",
 )
 
-closure_proto_library(
-    name = "example_protos_closure",
-    visibility = ["//visibility:public"],
+tf_jspb_proto_library(
+    name = "example_jspb_proto",
     deps = [":example_protos"],
 )
 
@@ -146,7 +168,14 @@ filegroup(
     name = "mobile_srcs_no_runtime",
     srcs = [
         "feature_util.cc",
+    ],
+)
+
+filegroup(
+    name = "mobile_hdrs_no_runtime",
+    srcs = [
         "feature_util.h",
+        ":example_protos_cc",
     ],
 )
 

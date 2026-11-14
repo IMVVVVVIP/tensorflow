@@ -179,7 +179,7 @@ class RNNOpModel : public SingleOpModel {
     weights_ = AddInput(weights);
     recurrent_weights_ = AddInput(recurrent_weights);
     bias_ = AddInput(TensorType_FLOAT32);
-    hidden_state_ = AddInput(TensorType_FLOAT32, true);
+    hidden_state_ = AddVariableInput(TensorType_FLOAT32);
     output_ = AddOutput(TensorType_FLOAT32);
     SetBuiltinOp(BuiltinOperator_RNN, BuiltinOptions_RNNOptions,
                  CreateRNNOptions(builder_, ActivationFunctionType_RELU,
@@ -271,7 +271,7 @@ TEST(RnnOpTest, BlackBoxTest) {
     rnn.SetInput(0, batch_start, batch_end);
     rnn.SetInput(rnn.input_size(), batch_start, batch_end);
 
-    rnn.Invoke();
+    ASSERT_EQ(rnn.Invoke(), kTfLiteOk);
 
     float* golden_start = rnn_golden_output + i * rnn.num_units();
     float* golden_end = golden_start + rnn.num_units();
@@ -300,7 +300,7 @@ TEST_P(HybridRnnOpTest, BlackBoxTestUint8) {
     rnn.SetInput(0, batch_start, batch_end);
     rnn.SetInput(rnn.input_size(), batch_start, batch_end);
 
-    rnn.Invoke();
+    ASSERT_EQ(rnn.Invoke(), kTfLiteOk);
 
     float* golden_start = rnn_golden_output + i * rnn.num_units();
     float* golden_end = golden_start + rnn.num_units();
@@ -309,7 +309,7 @@ TEST_P(HybridRnnOpTest, BlackBoxTestUint8) {
     expected.insert(expected.end(), golden_start, golden_end);
 
     EXPECT_THAT(rnn.GetOutput(), ElementsAreArray(ArrayFloatNear(
-                                     expected, /*max_abs_error=*/0.0104)));
+                                     expected, /*max_abs_err=*/0.0104)));
   }
 }
 
@@ -328,7 +328,7 @@ TEST_P(HybridRnnOpTest, BlackBoxTestInt8) {
     rnn.SetInput(0, batch_start, batch_end);
     rnn.SetInput(rnn.input_size(), batch_start, batch_end);
 
-    rnn.Invoke();
+    ASSERT_EQ(rnn.Invoke(), kTfLiteOk);
 
     float* golden_start = rnn_golden_output + i * rnn.num_units();
     float* golden_end = golden_start + rnn.num_units();
@@ -337,7 +337,7 @@ TEST_P(HybridRnnOpTest, BlackBoxTestInt8) {
     expected.insert(expected.end(), golden_start, golden_end);
 
     EXPECT_THAT(rnn.GetOutput(), ElementsAreArray(ArrayFloatNear(
-                                     expected, /*max_abs_error=*/0.0104)));
+                                     expected, /*max_abs_err=*/0.0104)));
   }
 }
 

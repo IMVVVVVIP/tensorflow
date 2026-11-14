@@ -21,6 +21,8 @@ limitations under the License.
 
 #include <string>
 
+#include "absl/status/status.h"
+#include "absl/strings/string_view.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/lib/core/status.h"
 
@@ -38,8 +40,27 @@ enum ActivationMode {
 };
 
 // Specialization to parse an attribute directly into a ActivationMode enum.
-Status GetActivationModeFromString(const string& str_value,
-                                   ActivationMode* value);
+absl::Status GetActivationModeFromString(const std::string& str_value,
+                                         ActivationMode* value);
+
+inline absl::string_view ToString(ActivationMode mode) {
+  switch (mode) {
+    case NONE:
+      return "NONE";
+    case SIGMOID:
+      return "SIGMOID";
+    case RELU:
+      return "RELU";
+    case RELU6:
+      return "RELU6";
+    case RELUX:
+      return "RELUX";
+    case TANH:
+      return "TANH";
+    case BANDPASS:
+      return "BANDPASS";
+  }
+}
 
 }  // end namespace tensorflow
 

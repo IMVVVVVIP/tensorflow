@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSFORMS_COLLECTION_OPS_UTIL_H_
 #define TENSORFLOW_COMPILER_MLIR_TENSORFLOW_TRANSFORMS_COLLECTION_OPS_UTIL_H_
 
+#include <optional>
+
 #include "llvm/ADT/ArrayRef.h"
 #include "mlir/IR/Builders.h"  // from @llvm-project
 #include "mlir/IR/Location.h"  // from @llvm-project
@@ -23,7 +25,6 @@ limitations under the License.
 #include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
-#include "tensorflow/core/framework/types.pb.h"
 
 namespace mlir {
 namespace TF {
@@ -34,7 +35,7 @@ namespace collection_ops_util {
 // shape [max_element_count, element_shape].
 
 // Creates an i32 scalar tf.Const.
-Value CreateScalarConst(int value, OpBuilder builder, Location loc);
+Value CreateScalarConst(int32_t value, OpBuilder builder, Location loc);
 
 // Creates an integer vector tf.Const.
 Value GetR1Const(ArrayRef<int64_t> r1, OpBuilder builder, Location loc,
@@ -79,9 +80,9 @@ LogicalResult CreateInitBufferValue(ArrayRef<int64_t> element_shape,
 // Tries to infer the element type with full shape based its write accesses.
 // `infer_from_user` should check if the provided op is an accessing op that
 // could be used to infer the type.
-llvm::Optional<RankedTensorType> GetElementTypeFromAccess(
+std::optional<RankedTensorType> GetElementTypeFromAccess(
     Value collection, ModuleOp module,
-    llvm::function_ref<llvm::Optional<Type>(Operation*)> infer_from_op);
+    llvm::function_ref<std::optional<Type>(Operation*)> infer_from_op);
 
 // Creates a ReadVariableOp on a local variable.
 Value ReadLocalVariable(Value local_var, OpBuilder builder, Location loc);

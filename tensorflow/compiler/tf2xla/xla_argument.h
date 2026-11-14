@@ -16,12 +16,23 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_TF2XLA_XLA_ARGUMENT_H_
 #define TENSORFLOW_COMPILER_TF2XLA_XLA_ARGUMENT_H_
 
+#include <cstdint>
+#include <optional>
+#include <set>
+#include <string>
+#include <variant>
+#include <vector>
+
+#include "absl/container/inlined_vector.h"
+#include "absl/status/statusor.h"
 #include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/host_compute_metadata.pb.h"
+#include "tensorflow/compiler/tf2xla/xla_argument.pb.h"
 #include "tensorflow/compiler/tf2xla/xla_resource.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/service/hlo_sharding.h"
+#include "xla/shape.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/util/managed_stack_trace.h"
 
 namespace tensorflow {
 
@@ -38,6 +49,9 @@ struct XlaArgument {
     // Argument is a Variable, TensorArray, or Stack resource. Has an
     // associated runtime parameter iff `initialized` is true.
     kResource,
+
+    // A resource variable with a constant value known at compile time.
+    kConstantResource,
 
     // Argument is a run-time parameter.
     kParameter,
@@ -66,17 +80,23 @@ struct XlaArgument {
   // * an initialized TensorArray or Stack resource: the shape of an entry in
   //   the TensorArray/Stack. Note this is the size of a single entry, not the
   //   XLA data structure that represents the complete stack/array.
-  absl::variant<TensorShape, xla::Shape> shape;
+  std::variant<std::monostate, TensorShape, xla::Shape> shape;
 
   // The value of the argument, if it is a compile-time constant. Must be a
   // host-memory tensor.
   Tensor constant_value;
 
+  // The upper bounds of the value.
+  std::optional<Tensor> value_bound;
+
+  // Indicates whether each value is dynamic or constant.
+  std::optional<Tensor> value_dynamism;
+
   // The name of this argument, used for debugging.
-  string name;
+  std::string name;
 
   // The name of TensorFlow _Arg node, used for debugging.
-  string node_name;
+  std::string node_name;
 
   // For a kResource, what kind of resource is it?
   XlaResource::Kind resource_kind = XlaResource::kInvalid;
@@ -89,16 +109,12 @@ struct XlaArgument {
 
   // For a TensorArray or Stack resource, what is the array's declared size?
   // (Used for lazy initialization.)
-  int64 max_array_size = -1;
+  int64_t max_array_size = -1;
 
   // TensorArray resource parameters are passed as (array, gradient array 0,
   // ..., gradient array k), where the gradient arrays are in the same order
   // as `tensor_array_gradients`.
-  std::set<string> tensor_array_gradients;
-
-  // dynamic dims to arg number map. Empty if no dynamic shapes.
-  std::map<int32, int32> dynamic_dim_to_arg_num_map;
-  bool is_pad_arg = false;
+  std::set<std::string> tensor_array_gradients;
 
   // Whether this argument will receive the same data across all replicas.
   bool is_same_data_across_replicas = false;
@@ -106,15 +122,29 @@ struct XlaArgument {
   bool operator==(const XlaArgument& other) const;
 
   // Returns a human-readable summary of the argument.
-  string HumanString() const;
+  std::string HumanString() const;
 
   // Returns the dimension sizes for either TensorShape or xla::Shape.
-  std::vector<int64> DimensionSizes() const;
-  absl::InlinedVector<int64, 4> DimensionSizesAsInlinedVector() const;
+  std::vector<int64_t> DimensionSizes() const;
+  absl::InlinedVector<int64_t, 4> DimensionSizesAsInlinedVector() const;
 
   // Returns the human-readable string for either TensorShape or xla::Shape.
-  string ShapeHumanString() const;
+  std::string ShapeHumanString() const;
+
+  // Whether to broadcast this parameter to all replicas before use.
+  // When true, xla_compiler should input/output alias this arg to prevent
+  // unnecessary HBM usage.
+  bool requires_broadcast = false;
+  std::optional<ManagedStackTrace> definition_stack_trace;
+
+  // Converts between proto and struct.
+  tf2xla::XlaArgumentProto ToProto() const;
+  static absl::StatusOr<XlaArgument> FromProto(
+      const tf2xla::XlaArgumentProto& proto);
 };
+
+// Returns true if any of `args` is an uninitialized resource variable.
+bool AnyUninitializedResourceArg(absl::Span<const XlaArgument> args);
 
 }  // end namespace tensorflow
 

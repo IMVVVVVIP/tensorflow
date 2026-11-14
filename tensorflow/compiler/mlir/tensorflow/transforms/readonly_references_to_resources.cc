@@ -13,19 +13,22 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <memory>
+
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Casting.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"  // from @llvm-project
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
-#include "mlir/IR/Function.h"  // from @llvm-project
-#include "mlir/IR/StandardTypes.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Types.h"  // from @llvm-project
 #include "mlir/IR/Value.h"  // from @llvm-project
 #include "mlir/Pass/Pass.h"  // from @llvm-project
+#include "mlir/Support/LLVM.h"  // from @llvm-project
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_ops.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/transforms/passes.h"
@@ -36,7 +39,11 @@ namespace {
 
 // Location attribute.
 constexpr StringRef kClassAttr = "_class";
+constexpr StringRef kSharedNameAttr = "shared_name";
 constexpr StringRef kLocationPrefix = "loc:@";
+
+#define GEN_PASS_DEF_CONVERTREADONLYREFERENCEVARIABLESTORESOURCEVARIABLESPASS
+#include "tensorflow/compiler/mlir/tensorflow/transforms/tf_passes.h.inc"
 
 // A pass that converts readonly reference variables to the corresponding
 // resource variables.
@@ -54,32 +61,41 @@ constexpr StringRef kLocationPrefix = "loc:@";
 // heuristic method that assumes that all the users of them is Identity op,
 // fed directly.
 class ConvertReadonlyReferenceVariablesToResourceVariablesPass
-    : public PassWrapper<
-          ConvertReadonlyReferenceVariablesToResourceVariablesPass,
-          FunctionPass> {
- public:
-  void runOnFunction() override;
+    : public impl::ConvertReadonlyReferenceVariablesToResourceVariablesPassBase<
+          ConvertReadonlyReferenceVariablesToResourceVariablesPass> {
+  void runOnOperation() override;
 };
 
-// Parse node name from "_class" attribute.
-StringRef GetNodeNameFromClassAttr(Operation *op) {
+// Parse node name from "_class" or "shared_name" attributes.
+StringRef GetNodeNameFromClassAttrOrSharedNameAttr(Operation *op) {
+  // Parse node name from the `shared_name` attribute first. The variable v2 op
+  // relies on the share name to look up from the TensorFlow's resource manager.
+  StringAttr shared_name_attr = op->getAttrOfType<StringAttr>(kSharedNameAttr);
+  if (shared_name_attr) {
+    auto shared_name = StringRef(shared_name_attr.getValue());
+    if (!shared_name.empty()) {
+      return shared_name;
+    }
+  }
+  // Attempt to parse "_class" attribute if there is no "shared_name"
+  // attribute.
   ArrayAttr classes_attr = op->getAttrOfType<ArrayAttr>(kClassAttr);
   if (!classes_attr) {
-    // Attampt to parse "_class" from the IdentityOp that follows VariableV2.
+    // Attempt to parse "_class" from the IdentityOp that follows VariableV2.
     // For read-only reference variables, IdentityOp should be the only user of
     // VariableV2.
     auto identity_op = op->getUsers().begin();
     classes_attr = identity_op->getAttrOfType<ArrayAttr>(kClassAttr);
     if (!classes_attr) {
-      op->emitOpError() << "has no '_class' attribute";
+      op->emitOpError() << "has no '_class' and 'shared_name' attributes";
       return StringRef();
     }
   }
 
   StringRef result;
   for (Attribute class_attr : classes_attr) {
-    StringRef node_name = class_attr.cast<StringAttr>().getValue();
-    if (!node_name.startswith(kLocationPrefix)) {
+    StringRef node_name = mlir::cast<StringAttr>(class_attr).getValue();
+    if (!node_name.starts_with(kLocationPrefix)) {
       continue;
     }
     if (!result.empty()) {
@@ -98,8 +114,9 @@ StringRef GetNodeNameFromClassAttr(Operation *op) {
   return result;
 }
 
-void ConvertReadonlyReferenceVariablesToResourceVariablesPass::runOnFunction() {
-  FuncOp func = getFunction();
+void ConvertReadonlyReferenceVariablesToResourceVariablesPass::
+    runOnOperation() {
+  func::FuncOp func = getOperation();
 
   OpBuilder builder(func.getContext());
   SmallVector<VariableV2Op, 4> variable_v2s_to_replace;
@@ -136,30 +153,33 @@ void ConvertReadonlyReferenceVariablesToResourceVariablesPass::runOnFunction() {
   for (VariableV2Op variable_v2_op : variable_v2s_to_replace) {
     builder.setInsertionPoint(variable_v2_op);
     ShapedType shaped_type =
-        variable_v2_op.getResult().getType().cast<ShapedType>();
-    TensorType tensor_type = DropRefType(shaped_type).cast<TensorType>();
-    StringAttr device_attr = variable_v2_op.getAttrOfType<StringAttr>("device");
+        mlir::cast<ShapedType>(variable_v2_op.getResult().getType());
+    TensorType tensor_type = mlir::cast<TensorType>(DropRefType(shaped_type));
+    StringAttr device_attr =
+        variable_v2_op->getAttrOfType<StringAttr>("device");
     if (!device_attr) device_attr = builder.getStringAttr("");
-    StringRef variable_name = GetNodeNameFromClassAttr(variable_v2_op);
+    StringRef variable_name =
+        GetNodeNameFromClassAttrOrSharedNameAttr(variable_v2_op);
     if (variable_name.empty()) {
       return signalPassFailure();
     }
-    VarHandleOp var_handle_op = builder.create<VarHandleOp>(
-        variable_v2_op.getLoc(),
+    VarHandleOp var_handle_op = VarHandleOp::create(
+        builder, variable_v2_op.getLoc(),
         ArrayRef<Type>{RankedTensorType::get(
             {}, TF::ResourceType::get(ArrayRef<TensorType>{tensor_type},
                                       builder.getContext()))},
         ArrayRef<Value>{},
         ArrayRef<NamedAttribute>{
             builder.getNamedAttr("device", device_attr),
-            builder.getNamedAttr("container", variable_v2_op.containerAttr()),
+            builder.getNamedAttr("container",
+                                 variable_v2_op.getContainerAttr()),
             builder.getNamedAttr("shared_name",
                                  builder.getStringAttr(variable_name))});
     for (Operation *user :
          make_early_inc_range(variable_v2_op.getResult().getUsers())) {
       builder.setInsertionPoint(user);
-      ReadVariableOp read_variable_op = builder.create<ReadVariableOp>(
-          user->getLoc(), ArrayRef<Type>{tensor_type},
+      ReadVariableOp read_variable_op = ReadVariableOp::create(
+          builder, user->getLoc(), ArrayRef<Type>{tensor_type},
           ArrayRef<Value>{var_handle_op});
       user->getResult(0).replaceAllUsesWith(read_variable_op.getResult());
       user->erase();
@@ -170,16 +190,11 @@ void ConvertReadonlyReferenceVariablesToResourceVariablesPass::runOnFunction() {
 
 }  // namespace
 
-std::unique_ptr<OperationPass<FuncOp>>
+std::unique_ptr<OperationPass<func::FuncOp>>
 CreateConvertReadonlyReferenceVariablesToResourceVariablesPass() {
   return std::make_unique<
       ConvertReadonlyReferenceVariablesToResourceVariablesPass>();
 }
-
-static PassRegistration<
-    ConvertReadonlyReferenceVariablesToResourceVariablesPass>
-    pass("tf-readonly-references-to-resources",
-         "Convert readonly reference variables to resource variables.");
 
 }  // namespace TF
 

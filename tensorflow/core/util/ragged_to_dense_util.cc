@@ -15,6 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/util/ragged_to_dense_util.h"
 
+#include <algorithm>
+#include <vector>
+
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -24,48 +27,20 @@ namespace tensorflow {
 
 using errors::InvalidArgument;
 
-string RowPartitionTypeToString(RowPartitionType row_partition_type) {
-  switch (row_partition_type) {
-    case RowPartitionType::FIRST_DIM_SIZE:
-      return "FIRST_DIM_SIZE";
-    case RowPartitionType::VALUE_ROWIDS:
-      return "VALUE_ROWIDS";
-    case RowPartitionType::ROW_LENGTHS:
-      return "ROW_LENGTHS";
-    case RowPartitionType::ROW_SPLITS:
-      return "ROW_SPLITS";
-    case RowPartitionType::ROW_LIMITS:
-      return "ROW_LIMITS";
-    case RowPartitionType::ROW_STARTS:
-      return "ROW_STARTS";
-    default:
-      return "UNKNOWN ROW PARTITION TYPE";
-  }
-}
-tensorflow::Status GetRowPartitionTypesHelper(
-    const std::vector<string>& row_partition_type_strings,
+absl::Status GetRowPartitionTypesHelper(
+    const std::vector<std::string>& row_partition_type_strings,
     std::vector<RowPartitionType>* row_partition_types) {
-  static const auto kStringToType =
-      new std::unordered_map<string, RowPartitionType>(
-          {{"FIRST_DIM_SIZE", RowPartitionType::FIRST_DIM_SIZE},
-           {"VALUE_ROWIDS", RowPartitionType::VALUE_ROWIDS},
-           {"ROW_LENGTHS", RowPartitionType::ROW_LENGTHS},
-           {"ROW_SPLITS", RowPartitionType::ROW_SPLITS},
-           {"ROW_LIMITS", RowPartitionType::ROW_LIMITS},
-           {"ROW_STARTS", RowPartitionType::ROW_STARTS}});
-
-  for (const string& type_str : row_partition_type_strings) {
-    const auto iter = kStringToType->find(type_str);
-    if (iter == kStringToType->end()) {
-      return InvalidArgument("Unknown string for partition info type: ",
-                             type_str);
-    }
-    row_partition_types->push_back(iter->second);
+  *row_partition_types = GetRowPartitionTypesHelper(row_partition_type_strings);
+  if (row_partition_types->size() != row_partition_type_strings.size()) {
+    // Something was not converted, return error status.
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Unknown string for partition info type: ",
+        row_partition_type_strings.at(row_partition_types->size())));
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
-tensorflow::Status CombineRaggedTensorToTensorShapes(
+absl::Status CombineRaggedTensorToTensorShapes(
     int ragged_rank, const TensorShapeProto& shape,
     const TensorShapeProto& value_shape, TensorShapeProto* output_shape) {
   // Test for consistency of value_shape and shape specified.
@@ -75,7 +50,7 @@ tensorflow::Status CombineRaggedTensorToTensorShapes(
   if (value_shape.unknown_rank() && shape.unknown_rank()) {
     output_shape->Clear();
     output_shape->set_unknown_rank(true);
-    return tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
   if (shape.unknown_rank()) {
@@ -87,15 +62,15 @@ tensorflow::Status CombineRaggedTensorToTensorShapes(
     *output_shape = shape;
   }
   if (value_shape.unknown_rank()) {
-    return tensorflow::Status::OK();
+    return absl::OkStatus();
   }
   // At this point, value_shape and output_shape have known ranks.
   if (ragged_rank + value_shape.dim_size() != output_shape->dim_size()) {
-    return InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "rt_input.shape and shape=", TensorShape::DebugString(shape),
         " are incompatible: rt_input.rank = ",
         ragged_rank + value_shape.dim_size(),
-        " but shape.rank = ", output_shape->dim_size());
+        " but shape.rank = ", output_shape->dim_size()));
   }
 
   for (int i = 1; i < value_shape.dim_size(); ++i) {
@@ -106,46 +81,36 @@ tensorflow::Status CombineRaggedTensorToTensorShapes(
     if (value_dim.size() >= 0) {
       if (output_shape_dim->size() >= 0) {
         if (output_shape_dim->size() != value_dim.size()) {
-          return InvalidArgument(
+          return absl::InvalidArgumentError(absl::StrCat(
               "rt_input.shape and shape=", TensorShape::DebugString(shape),
               " are incompatible: rt_input.shape[", i + ragged_rank,
               "] = ", value_dim.size(), " but shape[", i + ragged_rank,
-              "] = ", output_shape_dim->size());
+              "] = ", output_shape_dim->size()));
         }
       } else {
         output_shape_dim->set_size(value_dim.size());
       }
     }
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
-int GetRaggedRank(const std::vector<RowPartitionType>& row_partition_types) {
-  if (row_partition_types.empty()) {
-    return 0;
-  }
-  if (row_partition_types[0] == RowPartitionType::FIRST_DIM_SIZE) {
-    return row_partition_types.size() - 1;
-  }
-  return row_partition_types.size();
-}
-
-tensorflow::Status ValidateDefaultValueShape(
+absl::Status ValidateDefaultValueShape(
     const TensorShapeProto& default_value_shape,
     const TensorShapeProto& value_shape) {
   if (default_value_shape.unknown_rank() || value_shape.unknown_rank()) {
-    return tensorflow::Status::OK();
+    return absl::OkStatus();
   }
 
   int default_ndims = default_value_shape.dim_size();
   int values_ndims = value_shape.dim_size();
   if (default_ndims >= values_ndims) {
-    return InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "default_value.shape=", TensorShape::DebugString(default_value_shape),
         " and rt_input.flat_values.shape=",
         TensorShape::DebugString(value_shape),
         " are incompatible: default_value.rank = ", default_ndims,
-        "  must be less than rt_input.flat_values.rank = ", values_ndims);
+        "  must be less than rt_input.flat_values.rank = ", values_ndims));
   }
   for (int i = 0; i < std::min(default_ndims, values_ndims - 1); ++i) {
     int default_dim = default_value_shape.dim(i).size();
@@ -162,7 +127,7 @@ tensorflow::Status ValidateDefaultValueShape(
           i - default_value_shape.dim_size(), "] = ", value_dim);
     }
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

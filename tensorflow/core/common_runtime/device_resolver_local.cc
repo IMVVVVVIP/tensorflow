@@ -14,36 +14,36 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/common_runtime/device_resolver_local.h"
 
+#include "absl/status/status.h"
 #include "tensorflow/core/common_runtime/device_mgr.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 
-void DeviceResolverLocal::GetAllDeviceAttributesAsync(
-    const std::vector<string>& devices, const std::vector<string>& tasks,
-    std::vector<DeviceAttributes>* attributes, const StatusCallback& done) {
-  attributes->clear();
-  for (const string& device_name : devices) {
-    Device* dev;
-    Status s = dev_mgr_->LookupDevice(device_name, &dev);
-    if (!s.ok()) {
-      done(s);
-      return;
-    }
-    attributes->push_back(dev->attributes());
+absl::Status DeviceResolverLocal::GetDeviceAttributes(
+    const std::string& device, DeviceAttributes* attributes) {
+  Device* dev;
+  // LookupDevice returns InvalidArgument if the device is not found.
+  absl::Status s = dev_mgr_->LookupDevice(device, &dev);
+  if (absl::IsInvalidArgument(s)) {
+    return absl::NotFoundError(absl::StrCat(device, " not found"));
+  } else if (!s.ok()) {
+    return s;
   }
-  done(Status::OK());
+  *attributes = dev->attributes();
+  return absl::OkStatus();
 }
 
-void DeviceResolverLocal::GetDeviceAttributesAsync(const string& device,
-                                                   const string& task,
-                                                   DeviceAttributes* attributes,
-                                                   const StatusCallback& done) {
-  Device* dev;
-  Status s = dev_mgr_->LookupDevice(device, &dev);
-  if (s.ok()) {
-    *attributes = dev->attributes();
-  }
-  done(s);
+absl::Status DeviceResolverLocal::GetAllDeviceAttributes(
+    const std::string& task, std::vector<DeviceAttributes>* attributes) {
+  return absl::InternalError(
+      "GetTaskCached is not supposed to be called in local collectives");
+}
+
+absl::Status DeviceResolverLocal::UpdateDeviceAttributes(
+    const std::vector<DeviceAttributes>& attributes) {
+  return absl::InternalError(
+      "UpdateDeviceAttributes shouldn't be called with local collectives");
 }
 
 }  // namespace tensorflow

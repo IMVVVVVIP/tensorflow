@@ -12,15 +12,20 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "xla/tsl/platform/errors.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/kernels/ragged_utils.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/fingerprint.h"
 #include "tensorflow/core/util/util.h"
 #include "tensorflow/core/util/work_sharder.h"
@@ -44,13 +49,13 @@ namespace {
 class FeatureReader {
  public:
   // Returns the number of feature values in the specified batch.
-  virtual int64 FeatureCount(int64 batch) const = 0;
+  virtual int64_t FeatureCount(int64_t batch) const = 0;
 
   // Copies the value for the specified feature to `out`.
-  virtual void ReadValue(int64 batch, int64 n, uint64* out) const = 0;
-  virtual void ReadValue(int64 batch, int64 n, tstring* out) const = 0;
+  virtual void ReadValue(int64_t batch, int64_t n, uint64_t* out) const = 0;
+  virtual void ReadValue(int64_t batch, int64_t n, tstring* out) const = 0;
 
-  virtual ~FeatureReader() {}
+  virtual ~FeatureReader() = default;
 };
 
 using FeatureReaders = std::vector<std::unique_ptr<FeatureReader>>;
@@ -63,13 +68,13 @@ void CopyToString(const tstring& src, tstring* dst) {
     dst->assign_as_view(src);
   }
 }
-void CopyToString(int64 src, tstring* dst) { *dst = std::to_string(src); }
+void CopyToString(int64_t src, tstring* dst) { *dst = std::to_string(src); }
 
 // Copies a feature value `src` to an int64 fingerprint `dst`.
-void CopyToFingerprint(const tstring& feature, uint64* dst) {
+void CopyToFingerprint(const tstring& feature, uint64_t* dst) {
   *dst = Fingerprint64(feature);
 }
-void CopyToFingerprint(int64 feature, uint64* dst) { *dst = feature; }
+void CopyToFingerprint(int64_t feature, uint64_t* dst) { *dst = feature; }
 
 // A FeatureReader that is backed by a ragged tensor.
 template <typename ValuesType, typename SplitsType>
@@ -79,15 +84,15 @@ class RaggedFeatureReader : public FeatureReader {
       : values_(values.flat<ValuesType>()),
         row_splits_(row_splits.flat<SplitsType>()) {}
 
-  int64 FeatureCount(int64 batch) const override {
+  int64_t FeatureCount(int64_t batch) const override {
     return row_splits_(batch + 1) - row_splits_(batch);
   }
 
-  void ReadValue(int64 batch, int64 n, uint64* out) const override {
+  void ReadValue(int64_t batch, int64_t n, uint64_t* out) const override {
     CopyToFingerprint(values_(row_splits_(batch) + n), out);
   }
 
-  void ReadValue(int64 batch, int64 n, tstring* out) const override {
+  void ReadValue(int64_t batch, int64_t n, tstring* out) const override {
     CopyToString(values_(row_splits_(batch) + n), out);
   }
 
@@ -104,19 +109,19 @@ class DenseFeatureReader : public FeatureReader {
       : values_(tensor.matrix<ValuesType>()),
         feature_count_(tensor.dim_size(1)) {}
 
-  int64 FeatureCount(int64 batch) const override { return feature_count_; }
+  int64_t FeatureCount(int64_t batch) const override { return feature_count_; }
 
-  void ReadValue(int64 batch, int64 n, uint64* out) const override {
+  void ReadValue(int64_t batch, int64_t n, uint64_t* out) const override {
     CopyToFingerprint(values_(batch, n), out);
   }
 
-  void ReadValue(int64 batch, int64 n, tstring* out) const override {
+  void ReadValue(int64_t batch, int64_t n, tstring* out) const override {
     CopyToString(values_(batch, n), out);
   }
 
  private:
   const typename TTypes<ValuesType>::ConstMatrix values_;
-  const int64 feature_count_;
+  const int64_t feature_count_;
 };
 
 // A FeatureReader that is backed by a sparse tensor.
@@ -124,34 +129,34 @@ template <typename ValuesType>
 class SparseFeatureReader : public FeatureReader {
  public:
   SparseFeatureReader(const Tensor& indices_t, const Tensor& values_t,
-                      int64 batch_size)
+                      int64_t batch_size)
       : values_(values_t.flat<ValuesType>()) {
     row_splits_.reserve(batch_size + 1);
     row_splits_.push_back(0);
-    auto indices = indices_t.matrix<int64>();
-    int64 num_values = values_.size();
-    int64 i = 0;  // value index
+    auto indices = indices_t.matrix<int64_t>();
+    int64_t num_values = values_.size();
+    int64_t i = 0;  // value index
     for (int row = 0; row < batch_size; row++) {
       while (i < num_values && indices(i, 0) <= row) ++i;
       row_splits_.push_back(i);
     }
   }
 
-  int64 FeatureCount(int64 batch) const override {
+  int64_t FeatureCount(int64_t batch) const override {
     return row_splits_[batch + 1] - row_splits_[batch];
   }
 
-  void ReadValue(int64 batch, int64 n, uint64* out) const override {
+  void ReadValue(int64_t batch, int64_t n, uint64_t* out) const override {
     CopyToFingerprint(values_(row_splits_[batch] + n), out);
   }
 
-  void ReadValue(int64 batch, int64 n, tstring* out) const override {
+  void ReadValue(int64_t batch, int64_t n, tstring* out) const override {
     CopyToString(values_(row_splits_[batch] + n), out);
   }
 
  private:
   const typename TTypes<ValuesType>::ConstFlat values_;
-  std::vector<int64> row_splits_;
+  std::vector<int64_t> row_splits_;
 };
 
 //==============================================================================
@@ -164,8 +169,8 @@ class SparseFeatureReader : public FeatureReader {
 //   * OutputWriterImpl<int64, SplitsType> (for tf.ragged.cross_hashed)
 class OutputWriter {
  public:
-  virtual void WriteOutputSlice(int64 begin, int64 end) = 0;
-  virtual ~OutputWriter() {}
+  virtual void WriteOutputSlice(int64_t begin, int64_t end) = 0;
+  virtual ~OutputWriter() = default;
 };
 
 template <typename ValuesType, typename SplitsType>
@@ -174,8 +179,8 @@ class OutputWriterImpl : public OutputWriter {
   using FlatValues = typename TTypes<ValuesType>::Flat;
   using FlatSplits = typename TTypes<SplitsType>::ConstFlat;
 
-  OutputWriterImpl(const FeatureReaders& features, int64 num_buckets,
-                   uint64 hash_key, const Tensor* splits_out,
+  OutputWriterImpl(const FeatureReaders& features, int64_t num_buckets,
+                   uint64_t hash_key, const Tensor* splits_out,
                    Tensor* values_out)
       : features_(features),
         num_buckets_(num_buckets),
@@ -185,26 +190,27 @@ class OutputWriterImpl : public OutputWriter {
 
   // Reads features from the specified slice of batch indices, computes
   // feature crosses for each one, and writes them to values_out_.
-  void WriteOutputSlice(int64 begin, int64 end) override {
-    std::vector<int> combination(features_.size(), 0);
-    for (int64 b = begin; b < end; ++b) {
+  void WriteOutputSlice(int64_t begin, int64_t end) override {
+    std::vector<int64_t> combination(features_.size(), 0);
+    for (int64_t b = begin; b < end; ++b) {
       auto row_start = splits_out_(b);
       auto row_limit = splits_out_(b + 1);
       for (auto i = row_start; i < row_limit; ++i) {
         WriteCombination(b, combination, &values_out_(i));
         NextCombination(b, &combination);
       }
-      combination.assign(features_.size(), 0);  // reset for next batch.
+      combination.assign(features_.size(),
+                         int64_t{0});  // reset for next batch.
     }
   }
 
  private:
   // Joins the specified combination of input features into a single string,
   // and writes it to *out.
-  void WriteCombination(int64 batch_index, const std::vector<int>& combination,
-                        tstring* out) {
+  void WriteCombination(int64_t batch_index,
+                        const std::vector<int64_t>& combination, tstring* out) {
     static const auto k_feature_separator = "_X_";
-    gtl::InlinedVector<tstring, 6> cross_vec(features_.size());
+    absl::InlinedVector<tstring, 6> cross_vec(features_.size());
     for (int i = 0; i < combination.size(); ++i) {
       features_[i]->ReadValue(batch_index, combination[i], &cross_vec[i]);
     }
@@ -213,12 +219,12 @@ class OutputWriterImpl : public OutputWriter {
 
   // Joins the specified combination of input features into a single
   // fingerprint, and writes it to *out.
-  void WriteCombination(int64 batch_index, const std::vector<int>& combination,
-                        int64* out) {
+  void WriteCombination(int64_t batch_index,
+                        const std::vector<int64_t>& combination, int64_t* out) {
     // Do the fingerprint concatenation on uint64.
-    uint64 hashed_output = hash_key_;
+    uint64_t hashed_output = hash_key_;
     for (size_t i = 0; i < combination.size(); ++i) {
-      uint64 hash_i;
+      uint64_t hash_i;
       features_[i]->ReadValue(batch_index, combination[i], &hash_i);
       hashed_output = FingerprintCat64(hashed_output, hash_i);
     }
@@ -227,12 +233,13 @@ class OutputWriterImpl : public OutputWriter {
       *out = hashed_output % num_buckets_;
     } else {
       // To prevent negative output we take modulo to max int64.
-      *out = hashed_output % std::numeric_limits<int64>::max();
+      *out = hashed_output % std::numeric_limits<int64_t>::max();
     }
   }
 
   // Updates `combination` to the next combination of input features.
-  void NextCombination(int64 batch_index, std::vector<int>* combination) const {
+  void NextCombination(int64_t batch_index,
+                       std::vector<int64_t>* combination) const {
     bool carry = true;
     for (int i = combination->size() - 1; i >= 0; i--) {
       if (carry) {
@@ -248,8 +255,8 @@ class OutputWriterImpl : public OutputWriter {
   }
 
   const FeatureReaders& features_;
-  const int64 num_buckets_;
-  const uint64 hash_key_;
+  const int64_t num_buckets_;
+  const uint64_t hash_key_;
   FlatSplits splits_out_;
   FlatValues values_out_;
 };
@@ -257,24 +264,24 @@ class OutputWriterImpl : public OutputWriter {
 // Returns an appropriate OutputWriter, based on the dtypes of the
 // given tensors.
 std::unique_ptr<OutputWriter> MakeOutputWriter(const FeatureReaders& features,
-                                               int64 num_buckets,
-                                               uint64 hash_key,
+                                               int64_t num_buckets,
+                                               uint64_t hash_key,
                                                const Tensor* splits_out,
                                                Tensor* values_out) {
   if (values_out->dtype() == DT_INT64) {
     if (splits_out->dtype() == DT_INT64) {
-      return std::make_unique<OutputWriterImpl<int64, int64>>(
+      return std::make_unique<OutputWriterImpl<int64_t, int64_t>>(
           features, num_buckets, hash_key, splits_out, values_out);
     } else {
-      return std::make_unique<OutputWriterImpl<int64, int32>>(
+      return std::make_unique<OutputWriterImpl<int64_t, int32_t>>(
           features, num_buckets, hash_key, splits_out, values_out);
     }
   } else {
     if (splits_out->dtype() == DT_INT64) {
-      return std::make_unique<OutputWriterImpl<tstring, int64>>(
+      return std::make_unique<OutputWriterImpl<tstring, int64_t>>(
           features, num_buckets, hash_key, splits_out, values_out);
     } else {
-      return std::make_unique<OutputWriterImpl<tstring, int32>>(
+      return std::make_unique<OutputWriterImpl<tstring, int32_t>>(
           features, num_buckets, hash_key, splits_out, values_out);
     }
   }
@@ -291,9 +298,9 @@ class RaggedCrossOp : public OpKernel {
     OP_REQUIRES_OK(context, context->GetAttr("num_buckets", &num_buckets_));
     // Read signed_hash_key_ as int64 since uint64 attributes are not
     // supported by REGISTER_OP.
-    int64 signed_hash_key_;
+    int64_t signed_hash_key_;
     OP_REQUIRES_OK(context, context->GetAttr("hash_key", &signed_hash_key_));
-    hash_key_ = static_cast<uint64>(signed_hash_key_);
+    hash_key_ = static_cast<uint64_t>(signed_hash_key_);
 
     int num_sparse;
     OP_REQUIRES_OK(context, context->GetAttr("Nsparse", &num_sparse));
@@ -308,16 +315,16 @@ class RaggedCrossOp : public OpKernel {
     OP_REQUIRES_OK(context, context->GetAttr("input_order", &input_order_));
     OP_REQUIRES(context,
                 ragged_values_types_.size() == ragged_splits_types_.size(),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(
                     "ragged values and splits must have the same length"));
     OP_REQUIRES(context, num_sparse == sparse_values_types_.size(),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(
                     "sparse indices and values must have the same length"));
     OP_REQUIRES(context,
                 ragged_values_types_.size() + sparse_values_types_.size() +
                         dense_types_.size() ==
                     input_order_.size(),
-                errors::InvalidArgument("Invalid length for input_order"));
+                absl::InvalidArgumentError("Invalid length for input_order"));
   }
 
   void Compute(OpKernelContext* context) override {
@@ -343,7 +350,7 @@ class RaggedCrossOp : public OpKernel {
                                  sparse_indices_list, sparse_values_list,
                                  sparse_shape_list, dense_list));
 
-    int64 batch_size =
+    int64_t batch_size =
         CalculateBatchSize(ragged_splits_list, sparse_shape_list, dense_list);
 
     FeatureReaders features;
@@ -360,7 +367,7 @@ class RaggedCrossOp : public OpKernel {
     std::unique_ptr<OutputWriter> output_writer = MakeOutputWriter(
         features, num_buckets_, hash_key_, row_splits_out, values_out);
 
-    auto do_work = [&output_writer](int64 begin, int64 end) {
+    auto do_work = [&output_writer](int64_t begin, int64_t end) {
       output_writer->WriteOutputSlice(begin, end);
     };
 
@@ -373,92 +380,122 @@ class RaggedCrossOp : public OpKernel {
 
  private:
   // Validates input tensors.
-  Status ValidateInput(const OpInputList& ragged_values_list,
-                       const OpInputList& ragged_splits_list,
-                       const OpInputList& sparse_indices_list,
-                       const OpInputList& sparse_values_list,
-                       const OpInputList& sparse_shape_list,
-                       const OpInputList& dense_list) {
+  absl::Status ValidateInput(const OpInputList& ragged_values_list,
+                             const OpInputList& ragged_splits_list,
+                             const OpInputList& sparse_indices_list,
+                             const OpInputList& sparse_values_list,
+                             const OpInputList& sparse_shape_list,
+                             const OpInputList& dense_list) {
     const auto num_ragged = ragged_values_list.size();
     const auto num_sparse = sparse_indices_list.size();
 
     // Validate tensor shapes.
     for (int i = 0; i < num_ragged; ++i) {
-      if (!TensorShapeUtils::IsVector(ragged_values_list[i].shape())) {
-        return errors::InvalidArgument(
+      if (!TensorShapeUtils::IsVector(ragged_values_list[i].shape()) ||
+          !TensorShapeUtils::IsVector(ragged_splits_list[i].shape())) {
+        return absl::InvalidArgumentError(
             "tf.ragged.cross only supports inputs with rank=2.");
       }
-      if (!TensorShapeUtils::IsVector(ragged_splits_list[i].shape()) ||
-          (ragged_splits_list[i].NumElements() == 0)) {
-        return errors::InvalidArgument("Invalid RaggedTensor");
+
+      int64_t num_values = ragged_values_list[i].NumElements();
+      if (ragged_splits_list[i].dtype() == DT_INT32) {
+        TF_RETURN_IF_ERROR(RaggedTensorVerifySplits<int32_t>(
+            ragged_splits_list[i], true, num_values));
+      } else if (ragged_splits_list[i].dtype() == DT_INT64) {
+        TF_RETURN_IF_ERROR(RaggedTensorVerifySplits<int64_t>(
+            ragged_splits_list[i], true, num_values));
+      } else {
+        return absl::InvalidArgumentError(
+            "ragged_splits must have type int32 or int64.");
       }
     }
     for (int i = 0; i < num_sparse; ++i) {
       if (!TensorShapeUtils::IsMatrix(sparse_indices_list[i].shape()) ||
           !TensorShapeUtils::IsVector(sparse_values_list[i].shape()) ||
           !TensorShapeUtils::IsVector(sparse_shape_list[i].shape())) {
-        return errors::InvalidArgument("Invalid SparseTensor ", i);
+        return absl::InvalidArgumentError(
+            absl::StrCat("Invalid SparseTensor ", i));
       }
       if (sparse_shape_list[i].NumElements() != 2) {
-        return errors::InvalidArgument(
+        return absl::InvalidArgumentError(
             "tf.ragged.cross only supports inputs with rank=2.");
+      }
+      if (sparse_indices_list[i].shape().dim_size(1) != 2) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Expected sparse indices to have 2 columns, got ",
+            sparse_indices_list[i].shape().dim_size(1), " at position ", i));
+      }
+      // sparse_shape_list[i].NumElements() == 2 is verified above.
+      auto shape_vec = sparse_shape_list[i].flat<int64_t>();
+      if (shape_vec(0) < 0 || shape_vec(1) < 0) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Sparse shape dimensions must be non-negative, got [", shape_vec(0),
+            ", ", shape_vec(1), "] at position ", i));
+      }
+      if (sparse_indices_list[i].shape().dim_size(0) !=
+          sparse_values_list[i].shape().dim_size(0)) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Expected size of values to be ",
+            sparse_indices_list[i].shape().dim_size(0), " got ",
+            sparse_values_list[i].shape().dim_size(0), " at position ", i));
       }
     }
     for (int i = 0; i < dense_list.size(); ++i) {
       if (!TensorShapeUtils::IsMatrix(dense_list[i].shape())) {
-        return errors::InvalidArgument(
+        return absl::InvalidArgumentError(
             "tf.ragged.cross only supports inputs with rank=2.");
       }
     }
 
     // Check that batch sizes are consistent.
-    int64 batch_size =
+    int64_t batch_size =
         CalculateBatchSize(ragged_splits_list, sparse_shape_list, dense_list);
     for (int i = 0; i < num_ragged; ++i) {
       if (ragged_splits_list[i].NumElements() - 1 != batch_size) {
-        return errors::InvalidArgument(
+        return absl::InvalidArgumentError(
             "inputs must all have the same batch dimension size.");
       }
     }
     for (int i = 0; i < num_sparse; ++i) {
-      if (sparse_shape_list[i].flat<int64>()(0) != batch_size) {
-        return errors::InvalidArgument(
+      if (sparse_shape_list[i].flat<int64_t>()(0) != batch_size) {
+        return absl::InvalidArgumentError(
             "inputs must all have the same batch dimension size.");
       }
     }
     for (int i = 0; i < dense_list.size(); ++i) {
       if (dense_list[i].dim_size(0) != batch_size) {
-        return errors::InvalidArgument(
+        return absl::InvalidArgumentError(
             "inputs must all have the same batch dimension size.");
       }
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Calculate the batch size from any input tensor.  (We check that all input
   // tensors have the same batch size in `ValidateInput`).
-  int64 CalculateBatchSize(const OpInputList& ragged_splits_list,
-                           const OpInputList& sparse_shape_list,
-                           const OpInputList& dense_list) {
+  int64_t CalculateBatchSize(const OpInputList& ragged_splits_list,
+                             const OpInputList& sparse_shape_list,
+                             const OpInputList& dense_list) {
     if (ragged_splits_list.size() > 0) {
       return ragged_splits_list[0].NumElements() - 1;
     } else if (dense_list.size() > 0) {
       return dense_list[0].dim_size(0);
     } else if (sparse_shape_list.size() > 0) {
-      return sparse_shape_list[0].flat<int64>()(0);
+      return sparse_shape_list[0].flat<int64_t>()(0);
     } else {
       return 0;
     }
   }
 
   // Build a feature reader for each input tensor, and store them in `features`.
-  Status BuildFeatureReaders(const OpInputList& ragged_values_list,
-                             const OpInputList& ragged_splits_list,
-                             const OpInputList& sparse_indices_list,
-                             const OpInputList& sparse_values_list,
-                             const OpInputList& dense_list, int64 batch_size,
-                             FeatureReaders* features) {
+  absl::Status BuildFeatureReaders(const OpInputList& ragged_values_list,
+                                   const OpInputList& ragged_splits_list,
+                                   const OpInputList& sparse_indices_list,
+                                   const OpInputList& sparse_values_list,
+                                   const OpInputList& dense_list,
+                                   int64_t batch_size,
+                                   FeatureReaders* features) {
     features->reserve(input_order_.size());
 
     int next_ragged = 0;
@@ -466,105 +503,151 @@ class RaggedCrossOp : public OpKernel {
     int next_dense = 0;
     for (char c : input_order_) {
       if (c == 'R') {
+        if (next_ragged >= ragged_values_list.size())
+          return absl::InvalidArgumentError(absl::StrCat(
+              "input_order \"", input_order_,
+              "\" specifies reading a ragged tensor value at index ",
+              next_ragged, " from a list of ", ragged_values_list.size(),
+              " values."));
+        if (next_ragged >= ragged_splits_list.size())
+          return absl::InvalidArgumentError(absl::StrCat(
+              "input_order \"", input_order_,
+              "\" specifies reading a ragged tensor split at index ",
+              next_ragged, " from a list of ", ragged_splits_list.size(),
+              " splits."));
         TF_RETURN_IF_ERROR(BuildRaggedFeatureReader(
             ragged_values_list[next_ragged], ragged_splits_list[next_ragged],
             features));
         next_ragged++;
       } else if (c == 'S') {
+        if (next_sparse >= sparse_values_list.size())
+          return absl::InvalidArgumentError(absl::StrCat(
+              "input_order \"", input_order_,
+              "\" specifies reading a sparse tensor value at index ",
+              next_sparse, " from a list of ", sparse_values_list.size(),
+              " values."));
+        if (next_sparse >= sparse_indices_list.size())
+          return absl::InvalidArgumentError(absl::StrCat(
+              "input_order \"", input_order_,
+              "\" specifies reading a sparse tensor index at index ",
+              next_sparse, " from a list of ", sparse_indices_list.size(),
+              " indices."));
         TF_RETURN_IF_ERROR(BuildSparseFeatureReader(
             sparse_indices_list[next_sparse], sparse_values_list[next_sparse],
             batch_size, features));
         next_sparse++;
       } else if (c == 'D') {
+        if (next_dense >= dense_list.size())
+          return absl::InvalidArgumentError(absl::StrCat(
+              "input_order \"", input_order_,
+              "\" specifies reading a dense tensor at index ", next_dense,
+              " from a list of ", dense_list.size(), " tensors."));
         TF_RETURN_IF_ERROR(
             BuildDenseFeatureReader(dense_list[next_dense++], features));
       } else {
-        return errors::InvalidArgument("Unexpected input_order value.");
+        return absl::InvalidArgumentError("Unexpected input_order value.");
       }
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Builds a RaggedReatureReader
-  static Status BuildRaggedFeatureReader(const Tensor& values,
-                                         const Tensor& splits,
-                                         FeatureReaders* features) {
+  static absl::Status BuildRaggedFeatureReader(const Tensor& values,
+                                               const Tensor& splits,
+                                               FeatureReaders* features) {
     if (values.dtype() != DT_INT64 && values.dtype() != DT_STRING) {
-      return errors::InvalidArgument("Unexpected dtype for input ",
-                                     (features->size() + 1), ": ",
-                                     values.dtype());
+      return absl::InvalidArgumentError(
+          absl::StrCat("Unexpected dtype for input ", features->size() + 1,
+                       ": ", values.dtype()));
     }
     if (splits.dtype() != DT_INT64 && splits.dtype() != DT_INT32) {
-      return errors::InvalidArgument("Unexpected row_splits.dtype for input ",
-                                     (features->size() + 1), ": ",
-                                     values.dtype());
+      return absl::InvalidArgumentError(
+          absl::StrCat("Unexpected row_splits.dtype for input ",
+                       features->size() + 1, ": ", values.dtype()));
     }
     if (values.dtype() == DT_INT64) {
       if (splits.dtype() == DT_INT64) {
         features->emplace_back(
-            new RaggedFeatureReader<int64, int64>(values, splits));
+            new RaggedFeatureReader<int64_t, int64_t>(values, splits));
       } else {
         features->emplace_back(
-            new RaggedFeatureReader<int64, int32>(values, splits));
+            new RaggedFeatureReader<int64_t, int32_t>(values, splits));
       }
     } else {
       if (splits.dtype() == DT_INT64) {
         features->emplace_back(
-            new RaggedFeatureReader<tstring, int64>(values, splits));
+            new RaggedFeatureReader<tstring, int64_t>(values, splits));
       } else {
         features->emplace_back(
-            new RaggedFeatureReader<tstring, int32>(values, splits));
+            new RaggedFeatureReader<tstring, int32_t>(values, splits));
       }
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Builds a DenseFaggedReatureReader.
-  static Status BuildDenseFeatureReader(const Tensor& values,
-                                        FeatureReaders* features) {
+  static absl::Status BuildDenseFeatureReader(const Tensor& values,
+                                              FeatureReaders* features) {
     if (values.dtype() == DT_INT64) {
-      features->emplace_back(new DenseFeatureReader<int64>(values));
+      features->emplace_back(new DenseFeatureReader<int64_t>(values));
     } else if (values.dtype() == DT_STRING) {
       features->emplace_back(new DenseFeatureReader<tstring>(values));
     } else {
-      return errors::InvalidArgument("Unexpected dtype for input ",
-                                     (features->size() + 1), ": ",
-                                     values.dtype());
+      return absl::InvalidArgumentError(
+          absl::StrCat("Unexpected dtype for input ", features->size() + 1,
+                       ": ", values.dtype()));
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Builds a SparseFaggedReatureReader.
-  static Status BuildSparseFeatureReader(const Tensor& indices,
-                                         const Tensor& values, int64 batch_size,
-                                         FeatureReaders* features) {
+  static absl::Status BuildSparseFeatureReader(const Tensor& indices,
+                                               const Tensor& values,
+                                               int64_t batch_size,
+                                               FeatureReaders* features) {
     if (values.dtype() == DT_INT64) {
       features->emplace_back(
-          new SparseFeatureReader<int64>(indices, values, batch_size));
+          new SparseFeatureReader<int64_t>(indices, values, batch_size));
     } else if (values.dtype() == DT_STRING) {
       features->emplace_back(
           new SparseFeatureReader<tstring>(indices, values, batch_size));
     } else {
-      return errors::InvalidArgument("Unexpected dtype for input ",
-                                     (features->size() + 1), ": ",
-                                     values.dtype());
+      return absl::InvalidArgumentError(
+          absl::StrCat("Unexpected dtype for input ", features->size() + 1,
+                       ": ", values.dtype()));
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Allocates output tensors with proper size, and populates row_splits_out.
-  Status BuildOutputTensors(const FeatureReaders& features, int64 batch_size,
-                            OpKernelContext* context, Tensor** values_out,
-                            Tensor** row_splits_out) {
+  absl::Status BuildOutputTensors(const FeatureReaders& features,
+                                  int64_t batch_size, OpKernelContext* context,
+                                  Tensor** values_out,
+                                  Tensor** row_splits_out) {
     // Allocate and populate the row_splits output tensor.
     TF_RETURN_IF_ERROR(context->allocate_output(
         1, TensorShape({batch_size + 1}), row_splits_out));
     auto flat_row_splits = (*row_splits_out)->flat<SplitsType>();
-    int64 cross_count_total = 0;
+    int64_t cross_count_total = 0;
     flat_row_splits(0) = 0;
-    for (int64 b = 0; b < batch_size; b++) {
-      cross_count_total += CrossCountByBatchIndex(features, b);
+    const int64_t kMaxCrossCountTotal =
+        std::min(static_cast<int64_t>(std::numeric_limits<SplitsType>::max()),
+                 std::numeric_limits<int64_t>::max() / 2);
+    for (int64_t b = 0; b < batch_size; b++) {
+      int64_t cross_count_by_batch_index = CrossCountByBatchIndex(features, b);
+      if (cross_count_by_batch_index < 0) {
+        return absl::InvalidArgumentError(
+            "RaggedCross: feature count is negative or the Cartesian product "
+            "of all feature counts exceeds the maximum supported value.");
+      }
+      if (cross_count_by_batch_index >
+          kMaxCrossCountTotal - cross_count_total) {
+        return absl::InvalidArgumentError(
+            "RaggedCross: the total number of crosses across all batches "
+            "exceeds the maximum supported value.");
+      }
+      cross_count_total += cross_count_by_batch_index;
       flat_row_splits(b + 1) = cross_count_total;
     }
 
@@ -572,23 +655,29 @@ class RaggedCrossOp : public OpKernel {
     TF_RETURN_IF_ERROR(context->allocate_output(
         0, TensorShape({cross_count_total}), values_out));
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  // Returns number of crosses for a given batch_index
-  int64 CrossCountByBatchIndex(const FeatureReaders& features,
-                               int batch_index) {
-    int64 cross_count = 1;
+  // Returns number of crosses for a given batch_index, or -1 on overflow /
+  // invalid input.
+  int64_t CrossCountByBatchIndex(const FeatureReaders& features,
+                                 int64_t batch_index) {
+    const int64_t kMaxCrossCount =
+        std::min(static_cast<int64_t>(std::numeric_limits<SplitsType>::max()),
+                 std::numeric_limits<int64_t>::max() / 2);
+    int64_t cross_count = 1;
     for (int i = 0; i < features.size(); ++i) {
       const auto feature_count = features[i]->FeatureCount(batch_index);
+      if (feature_count < 0) return -1;
       if (feature_count == 0) return 0;
+      if (cross_count > kMaxCrossCount / feature_count) return -1;
       cross_count *= feature_count;
     }
     return cross_count;
   }
 
-  int64 num_buckets_;
-  uint64 hash_key_;
+  int64_t num_buckets_;
+  uint64_t hash_key_;
   std::vector<DataType> ragged_values_types_;
   std::vector<DataType> ragged_splits_types_;
   std::vector<DataType> sparse_values_types_;
@@ -598,12 +687,12 @@ class RaggedCrossOp : public OpKernel {
 
 REGISTER_KERNEL_BUILDER(Name("RaggedCross")
                             .Device(DEVICE_CPU)
-                            .TypeConstraint<int32>("out_row_splits_type"),
-                        RaggedCrossOp<int32>);
+                            .TypeConstraint<int32_t>("out_row_splits_type"),
+                        RaggedCrossOp<int32_t>);
 REGISTER_KERNEL_BUILDER(Name("RaggedCross")
                             .Device(DEVICE_CPU)
-                            .TypeConstraint<int64>("out_row_splits_type"),
-                        RaggedCrossOp<int64>);
+                            .TypeConstraint<int64_t>("out_row_splits_type"),
+                        RaggedCrossOp<int64_t>);
 
 }  // namespace
 }  // namespace tensorflow

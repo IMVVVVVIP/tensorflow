@@ -32,11 +32,11 @@ struct RegistrationInfo {
   // what is effectively a static instance of the collective implementation.
   // During param resolution of collective ops we return this static instance.
   // The actual op execution gets a fresh instance using `factory`.
-  RegistrationInfo(const string& n, CollectiveRegistry::Factory f)
+  RegistrationInfo(const std::string& n, CollectiveRegistry::Factory f)
       : name(n),
         factory(std::move(f)),
         param_resolver_instance(this->factory()) {}
-  string name;
+  std::string name;
   CollectiveRegistry::Factory factory;
   CollectiveImplementationInterface* param_resolver_instance;
 };
@@ -48,16 +48,25 @@ std::vector<RegistrationInfo>* MutableCollectiveRegistry() {
 }
 }  // namespace
 
-string CollGroupRuntimeDetails::ToString() const {
-  return strings::StrCat("CollGroupRuntimeDetails {communicator_key=",
-                         absl::CEscape(communicator_key), "}");
+std::string CollGroupRuntimeDetails::ToString() const {
+  return absl::StrCat("CollGroupRuntimeDetails {communicator_key=",
+                      absl::CEscape(communicator_key), "}");
 }
 
-string CollGroupParams::ToString() const {
-  return strings::StrCat(
+std::string CollGroupParams::ToString() const {
+  std::string v = strings::StrCat(
       "CollGroupParams {group_key=", group_key, " group_size=", group_size,
       " device_type=", device_type.type_string(), " num_tasks=", num_tasks,
-      " runtime_details=", runtime_details.ToString(), "}");
+      " runtime_details=", runtime_details.ToString(), " devices {");
+  for (const auto& m : members) {
+    absl::StrAppend(&v, m.device.name(), ",");
+  }
+  absl::StrAppend(&v, "} num_devices_per_task={");
+  for (const auto& dpt : num_devices_per_task) {
+    absl::StrAppend(&v, dpt.first, ": ", dpt.second, ", ");
+  }
+  absl::StrAppend(&v, "}");
+  return v;
 }
 
 CollInstanceParams& CollInstanceParams::operator=(
@@ -67,12 +76,6 @@ CollInstanceParams& CollInstanceParams::operator=(
     type = other.type;
     data_type = other.data_type;
     shape = other.shape;
-    device_names.clear();
-    device_names.assign(other.device_names.begin(), other.device_names.end());
-    task_names.assign(other.task_names.begin(), other.task_names.end());
-    same_num_devices_per_task = other.same_num_devices_per_task;
-    num_devices_per_task = other.num_devices_per_task;
-    gpu_ring_order = other.gpu_ring_order;
     impl_details.subdiv_offsets.assign(
         other.impl_details.subdiv_offsets.begin(),
         other.impl_details.subdiv_offsets.end());
@@ -85,71 +88,63 @@ CollInstanceParams& CollInstanceParams::operator=(
         other.impl_details.subdiv_source_rank.begin(),
         other.impl_details.subdiv_source_rank.end());
     impl_details.dependencies = other.impl_details.dependencies;
+    devices.assign(other.devices.begin(), other.devices.end());
+    permutation.assign(other.permutation.begin(), other.permutation.end());
   }
   return *this;
 }
 
-string CollInstanceParams::ToString() const {
-  string v =
+std::string CollInstanceParams::ToString() const {
+  std::string v =
       strings::StrCat("CollInstanceParams { instance_key=", instance_key,
                       " type=", type, " data_type=", DataTypeString(data_type),
                       " shape=", shape.DebugString(), " devices {");
-  for (const auto& d : device_names) {
-    strings::StrAppend(&v, d, ",");
-  }
-  strings::StrAppend(&v, "} task_names={");
-  for (const auto& n : task_names) {
-    strings::StrAppend(&v, n, ", ");
-  }
-  strings::StrAppend(&v, "} num_devices_per_task={");
-  for (const auto& dpt : num_devices_per_task) {
-    strings::StrAppend(&v, dpt.first, ": ", dpt.second, ", ");
-  }
-  strings::StrAppend(&v, "}, collective_name=", impl_details.collective_name,
-                     ", subdiv_offsets={");
-  strings::StrAppend(&v, "}, subdiv_offsets={");
+  absl::StrAppend(&v, "}, collective_name=", impl_details.collective_name,
+                  ", subdiv_offsets={");
+  absl::StrAppend(&v, "}, subdiv_offsets={");
   for (const auto& d : impl_details.subdiv_offsets) {
-    strings::StrAppend(&v, d, ",");
+    absl::StrAppend(&v, d, ",");
   }
-  strings::StrAppend(&v, "}, subdiv_perms={");
+  absl::StrAppend(&v, "}, subdiv_perms={");
   for (const auto& p : impl_details.subdiv_permutations) {
-    strings::StrAppend(&v, "{");
+    absl::StrAppend(&v, "{");
     for (const auto& i : p) {
-      strings::StrAppend(&v, i, ",");
+      absl::StrAppend(&v, i, ",");
     }
-    strings::StrAppend(&v, "}");  // one subdiv
+    absl::StrAppend(&v, "}");  // one subdiv
   }
   if (!impl_details.subdiv_source_rank.empty()) {
-    strings::StrAppend(&v, " subdiv_source_rank={");
+    absl::StrAppend(&v, " subdiv_source_rank={");
     for (const auto& r : impl_details.subdiv_source_rank) {
-      strings::StrAppend(&v, r, ",");
+      absl::StrAppend(&v, r, ",");
     }
-    strings::StrAppend(&v, "}");
+    absl::StrAppend(&v, "}");
+  }  // all subdivs
+  if (type == PERMUTE_COLLECTIVE) {
+    absl::StrAppend(&v, "}, permute_devices {");
+    for (const auto& d : devices) {
+      absl::StrAppend(&v, d, ",");
+    }
+    absl::StrAppend(&v, "}, permute_permutation {");
+    for (const auto& p : permutation) {
+      absl::StrAppend(&v, p, ",");
+    }
+    absl::StrAppend(&v, "}");
   }
-  strings::StrAppend(&v, "}");  // all subdivs
   return v;
 }
 
-string CollTaskParams::ToString() const {
-  string v = strings::StrCat("CollTaskParams {is_local={");
-  for (const auto& b : is_local) {
-    strings::StrAppend(&v, static_cast<int>(b), ",");
-  }
-  strings::StrAppend(&v, "}}");
-  return v;
-}
-
-string CollectiveParams::ToString() const {
-  string v = strings::StrCat("CollectiveParams ", name, " {", group.ToString());
-  strings::StrAppend(&v, " ", instance.ToString());
-  strings::StrAppend(&v, " ", task.ToString());
+std::string CollectiveParams::ToString() const {
+  std::string v =
+      absl::StrCat("CollectiveParams ", name, " {", group.ToString());
+  absl::StrAppend(&v, " ", instance.ToString());
   strings::StrAppend(&v, " default_rank=", default_rank,
                      " is_source=", is_source, " source_rank=", source_rank,
                      " subdiv_rank={");
   for (const auto& r : subdiv_rank) {
-    strings::StrAppend(&v, r, ",");
+    absl::StrAppend(&v, r, ",");
   }
-  strings::StrAppend(&v, "}}");
+  absl::StrAppend(&v, "}}");
   return v;
 }
 
@@ -158,38 +153,39 @@ string CollectiveParams::ToString() const {
   return ctx->params_;
 }
 
-CollectiveContext::CollectiveContext(CollectiveExecutor* col_exec,
-                                     const DeviceMgr* dev_mgr,
-                                     OpKernelContext* ctx,
-                                     OpKernelContext::Params* op_params,
-                                     const CollectiveParams& col_params,
-                                     const string& exec_key, int64 step_id,
-                                     const Tensor* input, Tensor* output)
+CollectiveContext::CollectiveContext(
+    CollectiveExecutor* col_exec, NcclCommunicatorInterface* nccl_communicator,
+    const DeviceMgr* dev_mgr, OpKernelContext* ctx,
+    OpKernelContext::Params* op_params, const CollectiveParams* col_params,
+    const std::string& exec_key, int64_t step_id, const Tensor* input,
+    Tensor* output)
     : col_exec(col_exec),
+      nccl_communicator(nccl_communicator),
       dev_mgr(dev_mgr),
       op_ctx(ctx),
       op_params(op_params),
-      col_params(col_params),
+      col_params(col_params, /*add_ref=*/true),
       exec_key(exec_key),
       step_id(step_id),
       input(input),
       output(output),
       device(nullptr),
-      device_name(col_params.instance.device_names[col_params.default_rank]) {}
+      device_name(
+          col_params->group.members[col_params->default_rank].device.name()) {}
 
 /*static*/
-int64 CollectiveExecutor::kInvalidId = -1;
+int64_t CollectiveExecutor::kInvalidId = -1;
 
 /*static*/
-Status CollectiveRegistry::Lookup(
-    const string& collective_name,
+absl::Status CollectiveRegistry::Lookup(
+    const std::string& collective_name,
     CollectiveImplementationInterface** implementation) {
   return LookupHelper(collective_name, implementation, false);
 }
 
 /*static*/
-Status CollectiveRegistry::LookupParamResolverInstance(
-    const string& collective_name,
+absl::Status CollectiveRegistry::LookupParamResolverInstance(
+    const std::string& collective_name,
     CollectiveImplementationInterface** implementation) {
   return LookupHelper(collective_name, implementation, true);
 }
@@ -203,21 +199,21 @@ void CollectiveRegistry::GetAll(
 }
 
 /*static*/
-Status CollectiveRegistry::Register(const string& collective_name,
-                                    Factory factory) {
+absl::Status CollectiveRegistry::Register(const std::string& collective_name,
+                                          Factory factory) {
   std::vector<RegistrationInfo>* registry = MutableCollectiveRegistry();
   for (const RegistrationInfo& reg_info : *registry) {
     if (reg_info.name == collective_name)
-      return errors::Internal("Already registered collective ",
-                              collective_name);
+      return absl::InternalError(
+          absl::StrCat("Already registered collective ", collective_name));
   }
   registry->emplace_back(collective_name, std::move(factory));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 /*static*/
-Status CollectiveRegistry::LookupHelper(
-    const string& collective_name,
+absl::Status CollectiveRegistry::LookupHelper(
+    const std::string& collective_name,
     CollectiveImplementationInterface** implementation, bool param_resolver) {
   std::vector<RegistrationInfo>* registry = MutableCollectiveRegistry();
   for (const RegistrationInfo& reg_info : *registry) {
@@ -227,12 +223,12 @@ Status CollectiveRegistry::LookupHelper(
       } else {
         *implementation = reg_info.factory();
       }
-      return Status::OK();
+      return absl::OkStatus();
     }
   }
-  return errors::Internal(
+  return absl::InternalError(absl::StrCat(
       "CollectiveRegistry::Lookup did not find collective implementation ",
-      collective_name);
+      collective_name));
 }
 
 }  // namespace tensorflow

@@ -13,8 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_TESTS_TF_FRAMEWORK_C_INTERFACE_H_
-#define TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_TESTS_TF_FRAMEWORK_C_INTERFACE_H_
+#ifndef TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_TF_FRAMEWORK_C_INTERFACE_H_
+#define TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_TF_FRAMEWORK_C_INTERFACE_H_
+
+#include <cstddef>
+#include <cstdint>
 
 #include "mlir/ExecutionEngine/RunnerUtils.h"  // from @llvm-project
 
@@ -22,14 +25,28 @@ namespace mlir {
 namespace kernel_gen {
 namespace tf_framework {
 
-extern "C" MLIR_RUNNERUTILS_EXPORT void* _mlir_ciface_tf_alloc_raw(
-    void* op_kernel_ctx, size_t num_bytes);
+extern "C" MLIR_RUNNERUTILS_EXPORT void* _mlir_ciface_tf_alloc(
+    void* op_kernel_ctx, size_t num_elements, size_t element_size,
+    int32_t output_index, int32_t num_candidates,
+    int32_t* candidate_input_indices);
 
-extern "C" MLIR_RUNNERUTILS_EXPORT void _mlir_ciface_tf_dealloc_raw(
+extern "C" MLIR_RUNNERUTILS_EXPORT void _mlir_ciface_tf_dealloc(
     void* op_kernel_ctx, void* ptr);
+
+extern "C" MLIR_RUNNERUTILS_EXPORT void _mlir_ciface_tf_report_error(
+    void* op_kernel_ctx, int32_t error_code, char* msg);
+
+extern "C" MLIR_RUNNERUTILS_EXPORT void* _mlir_ciface_tf_jit_compile(
+    void* op_kernel_ctx, char* code, int64_t num_tile_sizes,
+    int64_t* tile_sizes_ptr, int64_t num_unroll_factors,
+    int64_t* unroll_factors_ptr, bool enable_ftz, bool index_64bit);
+
+extern "C" MLIR_RUNNERUTILS_EXPORT void _mlir_ciface_tf_jit_execute(
+    void* op_kernel_ctx, void* callable, void* result, int64_t num_args,
+    void* args_ptr);
 
 }  // namespace tf_framework
 }  // namespace kernel_gen
 }  // namespace mlir
 
-#endif  // TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_TESTS_TF_FRAMEWORK_C_INTERFACE_H_
+#endif  // TENSORFLOW_COMPILER_MLIR_TOOLS_KERNEL_GEN_TF_FRAMEWORK_C_INTERFACE_H_

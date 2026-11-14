@@ -1,3 +1,18 @@
+# Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 # Description: CUB library which is a set of primitives for GPU programming.
 
 package(
@@ -8,20 +23,8 @@ licenses(["notice"])  # BSD
 
 exports_files(["LICENSE.TXT"])
 
-load("@local_config_cuda//cuda:build_defs.bzl", "cuda_default_copts", "if_cuda")
-
-filegroup(
-    name = "cub_header_files",
-    srcs = glob([
-        "cub/**",
-    ]),
-)
-
 cc_library(
     name = "cub",
-    hdrs = if_cuda([":cub_header_files"]),
-    include_prefix = "third_party",
-    deps = [
-        "@local_config_cuda//cuda:cuda_headers",
-    ],
+    hdrs = glob(["cub/**"]),
+    deps = ["@local_config_cuda//cuda:cuda_headers"],
 )

@@ -20,6 +20,7 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "absl/status/status.h"
 #include "tensorflow/core/common_runtime/base_collective_executor.h"
 #include "tensorflow/core/framework/collective.h"
 
@@ -49,27 +50,23 @@ class Permuter : public CollectiveImplementationInterface {
 
   void Run(StatusCallback done) override;
 
-  Status InitializeCollectiveParams(CollectiveParams* col_params) override {
-    return Status::OK();
+  absl::Status InitializeCollectiveParams(
+      CollectiveParams* col_params) override {
+    return absl::OkStatus();
   }
 
   // Initializes members of CollectiveContext not yet initialized, i.e. device
   // and device_locality.  Also saves the CollectiveContext in this object.
-  Status InitializeCollectiveContext(
+  absl::Status InitializeCollectiveContext(
       std::shared_ptr<CollectiveContext> col_ctx) override;
-
-  Status InitializeCollectiveGroupRuntimeDetails(
-      CollGroupRuntimeDetails*) override {
-    return Status::OK();
-  }
 
  private:
   std::shared_ptr<CollectiveContext> col_ctx_;
   const CollectiveParams* col_params_;  // Not owned
   StatusCallback done_;
-  Status status_;
-  mutex mu_counter_;
-  int counter_ TF_GUARDED_BY(mu_counter_);
+  mutex mu_;
+  absl::Status status_ TF_GUARDED_BY(mu_);
+  int counter_ TF_GUARDED_BY(mu_);
 
   void DispatchSend(int src_rank, int target_rank, const Tensor* tensor,
                     const StatusCallback& done);
@@ -77,12 +74,10 @@ class Permuter : public CollectiveImplementationInterface {
   void DispatchRecv(int src_rank, int target_rank, Tensor* tensor,
                     const StatusCallback& done);
 
-  // Checks if counter_ reaches 2.
   // Atomically increments counter_ by one for sending, one for receiving.
-  // The purpose of this check is to ensure that done_ is called only once.
-  bool CheckCounter();
-
-  StatusCallback HalfDone();
+  // Invokes done when counter_ reaches 2.
+  // The purpose of checking counter_ is to ensure that done_ is called once.
+  StatusCallback CheckCounterAndCallDone();
 };
 
 }  // namespace tensorflow

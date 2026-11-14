@@ -14,36 +14,47 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/summary/summary_db_writer.h"
 
-#include "tensorflow/core/summary/schema.h"
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
+#include "xla/tsl/protobuf/histogram.pb.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/summary.pb.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/db/sqlite.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/summary/schema.h"
 #include "tensorflow/core/util/event.pb.h"
 
 namespace tensorflow {
 namespace {
 
-Tensor MakeScalarInt64(int64 x) {
+Tensor MakeScalarInt64(int64_t x) {
   Tensor t(DT_INT64, TensorShape({}));
-  t.scalar<int64>()() = x;
+  t.scalar<int64_t>()() = x;
   return t;
 }
 
 class FakeClockEnv : public EnvWrapper {
  public:
   FakeClockEnv() : EnvWrapper(Env::Default()), current_millis_(0) {}
-  void AdvanceByMillis(const uint64 millis) { current_millis_ += millis; }
-  uint64 NowMicros() const override { return current_millis_ * 1000; }
-  uint64 NowSeconds() const override { return current_millis_ * 1000; }
+  void AdvanceByMillis(const uint64_t millis) { current_millis_ += millis; }
+  uint64_t NowMicros() const override { return current_millis_ * 1000; }
+  uint64_t NowSeconds() const override { return current_millis_ * 1000; }
 
  private:
-  uint64 current_millis_;
+  uint64_t current_millis_;
 };
 
 class SummaryDbWriterTest : public ::testing::Test {
@@ -62,10 +73,10 @@ class SummaryDbWriterTest : public ::testing::Test {
     db_ = nullptr;
   }
 
-  int64 QueryInt(const string& sql) {
+  int64_t QueryInt(const std::string& sql) {
     SqliteStatement stmt = db_->PrepareOrDie(sql);
     bool is_done;
-    Status s = stmt.Step(&is_done);
+    absl::Status s = stmt.Step(&is_done);
     if (!s.ok() || is_done) {
       LOG(ERROR) << s << " due to " << sql;
       return -1;
@@ -73,10 +84,10 @@ class SummaryDbWriterTest : public ::testing::Test {
     return stmt.ColumnInt(0);
   }
 
-  double QueryDouble(const string& sql) {
+  double QueryDouble(const std::string& sql) {
     SqliteStatement stmt = db_->PrepareOrDie(sql);
     bool is_done;
-    Status s = stmt.Step(&is_done);
+    absl::Status s = stmt.Step(&is_done);
     if (!s.ok() || is_done) {
       LOG(ERROR) << s << " due to " << sql;
       return -1;
@@ -84,10 +95,10 @@ class SummaryDbWriterTest : public ::testing::Test {
     return stmt.ColumnDouble(0);
   }
 
-  string QueryString(const string& sql) {
+  std::string QueryString(const std::string& sql) {
     SqliteStatement stmt = db_->PrepareOrDie(sql);
     bool is_done;
-    Status s = stmt.Step(&is_done);
+    absl::Status s = stmt.Step(&is_done);
     if (!s.ok() || is_done) {
       LOG(ERROR) << s << " due to " << sql;
       return "MISSINGNO";
@@ -133,7 +144,7 @@ TEST_F(SummaryDbWriterTest, WriteHistogram_VerifyTensorValues) {
 
   // TODO(nickfelt): implement QueryTensor() to encapsulate this
   // Verify the data
-  string result = QueryString("SELECT data FROM Tensors");
+  std::string result = QueryString("SELECT data FROM Tensors");
   const double* val = reinterpret_cast<const double*>(result.data());
   double histarray[] = {std::numeric_limits<double>::min(),
                         -30.5,
@@ -191,10 +202,10 @@ TEST_F(SummaryDbWriterTest, TensorsWritten_RowsGetInitialized) {
   ASSERT_EQ(1LL, QueryInt("SELECT COUNT(*) FROM Tags"));
   ASSERT_EQ(1000LL, QueryInt("SELECT COUNT(*) FROM Tensors"));
 
-  int64 user_id = QueryInt("SELECT user_id FROM Users");
-  int64 experiment_id = QueryInt("SELECT experiment_id FROM Experiments");
-  int64 run_id = QueryInt("SELECT run_id FROM Runs");
-  int64 tag_id = QueryInt("SELECT tag_id FROM Tags");
+  int64_t user_id = QueryInt("SELECT user_id FROM Users");
+  int64_t experiment_id = QueryInt("SELECT experiment_id FROM Experiments");
+  int64_t run_id = QueryInt("SELECT run_id FROM Runs");
+  int64_t tag_id = QueryInt("SELECT tag_id FROM Tags");
   EXPECT_LT(0LL, user_id);
   EXPECT_LT(0LL, experiment_id);
   EXPECT_LT(0LL, run_id);
@@ -256,14 +267,14 @@ TEST_F(SummaryDbWriterTest, WriteEvent_Scalar) {
   TF_ASSERT_OK(writer_->Flush());
   ASSERT_EQ(2LL, QueryInt("SELECT COUNT(*) FROM Tags"));
   ASSERT_EQ(2000LL, QueryInt("SELECT COUNT(*) FROM Tensors"));
-  int64 tag1_id = QueryInt("SELECT tag_id FROM Tags WHERE tag_name = 'π'");
-  int64 tag2_id = QueryInt("SELECT tag_id FROM Tags WHERE tag_name = 'φ'");
+  int64_t tag1_id = QueryInt("SELECT tag_id FROM Tags WHERE tag_name = 'π'");
+  int64_t tag2_id = QueryInt("SELECT tag_id FROM Tags WHERE tag_name = 'φ'");
   EXPECT_GT(tag1_id, 0LL);
   EXPECT_GT(tag2_id, 0LL);
-  EXPECT_EQ(123.456, QueryDouble(strings::StrCat(
+  EXPECT_EQ(123.456, QueryDouble(absl::StrCat(
                          "SELECT computed_time FROM Tensors WHERE series = ",
                          tag1_id, " AND step = 7")));
-  EXPECT_EQ(123.456, QueryDouble(strings::StrCat(
+  EXPECT_EQ(123.456, QueryDouble(absl::StrCat(
                          "SELECT computed_time FROM Tensors WHERE series = ",
                          tag2_id, " AND step = 7")));
 }
@@ -301,7 +312,7 @@ TEST_F(SummaryDbWriterTest, WriteGraph) {
   ASSERT_EQ(QueryInt("SELECT run_id FROM Runs"),
             QueryInt("SELECT run_id FROM Graphs"));
 
-  int64 graph_id = QueryInt("SELECT graph_id FROM Graphs");
+  int64_t graph_id = QueryInt("SELECT graph_id FROM Graphs");
   EXPECT_GT(graph_id, 0LL);
   EXPECT_EQ(0.023, QueryDouble("SELECT inserted_time FROM Graphs"));
 

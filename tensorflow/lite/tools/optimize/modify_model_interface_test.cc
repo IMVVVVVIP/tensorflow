@@ -14,43 +14,48 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/tools/optimize/modify_model_interface.h"
 
+#include <cstdint>
 #include <memory>
+#include <utility>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "absl/memory/memory.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/core/model.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/schema/schema_utils.h"
 
 namespace tflite {
 namespace optimize {
 namespace {
 
-using ::testing::ElementsAreArray;
-
 // Create a model with 1 quant, 1 FC, 1 dequant
 std::unique_ptr<ModelT> CreateQuantizedModelSingleInputOutput(
     const TensorType& quantization_type) {
-  auto model = absl::make_unique<ModelT>();
-  auto subgraph = absl::make_unique<tflite::SubGraphT>();
-  auto buffer = absl::make_unique<tflite::BufferT>();
-  auto quant_op_code = absl::make_unique<OperatorCodeT>();
-  auto quant_op = absl::make_unique<OperatorT>();
-  auto fc_op_code = absl::make_unique<OperatorCodeT>();
-  auto fc_op = absl::make_unique<OperatorT>();
-  auto dequant_op_code = absl::make_unique<OperatorCodeT>();
-  auto dequant_op = absl::make_unique<OperatorT>();
+  auto model = std::make_unique<ModelT>();
+  auto subgraph = std::make_unique<tflite::SubGraphT>();
+  auto buffer = std::make_unique<tflite::BufferT>();
+  auto quant_op_code = std::make_unique<OperatorCodeT>();
+  auto quant_op = std::make_unique<OperatorT>();
+  auto fc_op_code = std::make_unique<OperatorCodeT>();
+  auto fc_op = std::make_unique<OperatorT>();
+  auto dequant_op_code = std::make_unique<OperatorCodeT>();
+  auto dequant_op = std::make_unique<OperatorT>();
 
   model->subgraphs.push_back(std::move(subgraph));
 
   // Op code
   quant_op_code->builtin_code = BuiltinOperator_QUANTIZE;
+  quant_op_code->deprecated_builtin_code =
+      static_cast<int8_t>(BuiltinOperator_QUANTIZE);
   quant_op_code->version = 2;
 
   fc_op_code->builtin_code = BuiltinOperator_FULLY_CONNECTED;
+  fc_op_code->deprecated_builtin_code =
+      static_cast<int8_t>(BuiltinOperator_FULLY_CONNECTED);
   fc_op_code->version = 2;
 
   dequant_op_code->builtin_code = BuiltinOperator_DEQUANTIZE;
+  dequant_op_code->deprecated_builtin_code =
+      static_cast<int8_t>(BuiltinOperator_DEQUANTIZE);
   dequant_op_code->version = 2;
 
   // Op.
@@ -79,28 +84,28 @@ std::unique_ptr<ModelT> CreateQuantizedModelSingleInputOutput(
   model->subgraphs[0]->outputs = {3};
 
   // Tensors
-  auto tensor_0 = absl::make_unique<TensorT>();
+  auto tensor_0 = std::make_unique<TensorT>();
   tensor_0->name = "tensor_0";
   tensor_0->shape = {};
   tensor_0->type = TensorType_FLOAT32;
 
-  auto tensor_1 = absl::make_unique<TensorT>();
-  tensor_1->quantization = absl::make_unique<QuantizationParametersT>();
+  auto tensor_1 = std::make_unique<TensorT>();
+  tensor_1->quantization = std::make_unique<QuantizationParametersT>();
   tensor_1->quantization->scale.push_back(0.35);
   tensor_1->quantization->zero_point.push_back(28);
   tensor_1->name = "tensor_1";
   tensor_1->shape = {};
   tensor_1->type = quantization_type;
 
-  auto tensor_2 = absl::make_unique<TensorT>();
-  tensor_2->quantization = absl::make_unique<QuantizationParametersT>();
+  auto tensor_2 = std::make_unique<TensorT>();
+  tensor_2->quantization = std::make_unique<QuantizationParametersT>();
   tensor_2->quantization->scale.push_back(0.12);
   tensor_2->quantization->zero_point.push_back(50);
   tensor_2->name = "tensor_2";
   tensor_2->shape = {};
   tensor_2->type = quantization_type;
 
-  auto tensor_3 = absl::make_unique<TensorT>();
+  auto tensor_3 = std::make_unique<TensorT>();
   tensor_3->name = "tensor_3";
   tensor_3->shape = {};
   tensor_3->type = TensorType_FLOAT32;
@@ -120,28 +125,34 @@ std::unique_ptr<ModelT> CreateQuantizedModelSingleInputOutput(
 // The model mimics the behavior of the quantize_model.cc.
 std::unique_ptr<ModelT> CreateQuantizedModelMultipleInputOutput(
     const TensorType& quantization_type) {
-  auto model = absl::make_unique<ModelT>();
-  auto subgraph = absl::make_unique<tflite::SubGraphT>();
-  auto buffer = absl::make_unique<tflite::BufferT>();
-  auto quant_op_code = absl::make_unique<OperatorCodeT>();
-  auto quant_op_1 = absl::make_unique<OperatorT>();
-  auto quant_op_2 = absl::make_unique<OperatorT>();
-  auto fc_op_code = absl::make_unique<OperatorCodeT>();
-  auto fc_op = absl::make_unique<OperatorT>();
-  auto dequant_op_code = absl::make_unique<OperatorCodeT>();
-  auto dequant_op_1 = absl::make_unique<OperatorT>();
-  auto dequant_op_2 = absl::make_unique<OperatorT>();
+  auto model = std::make_unique<ModelT>();
+  auto subgraph = std::make_unique<tflite::SubGraphT>();
+  auto buffer = std::make_unique<tflite::BufferT>();
+  auto quant_op_code = std::make_unique<OperatorCodeT>();
+  auto quant_op_1 = std::make_unique<OperatorT>();
+  auto quant_op_2 = std::make_unique<OperatorT>();
+  auto fc_op_code = std::make_unique<OperatorCodeT>();
+  auto fc_op = std::make_unique<OperatorT>();
+  auto dequant_op_code = std::make_unique<OperatorCodeT>();
+  auto dequant_op_1 = std::make_unique<OperatorT>();
+  auto dequant_op_2 = std::make_unique<OperatorT>();
 
   model->subgraphs.push_back(std::move(subgraph));
 
   // Op code
   quant_op_code->builtin_code = BuiltinOperator_QUANTIZE;
+  quant_op_code->deprecated_builtin_code =
+      static_cast<int8_t>(BuiltinOperator_QUANTIZE);
   quant_op_code->version = 2;
 
   fc_op_code->builtin_code = BuiltinOperator_FULLY_CONNECTED;
+  fc_op_code->deprecated_builtin_code =
+      static_cast<int8_t>(BuiltinOperator_FULLY_CONNECTED);
   fc_op_code->version = 2;
 
   dequant_op_code->builtin_code = BuiltinOperator_DEQUANTIZE;
+  dequant_op_code->deprecated_builtin_code =
+      static_cast<int8_t>(BuiltinOperator_DEQUANTIZE);
   dequant_op_code->version = 2;
 
   // Op.
@@ -178,54 +189,54 @@ std::unique_ptr<ModelT> CreateQuantizedModelMultipleInputOutput(
   model->subgraphs[0]->outputs = {6, 7};
 
   // Tensors
-  auto tensor_0 = absl::make_unique<TensorT>();
+  auto tensor_0 = std::make_unique<TensorT>();
   tensor_0->name = "tensor_0";
   tensor_0->shape = {};
   tensor_0->type = TensorType_FLOAT32;
 
-  auto tensor_1 = absl::make_unique<TensorT>();
+  auto tensor_1 = std::make_unique<TensorT>();
   tensor_1->name = "tensor_1";
   tensor_1->shape = {};
   tensor_1->type = TensorType_FLOAT32;
 
-  auto tensor_2 = absl::make_unique<TensorT>();
-  tensor_2->quantization = absl::make_unique<QuantizationParametersT>();
+  auto tensor_2 = std::make_unique<TensorT>();
+  tensor_2->quantization = std::make_unique<QuantizationParametersT>();
   tensor_2->quantization->scale.push_back(0.35);
   tensor_2->quantization->zero_point.push_back(28);
   tensor_2->name = "tensor_2";
   tensor_2->shape = {};
   tensor_2->type = quantization_type;
 
-  auto tensor_3 = absl::make_unique<TensorT>();
-  tensor_3->quantization = absl::make_unique<QuantizationParametersT>();
+  auto tensor_3 = std::make_unique<TensorT>();
+  tensor_3->quantization = std::make_unique<QuantizationParametersT>();
   tensor_3->quantization->scale.push_back(0.12);
   tensor_3->quantization->zero_point.push_back(50);
   tensor_3->name = "tensor_3";
   tensor_3->shape = {};
   tensor_3->type = quantization_type;
 
-  auto tensor_4 = absl::make_unique<TensorT>();
-  tensor_4->quantization = absl::make_unique<QuantizationParametersT>();
+  auto tensor_4 = std::make_unique<TensorT>();
+  tensor_4->quantization = std::make_unique<QuantizationParametersT>();
   tensor_4->quantization->scale.push_back(0.45);
   tensor_4->quantization->zero_point.push_back(28);
   tensor_4->name = "tensor_4";
   tensor_4->shape = {};
   tensor_4->type = quantization_type;
 
-  auto tensor_5 = absl::make_unique<TensorT>();
-  tensor_5->quantization = absl::make_unique<QuantizationParametersT>();
+  auto tensor_5 = std::make_unique<TensorT>();
+  tensor_5->quantization = std::make_unique<QuantizationParametersT>();
   tensor_5->quantization->scale.push_back(0.22);
   tensor_5->quantization->zero_point.push_back(50);
   tensor_5->name = "tensor_5";
   tensor_5->shape = {};
   tensor_5->type = quantization_type;
 
-  auto tensor_6 = absl::make_unique<TensorT>();
+  auto tensor_6 = std::make_unique<TensorT>();
   tensor_6->name = "tensor_6";
   tensor_6->shape = {};
   tensor_6->type = TensorType_FLOAT32;
 
-  auto tensor_7 = absl::make_unique<TensorT>();
+  auto tensor_7 = std::make_unique<TensorT>();
   tensor_7->name = "tensor_7";
   tensor_7->shape = {};
   tensor_7->type = TensorType_FLOAT32;
@@ -247,16 +258,18 @@ std::unique_ptr<ModelT> CreateQuantizedModelMultipleInputOutput(
 
 // Create a model with 1 FC.
 std::unique_ptr<ModelT> CreateFloatModel() {
-  auto model = absl::make_unique<ModelT>();
-  auto subgraph = absl::make_unique<tflite::SubGraphT>();
-  auto buffer = absl::make_unique<tflite::BufferT>();
-  auto fc_op_code = absl::make_unique<OperatorCodeT>();
-  auto fc_op = absl::make_unique<OperatorT>();
+  auto model = std::make_unique<ModelT>();
+  auto subgraph = std::make_unique<tflite::SubGraphT>();
+  auto buffer = std::make_unique<tflite::BufferT>();
+  auto fc_op_code = std::make_unique<OperatorCodeT>();
+  auto fc_op = std::make_unique<OperatorT>();
 
   model->subgraphs.push_back(std::move(subgraph));
 
   // Op code
   fc_op_code->builtin_code = BuiltinOperator_FULLY_CONNECTED;
+  fc_op_code->deprecated_builtin_code =
+      static_cast<int8_t>(BuiltinOperator_FULLY_CONNECTED);
   fc_op_code->version = 2;
 
   // Op.
@@ -272,12 +285,12 @@ std::unique_ptr<ModelT> CreateFloatModel() {
   model->subgraphs[0]->outputs = {1};
 
   // Tensors
-  auto tensor_0 = absl::make_unique<TensorT>();
+  auto tensor_0 = std::make_unique<TensorT>();
   tensor_0->name = "tensor_0";
   tensor_0->shape = {};
   tensor_0->type = TensorType_FLOAT32;
 
-  auto tensor_1 = absl::make_unique<TensorT>();
+  auto tensor_1 = std::make_unique<TensorT>();
   tensor_1->name = "tensor_1";
   tensor_1->shape = {};
   tensor_1->type = TensorType_FLOAT32;
@@ -306,8 +319,6 @@ TEST_P(ModelInterface, SingleInputOutput) {
 
   // Verify results.
   EXPECT_EQ(model->subgraphs.size(), 1);
-  // TODO(mnatraj): The float input tensor has not been removed.
-  // EXPECT_EQ(model->subgraphs[0]->tensors.size(), 2);
   EXPECT_EQ(model->subgraphs[0]->tensors.size(), 3);
   EXPECT_EQ(model->subgraphs[0]->inputs.size(), 1);
   EXPECT_EQ(model->subgraphs[0]->inputs[0], 1);
@@ -345,8 +356,6 @@ TEST_P(ModelInterface, MutipleInputOutput) {
 
   // Verify results.
   EXPECT_EQ(model->subgraphs.size(), 1);
-  // TODO (b/158254056): Remove unused inputs and outputs from tensor list
-  // EXPECT_EQ(model->subgraphs[0]->tensors.size(), 4);
   EXPECT_EQ(model->subgraphs[0]->tensors.size(), 6);
   EXPECT_EQ(model->subgraphs[0]->inputs.size(), 2);
   EXPECT_EQ(model->subgraphs[0]->inputs[0], 2);
@@ -529,8 +538,6 @@ TEST(ModelInterface, Int8MutipleInputOutput) {
 
   // Verify results.
   EXPECT_EQ(model->subgraphs.size(), 1);
-  // TODO(mnatraj): The two float input tensors have not been removed.
-  // EXPECT_EQ(model->subgraphs[0]->tensors.size(), 4);
   EXPECT_EQ(model->subgraphs[0]->tensors.size(), 6);
   EXPECT_EQ(model->subgraphs[0]->inputs.size(), 2);
   EXPECT_EQ(model->subgraphs[0]->inputs[0], 2);
@@ -599,10 +606,12 @@ TEST(ModelInterface, Float) {
   EXPECT_EQ(model->subgraphs[0]->outputs.size(), 1);
   EXPECT_EQ(model->subgraphs[0]->outputs[0], 1);
   EXPECT_EQ(model->operator_codes.size(), 3);
-  EXPECT_EQ(model->operator_codes[0]->builtin_code,
+  EXPECT_EQ(GetBuiltinCode(model->operator_codes[0].get()),
             BuiltinOperator_FULLY_CONNECTED);
-  EXPECT_EQ(model->operator_codes[1]->builtin_code, BuiltinOperator_DEQUANTIZE);
-  EXPECT_EQ(model->operator_codes[2]->builtin_code, BuiltinOperator_QUANTIZE);
+  EXPECT_EQ(GetBuiltinCode(model->operator_codes[1].get()),
+            BuiltinOperator_DEQUANTIZE);
+  EXPECT_EQ(GetBuiltinCode(model->operator_codes[2].get()),
+            BuiltinOperator_QUANTIZE);
   EXPECT_EQ(model->subgraphs[0]->operators.size(), 3);
 
   auto dequantize_op = model->subgraphs[0]->operators[0].get();
@@ -623,8 +632,3 @@ TEST(ModelInterface, Float) {
 }  // namespace
 }  // namespace optimize
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

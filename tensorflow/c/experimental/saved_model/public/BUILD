@@ -1,3 +1,18 @@
+# Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 # Experimental SavedModel C APIs for TensorFlow.
 # See RFC https://github.com/tensorflow/community/pull/207
 # All headers are on the public surface of Tensorflow's C API.
@@ -8,12 +23,15 @@
 # programmatic checks that all "public" headers only include other "public"
 # headers.
 
+load("//tensorflow/core/platform:rules_cc.bzl", "cc_library")
+
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     # This is intentionally public
     default_visibility = [
         "//visibility:public",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 # TODO(bmzhao): Remove these exports_files and rules, swap with cc_public_library instead.
@@ -24,6 +42,11 @@ exports_files(
         "concrete_function_list.h",
         "function_metadata.h",
         "saved_model_api.h",
+        "signature_def_function.h",
+        "signature_def_function_metadata.h",
+        "signature_def_param.h",
+        "signature_def_param_list.h",
+        "tensor_spec.h",
     ],
     visibility = ["//tensorflow/c/experimental/saved_model/internal:__pkg__"],
 )
@@ -39,6 +62,11 @@ cc_library(
         ":concrete_function_list",
         ":function_metadata",
         ":saved_model_api",
+        ":signature_def_function",
+        ":signature_def_function_metadata",
+        ":signature_def_param",
+        ":signature_def_param_list",
+        ":tensor_spec",
     ],
 )
 
@@ -60,4 +88,29 @@ alias(
 alias(
     name = "saved_model_api",
     actual = "//tensorflow/c/experimental/saved_model/internal:saved_model_api",
+)
+
+alias(
+    name = "signature_def_function",
+    actual = "//tensorflow/c/experimental/saved_model/internal:signature_def_function",
+)
+
+alias(
+    name = "signature_def_function_metadata",
+    actual = "//tensorflow/c/experimental/saved_model/internal:signature_def_function_metadata",
+)
+
+alias(
+    name = "signature_def_param",
+    actual = "//tensorflow/c/experimental/saved_model/internal:signature_def_param",
+)
+
+alias(
+    name = "signature_def_param_list",
+    actual = "//tensorflow/c/experimental/saved_model/internal:signature_def_param_list",
+)
+
+alias(
+    name = "tensor_spec",
+    actual = "//tensorflow/c/experimental/saved_model/internal:tensor_spec",
 )

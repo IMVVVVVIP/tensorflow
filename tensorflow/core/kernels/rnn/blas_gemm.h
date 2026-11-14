@@ -16,18 +16,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_RNN_BLAS_GEMM_H_
 #define TENSORFLOW_CORE_KERNELS_RNN_BLAS_GEMM_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/kernels/eigen_activations.h"
 #include "tensorflow/core/platform/types.h"
 
 #if defined(TENSORFLOW_USE_CUSTOM_CONTRACTION_KERNEL)
-#include "tensorflow/core/kernels/eigen_contraction_kernel.h"
-#endif
-
-#ifdef __HIP_DEVICE_COMPILE__
-// Provide ldexp float overload for HIP, it's missing in their headers.
-__device__ inline float ldexp(float x, int exp) { return ldexpf(x, exp); }
+#include "xla/tsl/framework/contraction/eigen_contraction_kernel.h"
 #endif
 
 namespace tensorflow {
@@ -36,8 +31,8 @@ namespace functor {
 
 template <typename T>
 struct TensorCuBlasGemm {
-  void operator()(OpKernelContext* ctx, bool transa, bool transb, uint64 m,
-                  uint64 n, uint64 k, float alpha, const T* a, int lda,
+  void operator()(OpKernelContext* ctx, bool transa, bool transb, uint64_t m,
+                  uint64_t n, uint64_t k, float alpha, const T* a, int lda,
                   const T* b, int ldb, float beta, T* c, int ldc);
 };
 
@@ -62,9 +57,9 @@ struct TensorBlasGemm<Device, T, true /* USE_CUBLAS */> {
                       typename TTypes<T>::ConstMatrix b,
                       typename gemm_compute_type<T>::type beta,
                       typename TTypes<T>::Matrix c) {
-    int64 m = c.dimensions()[0];
-    int64 n = c.dimensions()[1];
-    int64 k = transa ? a.dimensions()[0] : a.dimensions()[1];
+    int64_t m = c.dimensions()[0];
+    int64_t n = c.dimensions()[1];
+    int64_t k = transa ? a.dimensions()[0] : a.dimensions()[1];
 
     TensorCuBlasGemm<T>()(ctx, transb, transa, n, m, k, alpha, b.data(),
                           transb ? k : n, a.data(), transa ? m : k, beta,

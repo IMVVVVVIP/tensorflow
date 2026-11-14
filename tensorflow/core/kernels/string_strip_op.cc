@@ -40,10 +40,10 @@ class StringStripOp : public OpKernel {
     const auto input = input_tensor->flat<tstring>();
     auto output = output_tensor->flat<tstring>();
 
-    for (int64 i = 0; i < input.size(); ++i) {
-      StringPiece entry(input(i));
+    for (int64_t i = 0; i < input.size(); ++i) {
+      absl::string_view entry(input(i));
       str_util::RemoveWhitespaceContext(&entry);
-      output(i) = string(entry);
+      output(i) = std::string(entry);
     }
   }
 };

@@ -31,6 +31,24 @@ limitations under the License.
 namespace tensorflow {
 namespace grappler {
 
+GrapplerItem::OptimizationOptions CreateOptOptionsForEager() {
+  GrapplerItem::OptimizationOptions optimization_options;
+  // Tensorflow 2.0 in eager mode with automatic control dependencies will
+  // prune all nodes that are not in the transitive fanin of the fetch nodes.
+  // However because the function will be executed via FunctionLibraryRuntime,
+  // and current function implementation does not prune stateful and dataset
+  // ops, we rely on Grappler to do the correct graph pruning.
+  optimization_options.allow_pruning_stateful_and_dataset_ops = true;
+
+  optimization_options.is_eager_mode = true;
+
+  // All the nested function calls will be executed and optimized via
+  // PartitionedCallOp, there is no need to optimize functions now.
+  optimization_options.optimize_function_library = false;
+
+  return optimization_options;
+}
+
 GrapplerItem GrapplerItem::WithGraph(GraphDef&& graph_def) const {
   GrapplerItem item;
   item.id = id;
@@ -56,9 +74,9 @@ std::vector<const NodeDef*> GrapplerItem::MainOpsFanin() const {
 }
 
 std::vector<const NodeDef*> GrapplerItem::EnqueueOpsFanin() const {
-  std::vector<string> enqueue_ops;
+  std::vector<std::string> enqueue_ops;
   for (const auto& queue_runner : queue_runners) {
-    for (const string& enqueue_op : queue_runner.enqueue_op_name()) {
+    for (const std::string& enqueue_op : queue_runner.enqueue_op_name()) {
       enqueue_ops.push_back(enqueue_op);
     }
   }
@@ -85,9 +103,9 @@ std::vector<const NodeDef*> GrapplerItem::MainVariables() const {
   return vars;
 }
 
-std::unordered_set<string> GrapplerItem::NodesToPreserve() const {
-  std::unordered_set<string> result;
-  for (const string& f : fetch) {
+std::unordered_set<std::string> GrapplerItem::NodesToPreserve() const {
+  std::unordered_set<std::string> result;
+  for (const std::string& f : fetch) {
     VLOG(1) << "Add fetch " << f;
     result.insert(NodeName(f));
   }
@@ -112,7 +130,7 @@ std::unordered_set<string> GrapplerItem::NodesToPreserve() const {
   }
 
   for (const auto& queue_runner : queue_runners) {
-    for (const string& enqueue_op : queue_runner.enqueue_op_name()) {
+    for (const std::string& enqueue_op : queue_runner.enqueue_op_name()) {
       result.insert(NodeName(enqueue_op));
     }
     if (!queue_runner.close_op_name().empty()) {
@@ -149,51 +167,52 @@ std::unordered_set<string> GrapplerItem::NodesToPreserve() const {
   return result;
 }
 
-const std::unordered_set<string>& GrapplerItem::devices() const {
+const std::unordered_set<std::string>& GrapplerItem::devices() const {
   return devices_;
 }
 
-Status GrapplerItem::AddDevice(const string& device) {
+absl::Status GrapplerItem::AddDevice(const std::string& device) {
   DeviceNameUtils::ParsedName name;
 
   if (!DeviceNameUtils::ParseFullName(device, &name)) {
-    return errors::InvalidArgument("Invalid device name: device=", device);
+    return absl::InvalidArgumentError(
+        absl::StrCat("Invalid device name: device=", device));
 
   } else if (!name.has_job || !name.has_replica || !name.has_task ||
              !name.has_type || !name.has_id) {
-    return errors::InvalidArgument("Not a fully defined device name: device=",
-                                   device);
+    return absl::InvalidArgumentError(
+        absl::StrCat("Not a fully defined device name: device=", device));
   }
 
   devices_.insert(DeviceNameUtils::ParsedNameToString(name));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status GrapplerItem::AddDevices(const GrapplerItem& other) {
+absl::Status GrapplerItem::AddDevices(const GrapplerItem& other) {
   std::vector<absl::string_view> invalid_devices;
-  for (const string& device : other.devices()) {
-    Status added = AddDevice(device);
+  for (const std::string& device : other.devices()) {
+    absl::Status added = AddDevice(device);
     if (!added.ok()) invalid_devices.emplace_back(device);
   }
   return invalid_devices.empty()
-             ? Status::OK()
-             : errors::InvalidArgument("Skipped invalid devices: [",
-                                       absl::StrJoin(invalid_devices, ", "),
-                                       "]");
+             ? absl::OkStatus()
+             : absl::InvalidArgumentError(
+                   absl::StrCat("Skipped invalid devices: [",
+                                absl::StrJoin(invalid_devices, ", "), "]"));
 }
 
-Status GrapplerItem::InferDevicesFromGraph() {
+absl::Status GrapplerItem::InferDevicesFromGraph() {
   absl::flat_hash_set<absl::string_view> invalid_devices;
   for (const NodeDef& node : graph.node()) {
-    Status added = AddDevice(node.device());
+    absl::Status added = AddDevice(node.device());
     if (!added.ok()) invalid_devices.insert(node.device());
   }
   VLOG(2) << "Inferred device set: [" << absl::StrJoin(devices_, ", ") << "]";
   return invalid_devices.empty()
-             ? Status::OK()
-             : errors::InvalidArgument("Skipped invalid devices: [",
-                                       absl::StrJoin(invalid_devices, ", "),
-                                       "]");
+             ? absl::OkStatus()
+             : absl::InvalidArgumentError(
+                   absl::StrCat("Skipped invalid devices: [",
+                                absl::StrJoin(invalid_devices, ", "), "]"));
 }
 
 void GrapplerItem::ClearDevices() { devices_.clear(); }

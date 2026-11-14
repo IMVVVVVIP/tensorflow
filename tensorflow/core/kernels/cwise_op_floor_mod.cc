@@ -13,13 +13,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
+
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER3(BinaryOp, CPU, "FloorMod", functor::safe_floor_mod, int32, int64,
-          uint64);
-REGISTER3(BinaryOp, CPU, "FloorMod", functor::floor_fmod, bfloat16, float,
-          double);
+REGISTER8(BinaryOp, CPU, "FloorMod", functor::safe_floor_mod, int8_t, int16_t,
+          int32_t, int64_t, uint8_t, uint16_t, uint32_t, uint64_t);
+REGISTER4(BinaryOp, CPU, "FloorMod", functor::floor_fmod, Eigen::half, bfloat16,
+          float, double);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 // A special GPU kernel for int32.
@@ -30,17 +32,16 @@ REGISTER_KERNEL_BUILDER(Name("FloorMod")
                             .HostMemory("x")
                             .HostMemory("y")
                             .HostMemory("z")
-                            .TypeConstraint<int32>("T"),
-                        BinaryOp<CPUDevice, functor::safe_floor_mod<int32>>);
+                            .TypeConstraint<int32_t>("T"),
+                        BinaryOp<CPUDevice, functor::safe_floor_mod<int32_t>>);
 #endif
 
-#ifdef TENSORFLOW_USE_SYCL
 REGISTER_KERNEL_BUILDER(Name("FloorMod")
-                            .Device(DEVICE_SYCL)
+                            .Device(DEVICE_DEFAULT)
                             .HostMemory("x")
                             .HostMemory("y")
                             .HostMemory("z")
-                            .TypeConstraint<int32>("T"),
-                        BinaryOp<CPUDevice, functor::safe_floor_mod<int32>>);
-#endif  // TENSORFLOW_USE_SYCL
+                            .TypeConstraint<int32_t>("T"),
+                        BinaryOp<CPUDevice, functor::safe_floor_mod<int32_t>>);
+
 }  // namespace tensorflow

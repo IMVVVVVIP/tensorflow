@@ -14,8 +14,8 @@ limitations under the License.
 ==============================================================================*/
 #include <stdint.h>
 
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
@@ -45,8 +45,11 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 1);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
 
-  const TfLiteTensor* input = GetInput(context, node, kInputTensor);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kInputTensor, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
 
   TF_LITE_ENSURE_EQ(context, NumDimensions(input), 4);
 
@@ -58,6 +61,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_TYPES_EQ(context, input->type, output->type);
 
   const int block_size = params->block_size;
+  TF_LITE_ENSURE(context, block_size > 0);
   const int input_height = input->dims->data[1];
   const int input_width = input->dims->data[2];
   int output_height = input_height / block_size;
@@ -80,8 +84,11 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   auto* params =
       reinterpret_cast<TfLiteSpaceToDepthParams*>(node->builtin_data);
 
-  const TfLiteTensor* input = GetInput(context, node, kInputTensor);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  const TfLiteTensor* input;
+  TF_LITE_ENSURE_OK(context, GetInputSafe(context, node, kInputTensor, &input));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
 
 #define TF_LITE_SPACE_TO_DEPTH(type, scalar)                               \
   tflite::SpaceToDepthParams op_params;                                    \
@@ -89,45 +96,39 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   type::SpaceToDepth(op_params, GetTensorShape(input),                     \
                      GetTensorData<scalar>(input), GetTensorShape(output), \
                      GetTensorData<scalar>(output))
-  switch (input->type) {  // Already know in/out types are same.
-    case kTfLiteFloat32:
-      if (kernel_type == kReference) {
-        TF_LITE_SPACE_TO_DEPTH(reference_ops, float);
-      } else {
-        TF_LITE_SPACE_TO_DEPTH(optimized_ops, float);
-      }
-      break;
-    case kTfLiteUInt8:
+  // Already know in/out types are same.
+  switch (TfLiteTypeGetSizeBits(input->type)) {
+    case 8:
       if (kernel_type == kReference) {
         TF_LITE_SPACE_TO_DEPTH(reference_ops, uint8_t);
       } else {
         TF_LITE_SPACE_TO_DEPTH(optimized_ops, uint8_t);
       }
       break;
-    case kTfLiteInt8:
+    case 16:
       if (kernel_type == kReference) {
-        TF_LITE_SPACE_TO_DEPTH(reference_ops, int8_t);
+        TF_LITE_SPACE_TO_DEPTH(reference_ops, uint16_t);
       } else {
-        TF_LITE_SPACE_TO_DEPTH(optimized_ops, int8_t);
+        TF_LITE_SPACE_TO_DEPTH(optimized_ops, uint16_t);
       }
       break;
-    case kTfLiteInt32:
+    case 32:
       if (kernel_type == kReference) {
-        TF_LITE_SPACE_TO_DEPTH(reference_ops, int32_t);
+        TF_LITE_SPACE_TO_DEPTH(reference_ops, uint32_t);
       } else {
-        TF_LITE_SPACE_TO_DEPTH(optimized_ops, int32_t);
+        TF_LITE_SPACE_TO_DEPTH(optimized_ops, uint32_t);
       }
       break;
-    case kTfLiteInt64:
+    case 64:
       if (kernel_type == kReference) {
-        TF_LITE_SPACE_TO_DEPTH(reference_ops, int64_t);
+        TF_LITE_SPACE_TO_DEPTH(reference_ops, uint64_t);
       } else {
-        TF_LITE_SPACE_TO_DEPTH(optimized_ops, int64_t);
+        TF_LITE_SPACE_TO_DEPTH(optimized_ops, uint64_t);
       }
       break;
     default:
-      context->ReportError(context, "Type '%s' not currently supported.",
-                           TfLiteTypeGetName(input->type));
+      TF_LITE_KERNEL_LOG(context, "Type '%s' not currently supported.",
+                         TfLiteTypeGetName(input->type));
       return kTfLiteError;
   }
 #undef TF_LITE_SPACE_TO_DEPTH

@@ -24,13 +24,13 @@ limitations under the License.
 // pass quite as many raw pointers around. Would also be nice to reduce code
 // duplication.
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define EIGEN_USE_GPU
 
 #include <algorithm>
 #include <vector>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -43,8 +43,9 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/stream_executor.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/core/util/cuda_solvers.h"
+#include "tensorflow/core/util/determinism.h"
 #include "tensorflow/core/util/gpu_kernel_helper.h"
+#include "tensorflow/core/util/gpu_solvers.h"
 
 namespace tensorflow {
 
@@ -60,8 +61,8 @@ namespace {
 // The result is stored in V[batch] and has the same sign as the
 // real value of V (which should be computed)
 template <class Scalar>
-__global__ void ComputeValueOfVKernel(Gpu2DLaunchConfig config, int64 m,
-                                      int64 ldu, const Scalar* __restrict__ M,
+__global__ void ComputeValueOfVKernel(Gpu2DLaunchConfig config, int64_t m,
+                                      int64_t ldu, const Scalar* __restrict__ M,
                                       const Scalar* __restrict__ U,
                                       const Scalar* __restrict__ S,
                                       Scalar* __restrict__ V) {
@@ -95,9 +96,9 @@ class SvdOpGpu : public AsyncOpKernel {
     OP_REQUIRES_OK(context, context->GetAttr("full_matrices", &full_matrices_));
   }
 
-  void RunSVD(OpKernelContext* context, DoneCallback done, int64 m, int64 n,
-              int64 p, Tensor& M_copy, Tensor* S, Tensor* U, Tensor* V,
-              std::unique_ptr<CudaSolver> solver) {
+  void RunSVD(OpKernelContext* context, DoneCallback done, int64_t m, int64_t n,
+              int64_t p, Tensor& M_copy, Tensor* S, Tensor* U, Tensor* V,
+              std::unique_ptr<GpuSolver> solver) {
     // Compute U S V* = M.
     // 1. cuSolver works in column-major rather than row-major.
     // 2. Gesvd returns V*. GesvdjBatched returns V.
@@ -110,14 +111,17 @@ class SvdOpGpu : public AsyncOpKernel {
     RealScalar* outputS_ptr;
     auto input_reshaped = M_copy.template flat_inner_dims<Scalar, 3>();
     input_ptr = input_reshaped.data();
-    const int64 batch_size =
+    const int64_t batch_size =
         M_copy.dims() > 2 ? input_reshaped.dimension(0) : 1;
     // Gesvdjbatched handles matrices up to 32x32.
     // TODO(jamessspencer): if not full_matrices, compute full U and V matrices
     // using Gesvdjbatched and return slices.
     const bool batched =
+#if GOOGLE_CUDA
         m <= 32 && n <= 32 && batch_size > 1 && (full_matrices_ || m == n);
-
+#else
+        false;
+#endif
     // Copies of U and V if required so can take transposes after SVD.
     Tensor u_copy, v_copy;
     Scalar* outputU_ptr = NULL;
@@ -184,6 +188,7 @@ class SvdOpGpu : public AsyncOpKernel {
     }
 
     if (batched) {
+#if GOOGLE_CUDA
       cusolverEigMode_t jobz = CUSOLVER_EIG_MODE_NOVECTOR;
       if (compute_uv_) jobz = CUSOLVER_EIG_MODE_VECTOR;
       OP_REQUIRES_OK_ASYNC(
@@ -192,8 +197,11 @@ class SvdOpGpu : public AsyncOpKernel {
                                 outputU_ptr, m, outputV_ptr, n, dev_info_ptr,
                                 batch_size),
           done);
+#else
+      eigen_assert(false && "not supported");
+#endif
     } else {
-      for (int64 batch = 0; batch < batch_size; ++batch) {
+      for (int64_t batch = 0; batch < batch_size; ++batch) {
         Scalar* input = input_ptr + batch * m * n;
         RealScalar* outputS = outputS_ptr + batch * p;
         Scalar* outputU = NULL;
@@ -267,28 +275,28 @@ class SvdOpGpu : public AsyncOpKernel {
 
   void CheckResult(OpKernelContext* context, DoneCallback done,
                    const std::vector<DeviceLapackInfo>& dev_info,
-                   std::unique_ptr<CudaSolver> solver) {
+                   std::unique_ptr<GpuSolver> solver) {
     auto info_checker = [context, done](
-                            const Status& status,
+                            const absl::Status& status,
                             const std::vector<HostLapackInfo>& /* unused */) {
-      Status full_status = status;
+      absl::Status full_status = status;
       if (!full_status.ok()) {
-        full_status.Update(errors::InvalidArgument(kErrMsg));
+        full_status.Update(absl::InvalidArgumentError(kErrMsg));
       }
       OP_REQUIRES_OK_ASYNC(context, full_status, done);
       done();
     };
 
-    CudaSolver::CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_info,
-                                                    std::move(info_checker));
+    GpuSolver::CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_info,
+                                                   std::move(info_checker));
   }
 
   // The SVD if m >= n
   // TODO: can the two cases (MgeqN and MlessN) be simplified,
   //   common boilerplate be reduced, or even combined in one method?
-  void PerformSVD_MgeqN(OpKernelContext* context, DoneCallback done, int64 m,
-                        int64 n, int64 p, const Tensor& M, Tensor* S, Tensor* U,
-                        Tensor* V) {
+  void PerformSVD_MgeqN(OpKernelContext* context, DoneCallback done, int64_t m,
+                        int64_t n, int64_t p, const Tensor& M, Tensor* S,
+                        Tensor* U, Tensor* V) {
     // Transpose M, because cuSolver expects it to be column-major
     TensorShape shapeRaw = M.shape();
     shapeRaw.RemoveLastDims(2);
@@ -297,7 +305,7 @@ class SvdOpGpu : public AsyncOpKernel {
     input_shape.AddDim(m);
     Tensor input_copy;
     // TODO(rmlarsen): Convert to std::make_unique when available.
-    std::unique_ptr<CudaSolver> solver(new CudaSolver(context));
+    std::unique_ptr<GpuSolver> solver(new GpuSolver(context));
     OP_REQUIRES_OK_ASYNC(
         context,
         solver->allocate_scoped_tensor(M.dtype(), input_shape, &input_copy),
@@ -311,8 +319,8 @@ class SvdOpGpu : public AsyncOpKernel {
   }
 
   // The SVD if m < n
-  void PerformSVD_MlessN(OpKernelContext* context, DoneCallback done, int64 m,
-                         int64 n, int64 p, const Tensor& M, Tensor* S,
+  void PerformSVD_MlessN(OpKernelContext* context, DoneCallback done, int64_t m,
+                         int64_t n, int64_t p, const Tensor& M, Tensor* S,
                          Tensor* U, Tensor* V) {
     // Perform the SVD on M'. cuSolver works column major so don't need to
     // transpose M.
@@ -321,7 +329,7 @@ class SvdOpGpu : public AsyncOpKernel {
     // this op owns the input buffer exclusively. This is needed because the
     // SVD modifies the input
     // TODO(rmlarsen): Convert to std::make_unique when available.
-    std::unique_ptr<CudaSolver> solver(new CudaSolver(context));
+    std::unique_ptr<GpuSolver> solver(new GpuSolver(context));
     Tensor input_copy;
     OP_REQUIRES_OK_ASYNC(
         context,
@@ -343,15 +351,24 @@ class SvdOpGpu : public AsyncOpKernel {
   void ComputeAsync(OpKernelContext* context, DoneCallback done) final {
     const Tensor& input = context->input(0);
     const int ndims = input.dims();
-    const int64 m = input.dim_size(ndims - 2);
-    const int64 n = input.dim_size(ndims - 1);
-    const int64 p = std::min(m, n);
 
     // Validate inputs.
-    OP_REQUIRES_ASYNC(
-        context, ndims >= 2,
-        errors::InvalidArgument("Input must have rank >= 2, got ", ndims),
-        done);
+    OP_REQUIRES_ASYNC(context, ndims >= 2,
+                      absl::InvalidArgumentError(absl::StrCat(
+                          "Input must have rank >= 2, got ", ndims)),
+                      done);
+
+    const int64_t m = input.dim_size(ndims - 2);
+    const int64_t n = input.dim_size(ndims - 1);
+    const int64_t p = std::min(m, n);
+
+    if (n == 1) {
+      OP_REQUIRES_ASYNC(context, !tensorflow::OpDeterminismRequired(),
+                        absl::UnimplementedError(
+                            "Determinism is not yet supported for SVD of "
+                            "matrices with 1 column."),
+                        done);
+    }
 
     // output tensors.
     Tensor* outputU = NULL;
@@ -389,6 +406,12 @@ class SvdOpGpu : public AsyncOpKernel {
                          done);
     OP_REQUIRES_OK_ASYNC(context, context->allocate_output(2, shapeV, &outputV),
                          done);
+
+    // If there are zero batches, we are done.
+    if (shapeRaw.num_elements() == 0) {
+      done();
+      return;
+    }
 
     if (n == 0 || m == 0) {
       if (n == m || !compute_uv_ || !full_matrices_) {
@@ -436,4 +459,4 @@ REGISTER_LINALG_OP_GPU("BatchSvd", (SvdOpGpu<double>), double);
 
 }  // namespace tensorflow
 
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM

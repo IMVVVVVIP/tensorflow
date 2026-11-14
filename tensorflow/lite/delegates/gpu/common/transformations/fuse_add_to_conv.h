@@ -20,7 +20,6 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/common/model_transformer.h"
 #include "tensorflow/lite/delegates/gpu/common/operations.h"
-#include "tensorflow/lite/delegates/gpu/common/status.h"
 
 namespace tflite {
 namespace gpu {
@@ -29,6 +28,10 @@ namespace gpu {
 // DepthWise, TransposedConvolution, FullyConnected) into biases of
 // convolution.
 std::unique_ptr<SequenceTransformation> NewMergeConvolutionWithAdd();
+
+// Fuse Add Scalar or Add Broadcast before Convolution2D into weights and biases
+// of convolution.
+std::unique_ptr<SequenceTransformation> NewMergeAddWithConvolution();
 
 // Modify Convolution2DAttributes so that after making convolution with
 // modified attributes we will have the same result as convolution

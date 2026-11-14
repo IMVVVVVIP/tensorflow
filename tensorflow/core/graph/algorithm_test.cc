@@ -47,16 +47,17 @@ REGISTER_OP("TestBinary")
 
 // Compares that the order of nodes in 'inputs' respects the
 // pair orders described in 'ordered_pairs'.
-bool ExpectBefore(const std::vector<std::pair<string, string>>& ordered_pairs,
-                  const std::vector<Node*>& inputs, string* error) {
-  for (const std::pair<string, string>& pair : ordered_pairs) {
-    const string& before_node = pair.first;
-    const string& after_node = pair.second;
+bool ExpectBefore(
+    const std::vector<std::pair<std::string, std::string>>& ordered_pairs,
+    const std::vector<Node*>& inputs, std::string* error) {
+  for (const std::pair<std::string, std::string>& pair : ordered_pairs) {
+    const std::string& before_node = pair.first;
+    const std::string& after_node = pair.second;
     bool seen_before = false;
     bool seen_both = false;
     for (const Node* node : inputs) {
       if (!seen_before && after_node == node->name()) {
-        *error = strings::StrCat("Saw ", after_node, " before ", before_node);
+        *error = absl::StrCat("Saw ", after_node, " before ", before_node);
         return false;
       }
 
@@ -68,8 +69,8 @@ bool ExpectBefore(const std::vector<std::pair<string, string>>& ordered_pairs,
       }
     }
     if (!seen_both) {
-      *error = strings::StrCat("didn't see either ", before_node, " or ",
-                               after_node);
+      *error =
+          absl::StrCat("didn't see either ", before_node, " or ", after_node);
       return false;
     }
   }
@@ -97,10 +98,10 @@ TEST(AlgorithmTest, ReversePostOrder) {
   GetReversePostOrder(g, &order);
 
   // Check that the order respects the dependencies correctly.
-  std::vector<std::pair<string, string>> reverse_orders = {
+  std::vector<std::pair<std::string, std::string>> reverse_orders = {
       {"W1", "input"}, {"W1", "t1"},    {"W1", "t2"}, {"W1", "t3"},
       {"input", "t1"}, {"input", "t3"}, {"t1", "t2"}, {"W2", "t3"}};
-  string error;
+  std::string error;
   EXPECT_TRUE(ExpectBefore(reverse_orders, order, &error)) << error;
 
   // A false ordering should fail the check.
@@ -111,7 +112,7 @@ TEST(AlgorithmTest, ReversePostOrder) {
   GetPostOrder(g, &order);
 
   // Check that the order respects the dependencies correctly.
-  std::vector<std::pair<string, string>> orders = {
+  std::vector<std::pair<std::string, std::string>> orders = {
       {"input", "W1"}, {"t1", "W1"},    {"t2", "W1"}, {"t3", "W1"},
       {"t1", "input"}, {"t3", "input"}, {"t2", "t1"}, {"t3", "W2"}};
   EXPECT_TRUE(ExpectBefore(orders, order, &error)) << error;
@@ -122,16 +123,16 @@ TEST(AlgorithmTest, ReversePostOrder) {
 }
 
 TEST(AlgorithmTest, ReversePostOrderStable) {
-  int64 run_count = 100;
+  int64_t run_count = 100;
   using namespace ::tensorflow::ops;  // NOLINT(build/namespaces)
 
-  for (int64 i = 0; i < run_count; ++i) {
+  for (int64_t i = 0; i < run_count; ++i) {
     // One source of nondeterminism comes from unordered set with key of a
     // pointer type, for example the order of FlatSet<Node*> depends on the
     // raw pointer value of Node. Stable post order suppose to remove this
     // nondeterminism by enforcing an ordering based on node ids.
     GraphDefBuilder b(GraphDefBuilder::kFailImmediately);
-    string error;
+    std::string error;
     Node* w1 = SourceOp("TestParams", b.opts().WithName("W1"));
     Node* input =
         SourceOp("TestInput", b.opts().WithName("input").WithControlInput(w1));
@@ -140,9 +141,9 @@ TEST(AlgorithmTest, ReversePostOrderStable) {
     // this creates enough entropy in the memory distance between t2 and t3 thus
     // forces them to have randomized ordering had stable DFS was not
     // implemented correctly.
-    for (int64 j = 0; j < i; ++j) {
+    for (int64_t j = 0; j < i; ++j) {
       BinaryOp("TestMul", w1, {input, 1},
-               b.opts().WithName(strings::StrCat("internal", j)));
+               b.opts().WithName(absl::StrCat("internal", j)));
     }
 
     BinaryOp("TestMul", w1, {input, 1}, b.opts().WithName("t3"));
@@ -203,21 +204,21 @@ TEST(AlgorithmTest, PostOrderWithEdgeFilter) {
   }
 }
 
-static void BM_PruneForReverseReachability(int iters, int num_nodes,
-                                           int num_edges_per_node) {
-  testing::StopTiming();
+void BM_PruneForReverseReachability(::testing::benchmark::State& state) {
+  const int num_nodes = state.range(0);
+  const int num_edges_per_node = state.range(1);
   const GraphDef graph_def =
       test::CreateGraphDef(num_nodes, num_edges_per_node);
   const auto registry = OpRegistry::Global();
   GraphConstructorOptions opts;
-  for (int i = 0; i < iters; ++i) {
+  for (auto s : state) {
+    state.PauseTiming();
     Graph graph(registry);
     TF_CHECK_OK(ConvertGraphDefToGraph(opts, graph_def, &graph));
     std::unordered_set<const Node*> visited;
     visited.insert(graph.FindNodeId(graph.num_nodes() - 1));
-    testing::StartTiming();
+    state.ResumeTiming();
     PruneForReverseReachability(&graph, std::move(visited));
-    testing::StopTiming();
   }
 }
 BENCHMARK(BM_PruneForReverseReachability)->ArgPair(10, 2);

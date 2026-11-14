@@ -14,9 +14,6 @@
 # ==============================================================================
 """Device-related support functions."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from tensorflow.python.eager import context
 from tensorflow.python.framework import config
@@ -76,6 +73,35 @@ def canonicalize(d, default=None):
   return result.to_string()
 
 
+def canonicalize_without_job_and_task(d):
+  """Partially canonicalize device string.
+
+  This returns device string from `d` without including job and task.
+  This is most useful for parameter server strategy where the device strings are
+  generated on the chief, but executed on workers.
+
+   For example:
+    If d = '/cpu:0', default='/job:worker/task:1', it returns
+      '/replica:0/device:CPU:0'.
+    If d = '/cpu:0', default='/job:worker', it returns
+      '/replica:0/device:CPU:0'.
+    If d = '/gpu:0', default=None, it returns
+      '/replica:0/device:GPU:0'.
+
+  Note: This uses "job:localhost" as the default if executing eagerly.
+
+  Args:
+    d: a device string or tf.config.LogicalDevice
+
+  Returns:
+    a partially canonicalized device string.
+  """
+  canonicalized_device = canonicalize(d)
+  spec = tf_device.DeviceSpec.from_string(canonicalized_device)
+  spec = spec.replace(job=None, task=None, replica=0)
+  return spec.to_string()
+
+
 def resolve(d):
   """Canonicalize `d` with current device as default."""
   return canonicalize(d, default=current())
@@ -119,12 +145,16 @@ def current():
   return d
 
 
-def get_host_for_device(device):
+def get_host_for_device(device, device_index=0):
   """Returns the corresponding host device for the given device."""
   spec = tf_device.DeviceSpec.from_string(device)
   return tf_device.DeviceSpec(
-      job=spec.job, replica=spec.replica, task=spec.task,
-      device_type="CPU", device_index=0).to_string()
+      job=spec.job,
+      replica=spec.replica,
+      task=spec.task,
+      device_type="CPU",
+      device_index=device_index,
+  ).to_string()
 
 
 def local_devices_from_num_gpus(num_gpus):

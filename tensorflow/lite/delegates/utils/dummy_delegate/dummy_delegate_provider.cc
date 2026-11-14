@@ -13,9 +13,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/delegates/utils/dummy_delegate/dummy_delegate.h"
+#include "tensorflow/lite/tools/command_line_flags.h"
 #include "tensorflow/lite/tools/delegates/delegate_provider.h"
+#include "tensorflow/lite/tools/tool_params.h"
 
 namespace tflite {
 namespace tools {
@@ -32,6 +37,8 @@ class DummyDelegateProvider : public DelegateProvider {
   void LogParams(const ToolParams& params, bool verbose) const final;
 
   TfLiteDelegatePtr CreateTfLiteDelegate(const ToolParams& params) const final;
+  std::pair<TfLiteDelegatePtr, int> CreateRankedTfLiteDelegate(
+      const ToolParams& params) const final;
 
   std::string GetName() const final { return "DummyDelegate"; }
 };
@@ -58,5 +65,12 @@ TfLiteDelegatePtr DummyDelegateProvider::CreateTfLiteDelegate(
   return TfLiteDelegatePtr(nullptr, [](TfLiteDelegate*) {});
 }
 
+std::pair<TfLiteDelegatePtr, int>
+DummyDelegateProvider::CreateRankedTfLiteDelegate(
+    const ToolParams& params) const {
+  auto ptr = CreateTfLiteDelegate(params);
+  return std::make_pair(std::move(ptr),
+                        params.GetPosition<bool>("use_dummy_delegate"));
+}
 }  // namespace tools
 }  // namespace tflite

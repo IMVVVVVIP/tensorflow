@@ -29,7 +29,7 @@ static Graph* Multinomial(int batch_size, int num_classes, int num_samples) {
   Tensor logits_t(DT_FLOAT, TensorShape({batch_size, num_classes}));
   Tensor num_samples_t(DT_INT32, TensorShape());
   logits_t.flat<float>().setRandom();
-  num_samples_t.scalar<int32>().setConstant(num_samples);
+  num_samples_t.scalar<int32_t>().setConstant(num_samples);
 
   Node* ret;
   TF_CHECK_OK(NodeBuilder(g->NewName("multinomial"), "Multinomial")
@@ -40,11 +40,15 @@ static Graph* Multinomial(int batch_size, int num_classes, int num_samples) {
   return g;
 }
 
-#define BM_MultinomialDev(DEVICE, B, C, S)                           \
-  static void BM_Multinomial_##DEVICE##_##B##_##C##_##S(int iters) { \
-    test::Benchmark(#DEVICE, Multinomial(B, C, S)).Run(iters);       \
-    testing::ItemsProcessed(static_cast<int64>(B) * C * S * iters);  \
-  }                                                                  \
+#define BM_MultinomialDev(DEVICE, B, C, S)                    \
+  static void BM_Multinomial_##DEVICE##_##B##_##C##_##S(      \
+      ::testing::benchmark::State& state) {                   \
+    test::Benchmark(#DEVICE, Multinomial(B, C, S),            \
+                    /*old_benchmark_api*/ false)              \
+        .Run(state);                                          \
+    state.SetItemsProcessed(static_cast<int64_t>(B) * C * S * \
+                            state.iterations());              \
+  }                                                           \
   BENCHMARK(BM_Multinomial_##DEVICE##_##B##_##C##_##S);
 
 #define BM_MultinomialBCS(B, C, S) \

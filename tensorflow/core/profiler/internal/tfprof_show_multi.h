@@ -1,4 +1,4 @@
-/* Copyright 2016 The TensorFlow Authors All Rights Reserved.
+/* Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -19,11 +19,10 @@ limitations under the License.
 #define TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_SHOW_MULTI_H_
 
 #include <algorithm>
+#include <memory>
 #include <string>
 #include <vector>
 
-#include "tensorflow/c/checkpoint_reader.h"
-#include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/profiler/internal/tfprof_constants.h"
 #include "tensorflow/core/profiler/internal/tfprof_node.h"
@@ -40,17 +39,18 @@ namespace tfprof {
 
 class TFMultiShow {
  public:
-  explicit TFMultiShow() {}
-  virtual ~TFMultiShow() {}
+  explicit TFMultiShow() = default;
+  virtual ~TFMultiShow() = default;
   virtual void AddNode(TFGraphNode* node) = 0;
   virtual void Build() = 0;
-  const MultiGraphNodeProto& Show(const string& prefix, const Options& opts);
+  const MultiGraphNodeProto& Show(const std::string& prefix,
+                                  const Options& opts);
 
  protected:
   virtual const ShowMultiNode* ShowInternal(const Options& opts,
                                             Timeline* timeline) = 0;
 
-  bool LookUpCheckPoint(const string& name,
+  bool LookUpCheckPoint(const std::string& name,
                         std::unique_ptr<TFProfTensor>* tensor);
 
   // Overridden by subclass if extra requirements need to be met.
@@ -63,14 +63,14 @@ class TFMultiShow {
                   int depth) const;
 
   bool ShouldTrim(const ShowMultiNode* node,
-                  const std::vector<string>& regexes) const;
+                  const std::vector<std::string>& regexes) const;
 
   bool ReAccount(ShowMultiNode* node, const Options& opts);
 
-  string FormatLegend(const Options& opts) const;
-  string FormatInputShapes(const MultiGraphNodeProto& proto) const;
-  std::vector<string> FormatTimes(const ShowMultiNode* node,
-                                  const Options& opts) const;
+  std::string FormatLegend(const Options& opts) const;
+  std::string FormatInputShapes(const MultiGraphNodeProto& proto) const;
+  std::vector<std::string> FormatTimes(const ShowMultiNode* node,
+                                       const Options& opts) const;
 
   template <typename T>
   std::vector<T*> SortNodes(const std::vector<T*>& nodes, const Options& opts) {
@@ -78,46 +78,46 @@ class TFMultiShow {
       return nodes;
     }
     std::vector<T*> sorted_nodes = nodes;
-    std::sort(sorted_nodes.begin(), sorted_nodes.end(),
-              [&opts](const T* n1, const T* n2) {
-                if (n1->name() == kTFProfRoot) return true;
-                if (n2->name() == kTFProfRoot) return false;
-                bool name_cmp = n1->name() < n2->name();
-                if (opts.order_by == kOrderBy[0]) {
-                  return name_cmp;
-                } else if (opts.order_by == kOrderBy[1]) {
-                  return n1->proto().total_requested_bytes() >
-                         n2->proto().total_requested_bytes();
-                } else if (opts.order_by == kOrderBy[2]) {
-                  return n1->proto().total_peak_bytes() >
-                         n2->proto().total_peak_bytes();
-                } else if (opts.order_by == kOrderBy[3]) {
-                  return n1->proto().total_residual_bytes() >
-                         n2->proto().total_residual_bytes();
-                } else if (opts.order_by == kOrderBy[4]) {
-                  return n1->proto().total_output_bytes() >
-                         n2->proto().total_output_bytes();
-                } else if (opts.order_by == kOrderBy[5]) {
-                  return n1->proto().total_exec_micros() >
-                         n2->proto().total_exec_micros();
-                } else if (opts.order_by == kOrderBy[6]) {
-                  return n1->proto().total_accelerator_exec_micros() >
-                         n2->proto().total_accelerator_exec_micros();
-                } else if (opts.order_by == kOrderBy[7]) {
-                  return n1->proto().total_cpu_exec_micros() >
-                         n2->proto().total_cpu_exec_micros();
-                } else if (opts.order_by == kOrderBy[8]) {
-                  return n1->proto().total_parameters() >
-                         n2->proto().total_parameters();
-                } else if (opts.order_by == kOrderBy[9]) {
-                  return n1->proto().total_float_ops() >
-                         n2->proto().total_float_ops();
-                } else if (opts.order_by == kOrderBy[10]) {
-                  return n1->node->graph_nodes().size() >
-                         n2->node->graph_nodes().size();
-                }
-                return name_cmp;
-              });
+    std::stable_sort(sorted_nodes.begin(), sorted_nodes.end(),
+                     [&opts](const T* n1, const T* n2) {
+                       if (n1->name() == kTFProfRoot) return true;
+                       if (n2->name() == kTFProfRoot) return false;
+                       bool name_cmp = n1->name() < n2->name();
+                       if (opts.order_by == kOrderBy[0]) {
+                         return name_cmp;
+                       } else if (opts.order_by == kOrderBy[1]) {
+                         return n1->proto().total_requested_bytes() >
+                                n2->proto().total_requested_bytes();
+                       } else if (opts.order_by == kOrderBy[2]) {
+                         return n1->proto().total_peak_bytes() >
+                                n2->proto().total_peak_bytes();
+                       } else if (opts.order_by == kOrderBy[3]) {
+                         return n1->proto().total_residual_bytes() >
+                                n2->proto().total_residual_bytes();
+                       } else if (opts.order_by == kOrderBy[4]) {
+                         return n1->proto().total_output_bytes() >
+                                n2->proto().total_output_bytes();
+                       } else if (opts.order_by == kOrderBy[5]) {
+                         return n1->proto().total_exec_micros() >
+                                n2->proto().total_exec_micros();
+                       } else if (opts.order_by == kOrderBy[6]) {
+                         return n1->proto().total_accelerator_exec_micros() >
+                                n2->proto().total_accelerator_exec_micros();
+                       } else if (opts.order_by == kOrderBy[7]) {
+                         return n1->proto().total_cpu_exec_micros() >
+                                n2->proto().total_cpu_exec_micros();
+                       } else if (opts.order_by == kOrderBy[8]) {
+                         return n1->proto().total_parameters() >
+                                n2->proto().total_parameters();
+                       } else if (opts.order_by == kOrderBy[9]) {
+                         return n1->proto().total_float_ops() >
+                                n2->proto().total_float_ops();
+                       } else if (opts.order_by == kOrderBy[10]) {
+                         return n1->node->graph_nodes().size() >
+                                n2->node->graph_nodes().size();
+                       }
+                       return name_cmp;
+                     });
     return sorted_nodes;
   }
 };

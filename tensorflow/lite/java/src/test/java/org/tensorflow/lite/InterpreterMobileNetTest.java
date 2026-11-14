@@ -38,11 +38,11 @@ public final class InterpreterMobileNetTest {
 
   private static final ByteBuffer MOBILENET_FLOAT_MODEL_BUFFER =
       TestUtils.getTestFileAsBuffer(
-          "third_party/tensorflow/lite/java/demo/app/src/main/assets/mobilenet_v1_1.0_224.tflite");
+          "tensorflow/lite/java/demo/app/src/main/assets/mobilenet_v1_1.0_224.tflite");
 
   private static final ByteBuffer MOBILENET_QUANTIZED_MODEL_BUFFER =
       TestUtils.getTestFileAsBuffer(
-          "third_party/tensorflow/lite/java/demo/app/src/main/assets/mobilenet_v1_1.0_224_quant.tflite");
+          "tensorflow/lite/java/demo/app/src/main/assets/mobilenet_v1_1.0_224_quant.tflite");
 
   @Test
   public void testMobileNet() {
@@ -125,6 +125,7 @@ public final class InterpreterMobileNetTest {
             k,
             new Comparator<Map.Entry<Integer, Float>>() {
               @Override
+              @SuppressWarnings("CompareToZero")
               public int compare(Map.Entry<Integer, Float> o1, Map.Entry<Integer, Float> o2) {
                 // Intentionally reversed to put high confidence at the head of the queue.
                 return o1.getValue().compareTo(o2.getValue()) * -1;

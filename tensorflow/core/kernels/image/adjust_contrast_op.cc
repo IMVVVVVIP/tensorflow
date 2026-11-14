@@ -14,28 +14,29 @@ limitations under the License.
 ==============================================================================*/
 
 // See docs in ../ops/image_ops.cc
+#include <algorithm>
+#include <cstring>
+
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #define EIGEN_USE_THREADS
 
-#include "tensorflow/core/kernels/image/adjust_contrast_op.h"
-
-#include <memory>
-
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/kernels/image/adjust_contrast_op.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/util/determinism.h"
 
 namespace tensorflow {
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
-#ifdef TENSORFLOW_USE_SYCL
-typedef Eigen::SyclDevice SYCLDevice;
-#endif
 
 // AdjustContrastOp is deprecated as of GraphDef version >= 2
 
@@ -51,21 +52,33 @@ class AdjustContrastOp : public OpKernel {
     const Tensor& min_value = context->input(2);
     const Tensor& max_value = context->input(3);
     OP_REQUIRES(context, input.dims() >= 3,
-                errors::InvalidArgument("input must be at least 3-D, got shape",
-                                        input.shape().DebugString()));
-    const int64 height = input.dim_size(input.dims() - 3);
-    const int64 width = input.dim_size(input.dims() - 2);
-    const int64 channels = input.dim_size(input.dims() - 1);
+                absl::InvalidArgumentError(
+                    absl::StrCat("input must be at least 3-D, got shape",
+                                 input.shape().DebugString())));
+    const int64_t height = input.dim_size(input.dims() - 3);
+    const int64_t width = input.dim_size(input.dims() - 2);
+    const int64_t channels = input.dim_size(input.dims() - 1);
 
-    OP_REQUIRES(context, TensorShapeUtils::IsScalar(factor.shape()),
-                errors::InvalidArgument("contrast_factor must be scalar: ",
-                                        factor.shape().DebugString()));
-    OP_REQUIRES(context, TensorShapeUtils::IsScalar(min_value.shape()),
-                errors::InvalidArgument("min_value must be scalar: ",
-                                        min_value.shape().DebugString()));
-    OP_REQUIRES(context, TensorShapeUtils::IsScalar(max_value.shape()),
-                errors::InvalidArgument("max_value must be scalar: ",
-                                        max_value.shape().DebugString()));
+    OP_REQUIRES(
+        context, TensorShapeUtils::IsScalar(factor.shape()),
+        absl::InvalidArgumentError(absl::StrCat(
+            "contrast_factor must be scalar: ", factor.shape().DebugString())));
+    OP_REQUIRES(
+        context, TensorShapeUtils::IsScalar(min_value.shape()),
+        absl::InvalidArgumentError(absl::StrCat(
+            "min_value must be scalar: ", min_value.shape().DebugString())));
+    OP_REQUIRES(
+        context, TensorShapeUtils::IsScalar(max_value.shape()),
+        absl::InvalidArgumentError(absl::StrCat(
+            "max_value must be scalar: ", max_value.shape().DebugString())));
+
+    if (std::is_same_v<Device, GPUDevice>) {
+      OP_REQUIRES(
+          context, !OpDeterminismRequired(),
+          absl::UnimplementedError(
+              "A deterministic GPU implementation of AdjustContrast is not"
+              " currently available."));
+    }
 
     Tensor* output = nullptr;
     OP_REQUIRES_OK(context,
@@ -77,8 +90,8 @@ class AdjustContrastOp : public OpKernel {
                                                    &mean_values));
 
     if (input.NumElements() > 0) {
-      const int64 batch = input.NumElements() / (height * width * channels);
-      const int64 shape[4] = {batch, height, width, channels};
+      const int64_t batch = input.NumElements() / (height * width * channels);
+      const int64_t shape[4] = {batch, height, width, channels};
       functor::AdjustContrast<Device, T>()(
           context->eigen_device<Device>(), input.shaped<T, 4>(shape),
           factor.scalar<float>(), min_value.scalar<float>(),
@@ -93,10 +106,10 @@ class AdjustContrastOp : public OpKernel {
       Name("AdjustContrast").Device(DEVICE_CPU).TypeConstraint<T>("T"), \
       AdjustContrastOp<CPUDevice, T>);
 
-REGISTER_KERNEL(uint8);
-REGISTER_KERNEL(int8);
-REGISTER_KERNEL(int16);
-REGISTER_KERNEL(int32);
+REGISTER_KERNEL(uint8_t);
+REGISTER_KERNEL(int8_t);
+REGISTER_KERNEL(int16_t);
+REGISTER_KERNEL(int32_t);
 REGISTER_KERNEL(float);
 REGISTER_KERNEL(double);
 #undef REGISTER_KERNEL
@@ -117,10 +130,10 @@ namespace functor {
       typename TTypes<float, 4>::Tensor output);                    \
   extern template struct AdjustContrast<GPUDevice, T>;
 
-DECLARE_GPU_SPEC(uint8);
-DECLARE_GPU_SPEC(int8);
-DECLARE_GPU_SPEC(int16);
-DECLARE_GPU_SPEC(int32);
+DECLARE_GPU_SPEC(uint8_t);
+DECLARE_GPU_SPEC(int8_t);
+DECLARE_GPU_SPEC(int16_t);
+DECLARE_GPU_SPEC(int32_t);
 DECLARE_GPU_SPEC(float);
 DECLARE_GPU_SPEC(double);
 #undef DECLARE_GPU_SPEC
@@ -131,10 +144,10 @@ DECLARE_GPU_SPEC(double);
   REGISTER_KERNEL_BUILDER(                                              \
       Name("AdjustContrast").Device(DEVICE_GPU).TypeConstraint<T>("T"), \
       AdjustContrastOp<GPUDevice, T>);
-REGISTER_GPU_KERNEL(uint8);
-REGISTER_GPU_KERNEL(int8);
-REGISTER_GPU_KERNEL(int16);
-REGISTER_GPU_KERNEL(int32);
+REGISTER_GPU_KERNEL(uint8_t);
+REGISTER_GPU_KERNEL(int8_t);
+REGISTER_GPU_KERNEL(int16_t);
+REGISTER_GPU_KERNEL(int32_t);
 REGISTER_GPU_KERNEL(float);
 REGISTER_GPU_KERNEL(double);
 #undef REGISTER_GPU_KERNEL
@@ -150,32 +163,34 @@ class AdjustContrastOpV2Base : public OpKernel {
     const Tensor* input = nullptr;
     const Tensor* factor = nullptr;
     Tensor* output = nullptr;
-    int64 batch = 0;
-    int64 height = 0;
-    int64 width = 0;
-    int64 channels = 0;
+    int64_t batch = 0;
+    int64_t height = 0;
+    int64_t width = 0;
+    int64_t channels = 0;
   };
 
   void Compute(OpKernelContext* context) override {
     const Tensor& input = context->input(0);
     const Tensor& factor = context->input(1);
     OP_REQUIRES(context, input.dims() >= 3,
-                errors::InvalidArgument("input must be at least 3-D, got shape",
-                                        input.shape().DebugString()));
-    const int64 height = input.dim_size(input.dims() - 3);
-    const int64 width = input.dim_size(input.dims() - 2);
-    const int64 channels = input.dim_size(input.dims() - 1);
+                absl::InvalidArgumentError(
+                    absl::StrCat("input must be at least 3-D, got shape",
+                                 input.shape().DebugString())));
+    const int64_t height = input.dim_size(input.dims() - 3);
+    const int64_t width = input.dim_size(input.dims() - 2);
+    const int64_t channels = input.dim_size(input.dims() - 1);
 
-    OP_REQUIRES(context, TensorShapeUtils::IsScalar(factor.shape()),
-                errors::InvalidArgument("contrast_factor must be scalar: ",
-                                        factor.shape().DebugString()));
+    OP_REQUIRES(
+        context, TensorShapeUtils::IsScalar(factor.shape()),
+        absl::InvalidArgumentError(absl::StrCat(
+            "contrast_factor must be scalar: ", factor.shape().DebugString())));
 
     Tensor* output = nullptr;
     OP_REQUIRES_OK(context,
                    context->allocate_output(0, input.shape(), &output));
 
     if (input.NumElements() > 0) {
-      const int64 batch = input.NumElements() / (height * width * channels);
+      const int64_t batch = input.NumElements() / (height * width * channels);
       ComputeOptions options;
       options.input = &input;
       options.factor = &factor;
@@ -203,11 +218,11 @@ class AdjustContrastOpv2<CPUDevice, float> : public AdjustContrastOpV2Base {
 
   void DoCompute(OpKernelContext* context,
                  const ComputeOptions& options) override {
-    const int64 batch = options.batch;
-    const int64 height = options.height;
-    const int64 width = options.width;
-    const int64 channels = options.channels;
-    const int64 image_size = height * width;
+    const int64_t batch = options.batch;
+    const int64_t height = options.height;
+    const int64_t width = options.width;
+    const int64_t channels = options.channels;
+    const int64_t image_size = height * width;
     const Tensor* input = options.input;
     const Tensor* factor = options.factor;
     Tensor* output = options.output;
@@ -235,25 +250,26 @@ class AdjustContrastOpv2<CPUDevice, float> : public AdjustContrastOpV2Base {
   void ReduceMeanAcrossImage(typename TTypes<float, 3>::ConstTensor input,
                              typename TTypes<float, 2>::Tensor mean,
                              typename TTypes<float, 3>::Tensor scratch) {
-    const int64 batch = input.dimension(0);
-    const int64 image_size = input.dimension(1);
-    const int64 channels = input.dimension(2);
+    const int64_t batch = input.dimension(0);
+    const int64_t image_size = input.dimension(1);
+    const int64_t channels = input.dimension(2);
     TTypes<float, 1>::ConstTensor input_flat(&input(0, 0, 0), input.size());
     TTypes<float, 1>::Tensor mean_flat(&mean(0, 0), mean.size());
     TTypes<float, 1>::Tensor summation_scratch(&scratch(0, 0, 0),
                                                scratch.size());
+    using Eigen::DenseIndex;
     typedef Eigen::array<Eigen::DenseIndex, 1> Index;
-    const int64 plane_size = image_size * channels;
+    const int64_t plane_size = image_size * channels;
     // Since the number of channels in the early layers is often small, a
     // straightforward loop for summing cannot utilize vectorization.
     // This algorithm repeatedly folds each image plane by half, until
     // only one set of channels remains.
-    for (int64 i = 0; i < batch; i++) {
-      auto input_plane =
-          input_flat.slice(Index(i * plane_size), Index(plane_size));
-      auto summation_plane =
-          summation_scratch.slice(Index(i * plane_size), Index(plane_size));
-      int64 remaining_size = image_size;
+    for (int64_t i = 0; i < batch; i++) {
+      auto input_plane = input_flat.slice(Index{DenseIndex(i * plane_size)},
+                                          Index{DenseIndex(plane_size)});
+      auto summation_plane = summation_scratch.slice(
+          Index{DenseIndex(i * plane_size)}, Index{DenseIndex(plane_size)});
+      int64_t remaining_size = image_size;
       int round = 0;
       // Sum the input(i, :, k) into mean(i, k). Repeatedly splits the input
       // array into half and sums the two halves, until only one set of channels
@@ -277,32 +293,35 @@ class AdjustContrastOpv2<CPUDevice, float> : public AdjustContrastOpV2Base {
       // that in each round we sum up elements that are contiguous. So we can
       // use their flattened structure to gain vectorization efficiency.
       do {
-        int64 right_size = remaining_size / 2;
-        int64 left_size = remaining_size - right_size;
+        int64_t right_size = remaining_size / 2;
+        int64_t left_size = remaining_size - right_size;
         DCHECK(left_size == right_size || left_size == right_size + 1);
         if (round == 0) {
           // In the first round, sum the left side and right side of the input
           // array into the summation area.
-          summation_plane.slice(Index(0), Index(right_size * channels)) =
-              input_plane.slice(Index(left_size * channels),
-                                Index(right_size * channels)) +
-              input_plane.slice(Index(0), Index(right_size * channels));
+          summation_plane.slice(Index{0},
+                                Index{DenseIndex(right_size * channels)}) =
+              input_plane.slice(Index{DenseIndex(left_size * channels)},
+                                Index{DenseIndex(right_size * channels)}) +
+              input_plane.slice(Index{0},
+                                Index{DenseIndex(right_size * channels)});
           if (left_size > right_size) {
             DCHECK_EQ(left_size - right_size, 1);
             // Copy over the remaining column if the remaining_size is odd.
             // This also handles the case where image_size == 1.
-            summation_plane.slice(Index(right_size * channels),
-                                  Index(channels)) =
-                input_plane.slice(Index(right_size * channels),
-                                  Index(channels));
+            summation_plane.slice(Index{DenseIndex(right_size * channels)},
+                                  Index{DenseIndex(channels)}) =
+                input_plane.slice(Index{DenseIndex(right_size * channels)},
+                                  Index{DenseIndex(channels)});
           }
         } else {
           // For all the remaining rounds, add the second half of the inputs
           // into the first half of the inputs. With the flat structure and
           // large size, this utilizes vectorization between components.
-          summation_plane.slice(Index(0), Index(right_size * channels)) +=
-              summation_plane.slice(Index(left_size * channels),
-                                    Index(right_size * channels));
+          summation_plane.slice(Index{0},
+                                Index{DenseIndex(right_size * channels)}) +=
+              summation_plane.slice(Index{DenseIndex(left_size * channels)},
+                                    Index{DenseIndex(right_size * channels)});
         }
         remaining_size = left_size;
         round++;
@@ -310,9 +329,11 @@ class AdjustContrastOpv2<CPUDevice, float> : public AdjustContrastOpV2Base {
       const float mean_scaling = 1.0f / image_size;
       // The first channels elements in summation_plane now holds the summation.
       // Scale it with image_size and copy over to the means.
-      auto mean_plane = mean_flat.slice(Index(i * channels), Index(channels));
+      auto mean_plane = mean_flat.slice(Index{DenseIndex(i * channels)},
+                                        Index{DenseIndex(channels)});
       mean_plane =
-          summation_plane.slice(Index(0), Index(channels)) * mean_scaling;
+          summation_plane.slice(Index{0}, Index{DenseIndex(channels)}) *
+          mean_scaling;
     }
   }
 
@@ -320,14 +341,14 @@ class AdjustContrastOpv2<CPUDevice, float> : public AdjustContrastOpV2Base {
   // dim-1.
   void BroadcastAcrossImage(typename TTypes<float, 2>::Tensor inputs,
                             typename TTypes<float, 3>::Tensor outputs) {
-    int64 batch = outputs.dimension(0);
-    int64 image_size = outputs.dimension(1);
-    int64 channels = outputs.dimension(2);
+    int64_t batch = outputs.dimension(0);
+    int64_t image_size = outputs.dimension(1);
+    int64_t channels = outputs.dimension(2);
     // Similar to the reduction case, a straightforward implementation of this
     // does not utilize vectorization well because of the small channel size.
     // This algorithm repeatedly increases the area to be copied, and leads to
     // much better vectorizations in the copy.
-    for (int64 i = 0; i < batch; i++) {
+    for (int64_t i = 0; i < batch; i++) {
       // Copy over the inputs into outputs in this batch. Effectively:
       // outputs(i, :, k) = inputs(i, k). An example of how this algorithm
       // works:
@@ -353,13 +374,13 @@ class AdjustContrastOpv2<CPUDevice, float> : public AdjustContrastOpV2Base {
       // Copy the first set of channels.
       float* output_p = &outputs(i, 0, 0);
       memcpy(output_p, mean_p, sizeof(float) * channels);
-      int64 copied = 1;
+      int64_t copied = 1;
       while (copied < image_size) {
         // Repeatedly increases the number of elements to copy so they have
         // better vectorizations. However, the source of the copy has to be
         // not too large to stay in the cache.
-        const int64 kMaxToCopy = 1024;
-        int64 to_copy = std::min({copied, image_size - copied, kMaxToCopy});
+        const int64_t kMaxToCopy = 1024;
+        int64_t to_copy = std::min({copied, image_size - copied, kMaxToCopy});
         memcpy(output_p + channels * copied, output_p,
                to_copy * channels * sizeof(float));
         copied += to_copy;
@@ -375,7 +396,7 @@ class AdjustContrastOpv2<CPUDevice, float> : public AdjustContrastOpV2Base {
     const float factor_value = factor();
     float* p = output.data();
     const float* q = input.data();
-    for (int64 n = 0; n < input.size(); ++n) {
+    for (int64_t n = 0; n < input.size(); ++n) {
       p[n] += factor_value * (q[n] - p[n]);
     }
   }
@@ -414,8 +435,14 @@ class AdjustContrastOpv2<GPUDevice, T> : public AdjustContrastOpV2Base {
 
   void DoCompute(OpKernelContext* context,
                  const ComputeOptions& options) override {
-    const int64 shape[4] = {options.batch, options.height, options.width,
-                            options.channels};
+    const int64_t shape[4] = {options.batch, options.height, options.width,
+                              options.channels};
+    OP_REQUIRES(
+        context, !OpDeterminismRequired(),
+        absl::UnimplementedError(
+            "A deterministic GPU implementation of AdjustContrastv2 is not"
+            " currently available."));
+
     functor::AdjustContrastv2<GPUDevice, T>()(
         context->eigen_device<GPUDevice>(), options.input->shaped<T, 4>(shape),
         options.factor->scalar<float>(), options.output->shaped<T, 4>(shape));
@@ -434,26 +461,5 @@ REGISTER_GPU(Eigen::half)
 
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#ifdef TENSORFLOW_USE_SYCL
-template <>
-class AdjustContrastOpv2<SYCLDevice, float> : public AdjustContrastOpV2Base {
- public:
-  explicit AdjustContrastOpv2(OpKernelConstruction* context)
-      : AdjustContrastOpV2Base(context) {}
-
-  void DoCompute(OpKernelContext* context,
-                 const ComputeOptions& options) override {
-    const int64 shape[4] = {options.batch, options.height, options.width,
-                            options.channels};
-    functor::AdjustContrastv2<SYCLDevice>()(
-        context->eigen_device<SYCLDevice>(),
-        options.input->shaped<float, 4>(shape), options.factor->scalar<float>(),
-        options.output->shaped<float, 4>(shape));
-  }
-};
-REGISTER_KERNEL_BUILDER(
-    Name("AdjustContrastv2").Device(DEVICE_SYCL).TypeConstraint<float>("T"),
-    AdjustContrastOpv2<SYCLDevice, float>);
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // namespace tensorflow

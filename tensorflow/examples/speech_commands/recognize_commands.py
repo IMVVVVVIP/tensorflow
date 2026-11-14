@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Stream accuracy recognize commands."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 
 import numpy as np
@@ -28,16 +24,27 @@ class RecognizeResult(object):
   Attributes:
     founded_command: A string indicating the word just founded. Default value
       is '_silence_'
-    score: An float representing the confidence of founded word. Default
+    score: A float representing the confidence of founded word. Default
       value is zero.
     is_new_command: A boolean indicating if the founded command is a new one
       against the last one. Default value is False.
   """
 
-  def __init__(self):
-    self._founded_command = "_silence_"
-    self._score = 0
-    self._is_new_command = False
+  def __init__(self,
+               founded_command="_silence_",
+               score=0.0,
+               is_new_command=False):
+    """Construct a recognition result.
+
+    Args:
+      founded_command: A string indicating the word just founded.
+      score: A float representing the confidence of founded word.
+      is_new_command: A boolean indicating if the founded command is a new one
+        against the last one.
+    """
+    self._founded_command = founded_command
+    self._score = score
+    self._is_new_command = is_new_command
 
   @property
   def founded_command(self):
@@ -126,8 +133,10 @@ class RecognizeCommands(object):
       raise ValueError("The results for recognition should contain {} "
                        "elements, but there are {} produced".format(
                            self._label_count, latest_results.shape[0]))
-    if (self._previous_results.__len__() != 0 and
-        current_time_ms < self._previous_results[0][0]):
+    if (
+        self._previous_results
+        and current_time_ms < self._previous_results[0][0]
+    ):
       raise ValueError("Results must be fed in increasing time order, "
                        "but receive a timestamp of {}, which was earlier "
                        "than the previous one of {}".format(
@@ -142,7 +151,7 @@ class RecognizeCommands(object):
       self._previous_results.popleft()
 
     # If there are too few results, the result will be unreliable and bail.
-    how_many_results = self._previous_results.__len__()
+    how_many_results = len(self._previous_results)
     earliest_time = self._previous_results[0][0]
     sample_duration = current_time_ms - earliest_time
     if (how_many_results < self._minimum_count or

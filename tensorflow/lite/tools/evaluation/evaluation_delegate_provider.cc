@@ -15,8 +15,17 @@ limitations under the License.
 
 #include "tensorflow/lite/tools/evaluation/evaluation_delegate_provider.h"
 
+#include <cstdint>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "tensorflow/lite/c/c_api_types.h"
 #include "tensorflow/lite/tools/command_line_flags.h"
+#include "tensorflow/lite/tools/evaluation/proto/evaluation_stages.pb.h"
+#include "tensorflow/lite/tools/evaluation/utils.h"
 #include "tensorflow/lite/tools/logging.h"
+#include "tensorflow/lite/tools/tool_params.h"
 
 namespace tflite {
 namespace evaluation {
@@ -25,6 +34,7 @@ constexpr char kNnapiDelegate[] = "nnapi";
 constexpr char kGpuDelegate[] = "gpu";
 constexpr char kHexagonDelegate[] = "hexagon";
 constexpr char kXnnpackDelegate[] = "xnnpack";
+constexpr char kCoremlDelegate[] = "coreml";
 }  // namespace
 
 TfliteInferenceParams::Delegate ParseStringToDelegateType(
@@ -33,6 +43,7 @@ TfliteInferenceParams::Delegate ParseStringToDelegateType(
   if (val == kGpuDelegate) return TfliteInferenceParams::GPU;
   if (val == kHexagonDelegate) return TfliteInferenceParams::HEXAGON;
   if (val == kXnnpackDelegate) return TfliteInferenceParams::XNNPACK;
+  if (val == kCoremlDelegate) return TfliteInferenceParams::COREML;
   return TfliteInferenceParams::NONE;
 }
 
@@ -61,8 +72,13 @@ TfLiteDelegatePtr CreateTfLiteDelegate(const TfliteInferenceParams& params,
       return p;
     }
     case TfliteInferenceParams::XNNPACK: {
-      auto p = CreateXNNPACKDelegate(params.num_threads());
+      auto p = CreateXNNPACKDelegate(params.num_threads(), false);
       if (!p && error_msg) *error_msg = "XNNPACK delegate not supported.";
+      return p;
+    }
+    case TfliteInferenceParams::COREML: {
+      auto p = CreateCoreMlDelegate();
+      if (!p && error_msg) *error_msg = "CoreML delegate not supported.";
       return p;
     }
     case TfliteInferenceParams::NONE:
@@ -78,30 +94,33 @@ TfLiteDelegatePtr CreateTfLiteDelegate(const TfliteInferenceParams& params,
 }
 
 DelegateProviders::DelegateProviders()
-    : delegates_list_(tools::GetRegisteredDelegateProviders()),
+    : delegate_list_util_(&params_),
       delegates_map_([=]() -> std::unordered_map<std::string, int> {
         std::unordered_map<std::string, int> delegates_map;
-        for (int i = 0; i < delegates_list_.size(); ++i) {
-          delegates_map[delegates_list_[i]->GetName()] = i;
+        const auto& providers = delegate_list_util_.providers();
+        for (int i = 0; i < providers.size(); ++i) {
+          delegates_map[providers[i]->GetName()] = i;
         }
         return delegates_map;
       }()) {
-  for (const auto& one : delegates_list_) {
-    params_.Merge(one->DefaultParams());
-  }
+  delegate_list_util_.AddAllDelegateParams();
+}
+
+std::vector<Flag> DelegateProviders::GetFlags() {
+  std::vector<Flag> flags;
+  delegate_list_util_.AppendCmdlineFlags(flags);
+  return flags;
 }
 
 bool DelegateProviders::InitFromCmdlineArgs(int* argc, const char** argv) {
-  std::vector<Flag> flags;
-  for (const auto& one : delegates_list_) {
-    auto one_flags = one->CreateFlags(&params_);
-    flags.insert(flags.end(), one_flags.begin(), one_flags.end());
-  }
-
-  const bool parse_result = Flags::Parse(argc, argv, flags);
-  if (!parse_result) {
+  std::vector<Flag> flags = GetFlags();
+  bool parse_result = Flags::Parse(argc, argv, flags);
+  if (!parse_result || params_.Get<bool>("help")) {
     std::string usage = Flags::Usage(argv[0], flags);
     TFLITE_LOG(ERROR) << usage;
+    // Returning false intentionally when "--help=true" is specified so that
+    // the caller could check the return value to decide stopping the execution.
+    parse_result = false;
   }
   return parse_result;
 }
@@ -112,21 +131,8 @@ TfLiteDelegatePtr DelegateProviders::CreateDelegate(
   if (it == delegates_map_.end()) {
     return TfLiteDelegatePtr(nullptr, [](TfLiteDelegate*) {});
   }
-  return delegates_list_[it->second]->CreateTfLiteDelegate(params_);
-}
-
-std::vector<TfLiteDelegatePtr> DelegateProviders::CreateAllDelegates(
-    const tools::ToolParams& params) const {
-  std::vector<TfLiteDelegatePtr> delegates;
-  for (const auto& one : delegates_list_) {
-    auto ptr = one->CreateTfLiteDelegate(params);
-    // It's possible that a delegate of certain type won't be created as
-    // user-specified benchmark params tells not to.
-    if (ptr == nullptr) continue;
-    delegates.emplace_back(std::move(ptr));
-    TFLITE_LOG(INFO) << one->GetName() << " delegate is created.";
-  }
-  return delegates;
+  const auto& providers = delegate_list_util_.providers();
+  return providers[it->second]->CreateTfLiteDelegate(params_);
 }
 
 tools::ToolParams DelegateProviders::GetAllParams(
@@ -158,6 +164,14 @@ tools::ToolParams DelegateProviders::GetAllParams(
     case TfliteInferenceParams::XNNPACK:
       if (tool_params.HasParam("use_xnnpack")) {
         tool_params.Set<bool>("use_xnnpack", true);
+      }
+      if (tool_params.HasParam("xnnpack_force_fp16")) {
+        tool_params.Set<bool>("xnnpack_force_fp16", true);
+      }
+      break;
+    case TfliteInferenceParams::COREML:
+      if (tool_params.HasParam("use_coreml")) {
+        tool_params.Set<bool>("use_coreml", true);
       }
       break;
     default:

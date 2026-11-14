@@ -15,9 +15,11 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_TESTING_TFLITE_DIFF_UTIL_H_
 #define TENSORFLOW_LITE_TESTING_TFLITE_DIFF_UTIL_H_
 
+#include <string>
 #include <vector>
 
 #include "tensorflow/lite/string_type.h"
+#include "tensorflow/lite/testing/test_runner.h"
 #include "tensorflow/lite/testing/tflite_driver.h"
 
 namespace tflite {
@@ -47,6 +49,8 @@ struct DiffOptions {
   int num_runs_per_pass;
   // The type of delegate to apply during inference.
   TfLiteDriver::DelegateType delegate;
+  // Path of tflite model used to generate golden values.
+  std::string reference_tflite_model = "";
 };
 
 // Run a single TensorFLow Lite diff test with a given options.

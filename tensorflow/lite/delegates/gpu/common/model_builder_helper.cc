@@ -15,19 +15,26 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/common/model_builder_helper.h"
 
-#include <string>
+#include <stddef.h>
 
-#include <fp16.h>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <string>
+#include <vector>
+
+#include "fp16.h"  // from @FP16
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
-#include "tensorflow/lite/builtin_ops.h"
-#include "tensorflow/lite/c/common.h"
-#include "tensorflow/lite/context.h"
 #include "tensorflow/lite/context_util.h"
+#include "tensorflow/lite/core/c/builtin_op_data.h"
+#include "tensorflow/lite/core/c/common.h"
+#include "tensorflow/lite/delegates/gpu/common/data_type.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
 #include "tensorflow/lite/delegates/gpu/common/operations.h"
+#include "tensorflow/lite/delegates/gpu/common/shape.h"
 #include "tensorflow/lite/delegates/gpu/common/status.h"
-#include "tensorflow/lite/delegates/utils.h"
+#include "tensorflow/lite/delegates/gpu/common/tensor.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
 namespace tflite {
@@ -80,6 +87,8 @@ DataType ToDataType(TfLiteType type) {
       return DataType::INT8;
     case kTfLiteUInt8:
       return DataType::UINT8;
+    case kTfLiteBool:
+      return DataType::BOOL;
     default:
       return DataType::UNKNOWN;
   }
@@ -89,15 +98,19 @@ absl::Status ExtractTensorShape(const TfLiteTensor& tflite_tensor, BHWC* bhwc) {
   const TfLiteIntArray* dims = tflite_tensor.dims;
   switch (dims->size) {
     case 1:
+      // B layout
       *bhwc = BHWC(dims->data[0], 1, 1, 1);
       return absl::OkStatus();
     case 2:
+      // BC layout
       *bhwc = BHWC(dims->data[0], 1, 1, dims->data[1]);
       return absl::OkStatus();
     case 3:
+      // BWC layout
       *bhwc = BHWC(dims->data[0], 1, dims->data[1], dims->data[2]);
       return absl::OkStatus();
     case 4:
+      // BHWC layout
       *bhwc = BHWC(dims->data[0], dims->data[1], dims->data[2], dims->data[3]);
       return absl::OkStatus();
     default:
@@ -105,6 +118,40 @@ absl::Status ExtractTensorShape(const TfLiteTensor& tflite_tensor, BHWC* bhwc) {
           "Tensor \"", tflite_tensor.name ? tflite_tensor.name : "nullptr",
           "\" has bad input dims size: ", dims->size, "."));
   }
+}
+
+absl::Status ExtractAxisFromIndex(const TfLiteTensor& tflite_tensor, int index,
+                                  Axis* axis) {
+  const TfLiteIntArray* dims = tflite_tensor.dims;
+  if (index < 0) {
+    index = dims->size + index;
+  }
+  if (index < 0 || index >= dims->size) {
+    return absl::OutOfRangeError("Index for axis out of range");
+  }
+  std::vector<Axis> index_to_axis;
+  switch (dims->size) {
+    case 1:
+      // B layout
+      index_to_axis = {Axis::BATCH};
+      break;
+    case 2:
+      // BC layout
+      index_to_axis = {Axis::BATCH, Axis::CHANNELS};
+      break;
+    case 3:
+      // BWC layout
+      index_to_axis = {Axis::BATCH, Axis::WIDTH, Axis::CHANNELS};
+      break;
+    case 4:
+      // BHWC layout
+      index_to_axis = {Axis::BATCH, Axis::HEIGHT, Axis::WIDTH, Axis::CHANNELS};
+      break;
+    default:
+      return absl::UnavailableError("Unknown layout.");
+  }
+  *axis = index_to_axis[index];
+  return absl::OkStatus();
 }
 
 absl::Status ConvertTfLiteTensorToTensorRef(const TfLiteTensor& tflite_tensor,
@@ -209,34 +256,32 @@ void ConvertFloat16ToFloat32(size_t num_elements, const uint16_t* src,
 }
 
 template <>
-absl::Status CreateVectorCopyData<float>(const TfLiteTensor& tensor,
-                                         float* tensor_data) {
-  switch (tensor.type) {
+absl::Status CreateVectorCopyData<float>(const TfLiteTensor& src, float* dst) {
+  switch (src.type) {
     case kTfLiteFloat32:
-      std::memcpy(tensor_data, tensor.data.f, tensor.bytes);
-      break;
+      std::memcpy(dst, src.data.f, src.bytes);
+      return absl::OkStatus();
     case kTfLiteFloat16:
-      ConvertFloat16ToFloat32(
-          NumElements(&tensor),
-          reinterpret_cast<uint16_t const*>(tensor.data.f16), tensor_data);
-      break;
+      ConvertFloat16ToFloat32(NumElements(&src),
+                              reinterpret_cast<uint16_t const*>(src.data.f16),
+                              dst);
+      return absl::OkStatus();
     case kTfLiteInt8:
-      DequantizeConstantTensor(tensor, tensor.data.int8, tensor_data);
-      break;
+      DequantizeConstantTensor(src, src.data.int8, dst);
+      return absl::OkStatus();
     case kTfLiteUInt8:
-      DequantizeConstantTensor(tensor, tensor.data.uint8, tensor_data);
-      break;
+      DequantizeConstantTensor(src, src.data.uint8, dst);
+      return absl::OkStatus();
     case kTfLiteInt32:
-      DequantizeConstantTensor(tensor, tensor.data.i32, tensor_data);
-      break;
+      DequantizeConstantTensor(src, src.data.i32, dst);
+      return absl::OkStatus();
     default:
       return absl::InvalidArgumentError(
           "Unsupported data type for float32 tensor");
   }
-  return absl::OkStatus();
 }
 
-const std::string GetDimensionString(const TfLiteIntArray* dimensions) {
+std::string GetDimensionString(const TfLiteIntArray* dimensions) {
   return absl::StrJoin(TfLiteIntArrayView(dimensions), "x");
 }
 
@@ -332,24 +377,6 @@ absl::Status SetAllDimensions(const TfLiteIntArray* dimensions, BHWC* shape) {
   return absl::OkStatus();
 }
 
-absl::Status IsActivationSupported(TfLiteFusedActivation fused_activation) {
-  switch (fused_activation) {
-    case kTfLiteActNone:
-    case kTfLiteActRelu:
-    case kTfLiteActReluN1To1:
-    case kTfLiteActRelu6:
-    case kTfLiteActTanh:
-    case kTfLiteActSigmoid:
-      return absl::OkStatus();
-    case kTfLiteActSignBit:
-      return absl::UnimplementedError(
-          "TfLiteFusedActivation.kTfLiteActSignBit");
-
-      // Do not add default; we want compilation error rather than run-time
-      // error.
-  }
-}
-
 // If there is fused activation present, then there will be another node created
 // that will have identical output as the given node. New operation node will
 // depend on the given node output.
@@ -367,9 +394,12 @@ absl::Status MaybeFuseActivation(TfLiteFusedActivation fused_activation,
     case kTfLiteActReluN1To1:
     case kTfLiteActRelu6: {
       ReLUAttributes attr;
-      attr.clip = fused_activation == kTfLiteActRelu
-                      ? 0.0f
-                      : (fused_activation == kTfLiteActReluN1To1 ? 1.0f : 6.0f);
+      attr.activation_max =
+          fused_activation == kTfLiteActRelu
+              ? 0.0f
+              : (fused_activation == kTfLiteActReluN1To1 ? 1.0f : 6.0f);
+      attr.activation_min =
+          fused_activation == kTfLiteActReluN1To1 ? -1.0f : 0.0f;
       Node* activation_node;
       RETURN_IF_ERROR(
           NewPassthroughNode(graph, node, outputs[0], &activation_node));

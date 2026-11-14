@@ -13,17 +13,14 @@
 # limitations under the License.
 # ==============================================================================
 """A simple script for inspect checkpoint files."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import argparse
 import re
 import sys
 
+from absl import app
 import numpy as np
 
-from tensorflow.python.platform import app
+from tensorflow.python.framework import errors_impl
 from tensorflow.python.platform import flags
 from tensorflow.python.training import py_checkpoint_reader
 
@@ -69,7 +66,7 @@ def print_tensors_in_checkpoint_file(file_name, tensor_name, all_tensors,
     tensor_name: Name of the tensor in the checkpoint file to print.
     all_tensors: Boolean indicating whether to print all tensors.
     all_tensor_names: Boolean indicating whether to print all tensor names.
-    count_exclude_pattern: Regex string, pattern to exclude tensors when count.
+    count_exclude_pattern: Regex string, pattern to exclude tensors from count.
   """
   try:
     reader = py_checkpoint_reader.NewCheckpointReader(file_name)
@@ -79,7 +76,10 @@ def print_tensors_in_checkpoint_file(file_name, tensor_name, all_tensors,
       for key, value in sorted(var_to_shape_map.items()):
         print("tensor: %s (%s) %s" % (key, var_to_dtype_map[key].name, value))
         if all_tensors:
-          print(reader.get_tensor(key))
+          try:
+            print(reader.get_tensor(key))
+          except errors_impl.InternalError:
+            print("<not convertible to a numpy dtype>")
     elif not tensor_name:
       print(reader.debug_string().decode("utf-8", errors="ignore"))
     else:
@@ -123,7 +123,7 @@ def parse_numpy_printoption(kv_str):
 
   Raises:
     argparse.ArgumentTypeError: If the string couldn't be used to set any
-        nump printoption.
+        numpy printoption.
   """
   k_v_str = kv_str.split("=", 1)
   if len(k_v_str) != 2 or not k_v_str[0]:
@@ -147,11 +147,14 @@ def parse_numpy_printoption(kv_str):
 
 def main(unused_argv):
   if not FLAGS.file_name:
-    print("Usage: inspect_checkpoint --file_name=checkpoint_file_name "
-          "[--tensor_name=tensor_to_print] "
-          "[--all_tensors] "
-          "[--all_tensor_names] "
-          "[--printoptions]")
+    print(
+        "Usage: inspect_checkpoint --file_name=checkpoint_file_name "
+        "[--tensor_name=tensor_to_print] "
+        "[--all_tensors] "
+        "[--all_tensor_names] "
+        "[--count_exclude_pattern] "
+        "[--printoptions]"
+    )
     sys.exit(1)
   else:
     print_tensors_in_checkpoint_file(

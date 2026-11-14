@@ -15,7 +15,9 @@ limitations under the License.
 
 #include "tensorflow/core/util/tensor_slice_set.h"
 
+#include <utility>
 #include <vector>
+
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/test.h"
@@ -83,7 +85,7 @@ TEST(TensorSliceSetTest, QueryMetaTwoD) {
   // We just need slice_1 for this
   {
     TensorSlice s = TensorSlice::ParseOrDie("0,2:-");
-    std::vector<std::pair<TensorSlice, string>> results;
+    std::vector<std::pair<TensorSlice, std::string>> results;
     EXPECT_TRUE(tss.QueryMeta(s, &results));
     EXPECT_EQ(1, results.size());
     EXPECT_EQ("0,2:-", results[0].first.DebugString());
@@ -98,7 +100,7 @@ TEST(TensorSliceSetTest, QueryMetaTwoD) {
   // We just need slice_1 for this
   {
     TensorSlice s = TensorSlice::ParseOrDie("1,1:-");
-    std::vector<std::pair<TensorSlice, string>> results;
+    std::vector<std::pair<TensorSlice, std::string>> results;
     EXPECT_TRUE(tss.QueryMeta(s, &results));
     EXPECT_EQ(1, results.size());
     EXPECT_EQ("0,2:-", results[0].first.DebugString());
@@ -114,7 +116,7 @@ TEST(TensorSliceSetTest, QueryMetaTwoD) {
   // We need both slice_1 and slice_2 for this.
   {
     TensorSlice s = TensorSlice::ParseOrDie("1,2:0,3");
-    std::vector<std::pair<TensorSlice, string>> results;
+    std::vector<std::pair<TensorSlice, std::string>> results;
     EXPECT_TRUE(tss.QueryMeta(s, &results));
     EXPECT_EQ(2, results.size());
     // Allow results to be returned in either order
@@ -138,18 +140,20 @@ TEST(TensorSliceSetTest, QueryMetaTwoD) {
   //   .   .   .   .   .
   {
     TensorSlice s = TensorSlice::ParseOrDie("1,2:2,3");
-    std::vector<std::pair<TensorSlice, string>> results;
+    std::vector<std::pair<TensorSlice, std::string>> results;
     EXPECT_FALSE(tss.QueryMeta(s, &results));
     EXPECT_EQ(0, results.size());
   }
 }
 
-static void BM_RegisterOneByOne(int parts) {
-  TensorShape shape({parts, 41});
+static void BM_RegisterOneByOne(::testing::benchmark::State& state) {
+  TensorShape shape({static_cast<int>(state.max_iterations), 41});
   TensorSliceSet slice_set(shape, DT_INT32);
-  for (int i = 0; i < parts; ++i) {
+  int i = 0;
+  for (auto s : state) {
     TensorSlice part({{i, 1}, {0, -1}});
     TF_CHECK_OK(slice_set.Register(part, part.DebugString()));
+    ++i;
   }
 }
 

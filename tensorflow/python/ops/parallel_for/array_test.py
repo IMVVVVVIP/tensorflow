@@ -14,24 +14,25 @@
 # ==============================================================================
 """Tests for vectorization of array kernels."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.eager import backprop
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import array_ops_stack
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn
 from tensorflow.python.ops import random_ops
+from tensorflow.python.ops import resource_variable_ops
 from tensorflow.python.ops import tensor_array_grad  # pylint: disable=unused-import
+from tensorflow.python.ops import variables
 from tensorflow.python.ops.parallel_for import control_flow_ops as pfor_control_flow_ops
 from tensorflow.python.ops.parallel_for.test_util import PForTestCase
 from tensorflow.python.platform import test
 
 
+@test_util.with_eager_op_as_function
 @test_util.run_all_in_graph_and_eager_modes
 class ArrayTest(PForTestCase):
 
@@ -44,6 +45,9 @@ class ArrayTest(PForTestCase):
       x_i = array_ops.gather(x, i)
       for y in [x, x2, x_i]:
         for axis in [0, 2, -1]:
+          axis_t = array_ops.placeholder_with_default(
+              math_ops.cast(axis, dtypes.int32), shape=()
+          )
           outputs.append(array_ops.gather(y, 2, axis=axis))
           outputs.append(
               array_ops.gather(y, math_ops.cast(2, dtypes.int64), axis=axis))
@@ -51,18 +55,73 @@ class ArrayTest(PForTestCase):
               array_ops.gather(y, 2, axis=math_ops.cast(axis, dtypes.int64)))
           outputs.append(
               array_ops.gather(y, math_ops.cast(i, dtypes.int64), axis=axis))
+          outputs.append(array_ops.gather(y, i, axis=axis_t))
           outputs.append(array_ops.gather(y, [i], axis=axis))
           outputs.append(array_ops.gather(y, [i, 2], axis=axis))
+          outputs.append(array_ops.gather(y, [i, 2], axis=axis_t))
           outputs.append(array_ops.gather(y, [[2, i], [i, 1]], axis=axis))
+          outputs.append(array_ops.gather(y, [[2, i], [i, 1]], axis=axis_t))
 
         outputs.append(array_ops.gather(y, [0, 1, 2], axis=1, batch_dims=1))
         outputs.append(array_ops.gather(y, [i, 1, 2], axis=2, batch_dims=1))
+        outputs.append(array_ops.gather(y, [i, 1, 2], axis=2, batch_dims=-1))
         outputs.append(array_ops.gather(y, [[2, i], [i, 1], [2, 1]],
                                         axis=-1, batch_dims=1))
+        outputs.append(
+            array_ops.gather(
+                y, [[2, i], [i, 1], [2, 1]], axis=-1, batch_dims=-1
+            )
+        )
+        outputs.append(
+            array_ops.gather(y, [[0, 1, 2]] * 3, axis=2, batch_dims=2))
+        outputs.append(array_ops.gather(y, [0, 1, 2], axis=1, batch_dims=-1))
+        outputs.append(
+            array_ops.gather(y, [[0, 1, 2]] * 3, axis=2, batch_dims=-2))
 
       return outputs
 
     self._test_loop_fn(loop_fn, 3)
+
+  def test_gather_negative_batch_dims_stacked_indices(self):
+    params = random_ops.random_uniform([2, 5, 3])
+    indices = random_ops.random_uniform([4, 2, 1], maxval=3, dtype=dtypes.int32)
+
+    def loop_fn(i):
+      idx = array_ops.gather(indices, i)
+      return array_ops.gather(params, idx, axis=2, batch_dims=-1)
+
+    pfor_out = pfor_control_flow_ops.pfor(loop_fn, 4)
+    self.assertEqual(pfor_out.shape.as_list(), [4, 2, 5, 1])
+    self._test_loop_fn(loop_fn, 4)
+
+  def test_gather_negative_batch_dims_unknown_rank_raises(self):
+    with ops.Graph().as_default():
+      params = random_ops.random_uniform([2, 5, 3])
+      indices_ph = array_ops.placeholder(dtypes.int32, shape=None)
+
+      def loop_fn(i):
+        idx = array_ops.gather(indices_ph, i)
+        return array_ops.gather(params, idx, axis=2, batch_dims=-1)
+
+      with self.assertRaisesRegex(
+          ValueError, "Negative batch_dims is not supported"
+      ):
+        pfor_control_flow_ops.pfor(loop_fn, 4, fallback_to_while_loop=False)
+
+  def test_gather_symbolic_axis(self):
+    x = random_ops.random_uniform([3, 4, 5])
+    indices = random_ops.random_uniform([3, 2], maxval=3, dtype=dtypes.int32)
+
+    for axis_val in [0, 1, 2, -1, -2]:
+
+      def loop_fn(i, axis_val=axis_val):
+        axis_t = array_ops.placeholder_with_default(
+            math_ops.cast(axis_val, dtypes.int32), shape=()
+        )
+        idx = array_ops.gather(indices, i)
+        return array_ops.gather(x, idx, axis=axis_t)
+
+      self._test_loop_fn(loop_fn, 3)
 
   def test_gather_nd(self):
     x = random_ops.random_uniform([3, 3, 3])
@@ -76,6 +135,68 @@ class ArrayTest(PForTestCase):
       return outputs
 
     self._test_loop_fn(loop_fn, 3)
+
+  def test_resource_gather(self):
+    v = variables.Variable(random_ops.random_uniform([3, 4, 5]))
+
+    def loop_fn(i):
+      outputs = []
+      outputs.append(
+          resource_variable_ops.resource_gather(
+              v.handle, i, dtype=dtypes.float32
+          )
+      )
+      outputs.append(
+          resource_variable_ops.resource_gather(
+              v.handle, [i, 2], dtype=dtypes.float32
+          )
+      )
+      outputs.append(
+          resource_variable_ops.resource_gather(
+              v.handle, [[2, i], [i, 1]], dtype=dtypes.float32
+          )
+      )
+      outputs.append(
+          resource_variable_ops.resource_gather(
+              v.handle, 1, dtype=dtypes.float32
+          )
+      )
+      return outputs
+
+    self._test_loop_fn(loop_fn, 3)
+
+  def test_resource_gather_nd(self):
+    v = variables.Variable(random_ops.random_uniform([3, 4, 5]))
+
+    def loop_fn(i):
+      outputs = []
+      outputs.append(
+          resource_variable_ops.resource_gather_nd(
+              v.handle, [0, 1], dtype=dtypes.float32
+          )
+      )
+      outputs.append(
+          resource_variable_ops.resource_gather_nd(
+              v.handle, [i, 0], dtype=dtypes.float32
+          )
+      )
+      outputs.append(
+          resource_variable_ops.resource_gather_nd(
+              v.handle, [[i, 0], [0, i]], dtype=dtypes.float32
+          )
+      )
+      return outputs
+
+    self._test_loop_fn(loop_fn, 3)
+
+  @test_util.run_v2_only
+  def test_gather_pfor_grad(self):
+    x = array_ops.zeros([1, 2])
+    with backprop.GradientTape() as tape:
+      tape.watch(x)
+      r = pfor_control_flow_ops.vectorized_map(
+          lambda t: array_ops.gather(x, t, axis=-1), math_ops.range(2))
+    self.assertAllClose([[1., 1.]], tape.gradient(r, x))
 
   def test_shape(self):
     x = random_ops.random_uniform([3, 2, 3])
@@ -196,6 +317,15 @@ class ArrayTest(PForTestCase):
 
     self._test_loop_fn(loop_fn, 3)
 
+  def test_slice_loop_variant_begin(self):
+    x = random_ops.random_uniform([3, 2, 5, 3])
+
+    def loop_fn(i):
+      x1 = array_ops.gather(x, i)
+      return array_ops.slice(x1, begin=(0, 2 - i, i), size=(-1, 2, 1))
+
+    self._test_loop_fn(loop_fn, 3)
+
   def test_tile(self):
     x = random_ops.random_uniform([3, 2, 3])
 
@@ -221,7 +351,7 @@ class ArrayTest(PForTestCase):
 
     def loop_fn(i):
       x1 = array_ops.gather(x, i)
-      return array_ops.stack([x1, y], axis=-1)
+      return array_ops_stack.stack([x1, y], axis=-1)
 
     self._test_loop_fn(loop_fn, 1)
 
@@ -230,8 +360,8 @@ class ArrayTest(PForTestCase):
 
     def loop_fn(i):
       x_i = array_ops.gather(x, i)
-      return array_ops.unstack(
-          x_i, 4, axis=-1), array_ops.unstack(
+      return array_ops_stack.unstack(
+          x_i, 4, axis=-1), array_ops_stack.unstack(
               x_i, 3, axis=1)
 
     self._test_loop_fn(loop_fn, 3)
@@ -243,6 +373,16 @@ class ArrayTest(PForTestCase):
     def loop_fn(i):
       x1 = array_ops.gather(x, i)
       return array_ops.pad(x1, padding, mode="CONSTANT")
+
+    self._test_loop_fn(loop_fn, 3)
+
+  def test_pad_v2(self):
+    x = random_ops.random_uniform([3, 2, 3])
+    padding = constant_op.constant([[1, 2], [3, 4]])
+
+    def loop_fn(i):
+      x1 = array_ops.gather(x, i)
+      return array_ops.pad_v2(x1, padding, mode="CONSTANT", constant_values=1.5)
 
     self._test_loop_fn(loop_fn, 3)
 
@@ -295,6 +435,15 @@ class ArrayTest(PForTestCase):
 
     self._test_loop_fn(loop_fn, 3)
 
+  def test_top_k(self):
+    x = random_ops.random_uniform([3, 2, 3, 4])
+
+    def loop_fn(i):
+      x1 = array_ops.gather(x, i)
+      return nn.top_k(x1, k=2)
+
+    self._test_loop_fn(loop_fn, 3)
+
   def test_conjugate_transpose(self):
     x = math_ops.complex(
         random_ops.random_uniform([3, 2, 3, 4]),
@@ -312,6 +461,16 @@ class ArrayTest(PForTestCase):
     def loop_fn(i):
       x1 = array_ops.gather(x, i)
       z = array_ops.zeros_like(x1),
+      return z, z + x1
+
+    self._test_loop_fn(loop_fn, 3)
+
+  def test_ones_like(self):
+    x = random_ops.random_uniform([3, 2, 3])
+
+    def loop_fn(i):
+      x1 = array_ops.gather(x, i)
+      z = array_ops.ones_like(x1),
       return z, z + x1
 
     self._test_loop_fn(loop_fn, 3)

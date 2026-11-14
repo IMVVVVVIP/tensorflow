@@ -48,7 +48,7 @@ TEST(KernelDefBuilderTest, TypeConstraint) {
 
   def = KernelDefBuilder("C")
             .Device(DEVICE_GPU)
-            .TypeConstraint<int32>("U")
+            .TypeConstraint<int32_t>("U")
             .TypeConstraint<bool>("V")
             .Build();
 
@@ -76,7 +76,7 @@ TEST(KernelDefBuilderTest, TypeConstraint) {
 TEST(KernelDefBuilderTest, Int64Constraint) {
   const KernelDef* def = KernelDefBuilder("B")
                              .Device(DEVICE_GPU)
-                             .AttrConstraint("T", int64{5})
+                             .AttrConstraint("T", int64_t{5})
                              .Build();
   KernelDef expected;
   protobuf::TextFormat::ParseFromString(R"proto(
@@ -93,8 +93,9 @@ TEST(KernelDefBuilderTest, Int64Constraint) {
 
   def = KernelDefBuilder("C")
             .Device(DEVICE_GPU)
-            .AttrConstraint("U", gtl::ArraySlice<int64>{int64{5}, int64{17}})
-            .AttrConstraint("V", string("proto"))
+            .AttrConstraint("U",
+                            absl::Span<const int64_t>{int64_t{5}, int64_t{17}})
+            .AttrConstraint("V", std::string("proto"))
             .Build();
 
   protobuf::TextFormat::ParseFromString(
@@ -134,8 +135,8 @@ TEST(KernelDefBuilderTest, StringConstraint) {
 
   def = KernelDefBuilder("C")
             .Device(DEVICE_GPU)
-            .AttrConstraint("U", gtl::ArraySlice<const char*>{"boo", "ya"})
-            .AttrConstraint("V", string("proto"))
+            .AttrConstraint("U", absl::Span<const char* const>{"boo", "ya"})
+            .AttrConstraint("V", std::string("proto"))
             .Build();
 
   protobuf::TextFormat::ParseFromString(

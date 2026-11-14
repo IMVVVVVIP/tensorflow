@@ -21,6 +21,7 @@ limitations under the License.
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
+#include "absl/strings/string_view.h"
 #include "tensorflow/lite/delegates/gpu/gl/compiler/preprocessor.h"
 #include "tensorflow/lite/delegates/gpu/gl/variable.h"
 
@@ -56,6 +57,9 @@ class VariableAccessor : public InlineRewrite {
 
   // Returns true if variable was successfully added.
   bool AddUniformParameter(Variable&& variable);
+
+  // Returns true if variable value is an empty vector.
+  bool IsEmptyVariableLength(const Variable& variable) const;
 
   // Returns const variables that need to be inlined in the a shader's code.
   std::string GetConstDeclarations() const;

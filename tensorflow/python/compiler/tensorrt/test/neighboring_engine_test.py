@@ -14,10 +14,6 @@
 # ==============================================================================
 """Model script to test TF-TensorRT integration."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from tensorflow.python.compiler.tensorrt.test import tf_trt_integration_test_base as trt_test
@@ -57,15 +53,9 @@ class NeighboringEngineTest(trt_test.TfTrtIntegrationTestBase):
   def ExpectedEnginesToBuild(self, run_params):
     """Return the expected engines to build."""
     return {
-        "TRTEngineOp_0": ["bias", "mul", "sub"],
-        "TRTEngineOp_1": ["weights", "conv"]
+        "TRTEngineOp_000": ["bias", "mul", "sub"],
+        "TRTEngineOp_001": ["weights", "conv"]
     }
-
-  def ShouldRunTest(self, run_params):
-    # TODO(b/162447069): Enable the test for TRT 7.1.3.
-    if trt_test.IsTensorRTVersionGreaterEqual(7, 1, 3):
-      return (False, "Skip test due to b/162447069")
-    return super().ShouldRunTest(run_params)
 
 
 if __name__ == "__main__":

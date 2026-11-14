@@ -14,15 +14,23 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/common_runtime/scoped_allocator.h"
 
+#include <cstddef>
+#include <cstdint>
+#include <string>
+
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
 #include "tensorflow/core/common_runtime/scoped_allocator_mgr.h"
 #include "tensorflow/core/platform/dynamic_annotations.h"
 
 namespace tensorflow {
 
-ScopedAllocator::ScopedAllocator(const Tensor& backing_tensor, int32 scope_id,
-                                 const string& name,
-                                 const gtl::ArraySlice<Field> fields,
-                                 int32 expected_call_count,
+ScopedAllocator::ScopedAllocator(const Tensor& backing_tensor, int32_t scope_id,
+                                 const std::string& name,
+                                 const absl::Span<const Field> fields,
+                                 int32_t expected_call_count,
                                  ScopedAllocatorContainer* container)
     : backing_tensor_(backing_tensor),
       tbuf_(backing_tensor_.buf_),
@@ -55,7 +63,7 @@ ScopedAllocator::~ScopedAllocator() {
   if (tbuf_) tbuf_->Unref();
 }
 
-void* ScopedAllocator::AllocateRaw(int32 field_index, size_t num_bytes) {
+void* ScopedAllocator::AllocateRaw(int32_t field_index, size_t num_bytes) {
   VLOG(1) << "ScopedAllocator index " << id_ << " AllocateRaw "
           << "field " << field_index << " num_bytes " << num_bytes;
   void* ptr = nullptr;
@@ -69,7 +77,7 @@ void* ScopedAllocator::AllocateRaw(int32 field_index, size_t num_bytes) {
       return nullptr;
     }
 
-    int32_t num_fields = static_cast<int32>(fields_.size());
+    int32_t num_fields = static_cast<int32_t>(fields_.size());
     if (field_index >= num_fields) {
       LOG(ERROR) << "ScopedAllocator " << name_
                  << " received unexpected field number " << field_index;
@@ -159,7 +167,7 @@ bool ScopedAllocator::VerifyTensor(const Tensor* t) {
 }
 
 ScopedAllocatorInstance::ScopedAllocatorInstance(ScopedAllocator* sa,
-                                                 int32 field_index)
+                                                 int32_t field_index)
     : scoped_allocator_(sa),
       field_index_(field_index),
       allocated_(false),
@@ -228,8 +236,8 @@ void ScopedAllocatorInstance::DeallocateRaw(void* p) {
   if (del) delete this;
 }
 
-string ScopedAllocatorInstance::Name() {
-  return strings::StrCat(scoped_allocator_->name(), "_field_", field_index_);
+std::string ScopedAllocatorInstance::Name() {
+  return absl::StrCat(scoped_allocator_->name(), "_field_", field_index_);
 }
 
 }  // namespace tensorflow

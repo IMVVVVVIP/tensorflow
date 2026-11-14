@@ -14,13 +14,29 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/core/summary/summary_file_writer.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_join.h"
 #include "tensorflow/core/framework/summary.pb.h"
 #include "tensorflow/core/framework/tensor.pb.h"
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/refcount.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/lib/io/record_reader.h"
-#include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/util/event.pb.h"
@@ -31,21 +47,21 @@ namespace {
 class FakeClockEnv : public EnvWrapper {
  public:
   FakeClockEnv() : EnvWrapper(Env::Default()), current_millis_(0) {}
-  void AdvanceByMillis(const uint64 millis) { current_millis_ += millis; }
-  uint64 NowMicros() const override { return current_millis_ * 1000; }
-  uint64 NowSeconds() const override { return current_millis_ * 1000; }
+  void AdvanceByMillis(const uint64_t millis) { current_millis_ += millis; }
+  uint64_t NowMicros() const override { return current_millis_ * 1000; }
+  uint64_t NowSeconds() const override { return current_millis_ * 1000; }
 
  private:
-  uint64 current_millis_;
+  uint64_t current_millis_;
 };
 
 class SummaryFileWriterTest : public ::testing::Test {
  protected:
-  Status SummaryTestHelper(
-      const string& test_name,
-      const std::function<Status(SummaryWriterInterface*)>& writer_fn,
+  absl::Status SummaryTestHelper(
+      const std::string& test_name,
+      const std::function<absl::Status(SummaryWriterInterface*)>& writer_fn,
       const std::function<void(const Event&)>& test_fn) {
-    static std::set<string>* tests = new std::set<string>();
+    static std::set<std::string>* tests = new std::set<std::string>();
     CHECK(tests->insert(test_name).second) << ": " << test_name;
 
     SummaryWriterInterface* writer;
@@ -56,13 +72,14 @@ class SummaryFileWriterTest : public ::testing::Test {
     TF_CHECK_OK(writer_fn(writer));
     TF_CHECK_OK(writer->Flush());
 
-    std::vector<string> files;
+    std::vector<std::string> files;
     TF_CHECK_OK(env_.GetChildren(testing::TmpDir(), &files));
     bool found = false;
-    for (const string& f : files) {
+    for (const std::string& f : files) {
       if (absl::StrContains(f, test_name)) {
         if (found) {
-          return errors::Unknown("Found more than one file for ", test_name);
+          return absl::UnknownError(
+              absl::StrCat("Found more than one file for ", test_name));
         }
         found = true;
         std::unique_ptr<RandomAccessFile> read_file;
@@ -70,7 +87,7 @@ class SummaryFileWriterTest : public ::testing::Test {
                                              &read_file));
         io::RecordReader reader(read_file.get(), io::RecordReaderOptions());
         tstring record;
-        uint64 offset = 0;
+        uint64_t offset = 0;
         TF_CHECK_OK(
             reader.ReadRecord(&offset,
                               &record));  // The first event is irrelevant
@@ -81,9 +98,9 @@ class SummaryFileWriterTest : public ::testing::Test {
       }
     }
     if (!found) {
-      return errors::Unknown("Found no file for ", test_name);
+      return absl::UnknownError(absl::StrCat("Found no file for ", test_name));
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   FakeClockEnv env_;
@@ -98,7 +115,7 @@ TEST_F(SummaryFileWriterTest, WriteTensor) {
                                       2, one, "name",
                                       SummaryMetadata().SerializeAsString()));
                                   TF_RETURN_IF_ERROR(writer->Flush());
-                                  return Status::OK();
+                                  return absl::OkStatus();
                                 },
                                 [](const Event& e) {
                                   EXPECT_EQ(e.step(), 2);
@@ -113,7 +130,7 @@ TEST_F(SummaryFileWriterTest, WriteTensor) {
         TF_RETURN_IF_ERROR(writer->WriteTensor(
             2, hello, "name", SummaryMetadata().SerializeAsString()));
         TF_RETURN_IF_ERROR(writer->Flush());
-        return Status::OK();
+        return absl::OkStatus();
       },
       [](const Event& e) {
         EXPECT_EQ(e.step(), 2);
@@ -132,7 +149,7 @@ TEST_F(SummaryFileWriterTest, WriteScalar) {
         one.scalar<float>()() = 1.0;
         TF_RETURN_IF_ERROR(writer->WriteScalar(2, one, "name"));
         TF_RETURN_IF_ERROR(writer->Flush());
-        return Status::OK();
+        return absl::OkStatus();
       },
       [](const Event& e) {
         EXPECT_EQ(e.step(), 2);
@@ -150,7 +167,7 @@ TEST_F(SummaryFileWriterTest, WriteHistogram) {
                                   TF_RETURN_IF_ERROR(
                                       writer->WriteHistogram(2, one, "name"));
                                   TF_RETURN_IF_ERROR(writer->Flush());
-                                  return Status::OK();
+                                  return absl::OkStatus();
                                 },
                                 [](const Event& e) {
                                   EXPECT_EQ(e.step(), 2);
@@ -160,25 +177,52 @@ TEST_F(SummaryFileWriterTest, WriteHistogram) {
                                 }));
 }
 
-TEST_F(SummaryFileWriterTest, WriteImage) {
-  TF_CHECK_OK(SummaryTestHelper(
-      "image_test",
-      [](SummaryWriterInterface* writer) {
-        Tensor one(DT_UINT8, TensorShape({1, 1, 1, 1}));
-        one.scalar<uint8>()() = 1;
-        TF_RETURN_IF_ERROR(writer->WriteImage(2, one, "name", 1, Tensor()));
-        TF_RETURN_IF_ERROR(writer->Flush());
-        return Status::OK();
-      },
-      [](const Event& e) {
-        EXPECT_EQ(e.step(), 2);
-        CHECK_EQ(e.summary().value_size(), 1);
-        EXPECT_EQ(e.summary().value(0).tag(), "name/image");
-        CHECK(e.summary().value(0).has_image());
-        EXPECT_EQ(e.summary().value(0).image().height(), 1);
-        EXPECT_EQ(e.summary().value(0).image().width(), 1);
-        EXPECT_EQ(e.summary().value(0).image().colorspace(), 1);
-      }));
+namespace {
+
+// Create a 1x1 monochrome image consisting of a single pixel oof the given
+// type.
+template <typename T>
+static absl::Status CreateImage(SummaryWriterInterface* writer) {
+  Tensor bad_color(DT_UINT8, TensorShape({1}));
+  bad_color.scalar<uint8_t>()() = 0;
+  Tensor one(DataTypeToEnum<T>::v(), TensorShape({1, 1, 1, 1}));
+  one.scalar<T>()() = T(1);
+  TF_RETURN_IF_ERROR(writer->WriteImage(2, one, "name", 1, bad_color));
+  TF_RETURN_IF_ERROR(writer->Flush());
+  return absl::OkStatus();
+}
+
+// Verify that the event contains an image generated by CreateImage above.
+static void CheckImage(const Event& e) {
+  EXPECT_EQ(e.step(), 2);
+  CHECK_EQ(e.summary().value_size(), 1);
+  EXPECT_EQ(e.summary().value(0).tag(), "name/image");
+  CHECK(e.summary().value(0).has_image());
+  EXPECT_EQ(e.summary().value(0).image().height(), 1);
+  EXPECT_EQ(e.summary().value(0).image().width(), 1);
+  EXPECT_EQ(e.summary().value(0).image().colorspace(), 1);
+}
+
+}  // namespace
+
+TEST_F(SummaryFileWriterTest, WriteImageUInt8) {
+  TF_CHECK_OK(
+      SummaryTestHelper("image_test_uint8", CreateImage<uint8_t>, CheckImage));
+}
+
+TEST_F(SummaryFileWriterTest, WriteImageFloat) {
+  TF_CHECK_OK(
+      SummaryTestHelper("image_test_float", CreateImage<float>, CheckImage));
+}
+
+TEST_F(SummaryFileWriterTest, WriteImageHalf) {
+  TF_CHECK_OK(SummaryTestHelper("image_test_half", CreateImage<Eigen::half>,
+                                CheckImage));
+}
+
+TEST_F(SummaryFileWriterTest, WriteImageDouble) {
+  TF_CHECK_OK(
+      SummaryTestHelper("image_test_double", CreateImage<double>, CheckImage));
 }
 
 TEST_F(SummaryFileWriterTest, WriteAudio) {
@@ -189,7 +233,7 @@ TEST_F(SummaryFileWriterTest, WriteAudio) {
         one.scalar<float>()() = 1.0;
         TF_RETURN_IF_ERROR(writer->WriteAudio(2, one, "name", 1, 1));
         TF_RETURN_IF_ERROR(writer->Flush());
-        return Status::OK();
+        return absl::OkStatus();
       },
       [](const Event& e) {
         EXPECT_EQ(e.step(), 2);
@@ -197,6 +241,60 @@ TEST_F(SummaryFileWriterTest, WriteAudio) {
         EXPECT_EQ(e.summary().value(0).tag(), "name/audio");
         CHECK(e.summary().value(0).has_audio());
       }));
+}
+
+TEST_F(SummaryFileWriterTest, WriteAudioRejectsScalarTensor) {
+  SummaryWriterInterface* writer;
+  TF_CHECK_OK(CreateSummaryFileWriter(1, 1, testing::TmpDir(), "audio_rank0",
+                                      &env_, &writer));
+  core::ScopedUnref deleter(writer);
+  Tensor scalar(DT_FLOAT, TensorShape({}));
+  scalar.scalar<float>()() = 1.0;
+  absl::Status s = writer->WriteAudio(2, scalar, "name", 1, 1);
+  EXPECT_TRUE(absl::IsInvalidArgument(s)) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "2 or 3 dims")) << s;
+}
+
+TEST_F(SummaryFileWriterTest, WriteAudioRejects1DAnd4DTensors) {
+  SummaryWriterInterface* writer;
+  TF_CHECK_OK(CreateSummaryFileWriter(1, 1, testing::TmpDir(), "audio_rank1_4",
+                                      &env_, &writer));
+  core::ScopedUnref deleter(writer);
+  for (const TensorShape& shape :
+       {TensorShape({100}), TensorShape({1, 10, 2, 2})}) {
+    Tensor t(DT_FLOAT, shape);
+    t.flat<float>().setZero();
+    absl::Status s = writer->WriteAudio(2, t, "name", 1, 1);
+    EXPECT_TRUE(absl::IsInvalidArgument(s)) << shape.DebugString() << " " << s;
+    EXPECT_TRUE(absl::StrContains(s.message(), "2 or 3 dims")) << s;
+  }
+}
+
+TEST_F(SummaryFileWriterTest, WriteAudioRejectsNonFloatTensor) {
+  SummaryWriterInterface* writer;
+  TF_CHECK_OK(CreateSummaryFileWriter(1, 1, testing::TmpDir(), "audio_double",
+                                      &env_, &writer));
+  core::ScopedUnref deleter(writer);
+  Tensor t(DT_DOUBLE, TensorShape({1, 10}));
+  t.flat<double>().setZero();
+  absl::Status s = writer->WriteAudio(2, t, "name", 1, 1);
+  EXPECT_TRUE(absl::IsInvalidArgument(s)) << s;
+  EXPECT_TRUE(absl::StrContains(s.message(), "DT_FLOAT")) << s;
+}
+
+TEST_F(SummaryFileWriterTest, WriteAudioRejectsNonFiniteSampleRate) {
+  SummaryWriterInterface* writer;
+  TF_CHECK_OK(CreateSummaryFileWriter(1, 1, testing::TmpDir(),
+                                      "audio_nonfinite_rate", &env_, &writer));
+  core::ScopedUnref deleter(writer);
+  Tensor t(DT_FLOAT, TensorShape({1, 10}));
+  t.flat<float>().setZero();
+  for (float sample_rate : {std::numeric_limits<float>::quiet_NaN(),
+                            std::numeric_limits<float>::infinity()}) {
+    absl::Status s = writer->WriteAudio(2, t, "name", 1, sample_rate);
+    EXPECT_TRUE(absl::IsInvalidArgument(s)) << sample_rate << " " << s;
+    EXPECT_TRUE(absl::StrContains(s.message(), "finite")) << s;
+  }
 }
 
 TEST_F(SummaryFileWriterTest, WriteEvent) {
@@ -208,7 +306,7 @@ TEST_F(SummaryFileWriterTest, WriteEvent) {
                           e->mutable_summary()->add_value()->set_tag("hi");
                           TF_RETURN_IF_ERROR(writer->WriteEvent(std::move(e)));
                           TF_RETURN_IF_ERROR(writer->Flush());
-                          return Status::OK();
+                          return absl::OkStatus();
                         },
                         [](const Event& e) {
                           EXPECT_EQ(e.step(), 7);
@@ -226,9 +324,31 @@ TEST_F(SummaryFileWriterTest, WallTime) {
         one.scalar<float>()() = 1.0;
         TF_RETURN_IF_ERROR(writer->WriteScalar(2, one, "name"));
         TF_RETURN_IF_ERROR(writer->Flush());
-        return Status::OK();
+        return absl::OkStatus();
       },
       [](const Event& e) { EXPECT_EQ(e.wall_time(), 7.023); }));
+}
+
+TEST_F(SummaryFileWriterTest, AvoidFilenameCollision) {
+  // Keep unique with all other test names in this file.
+  std::string test_name = "avoid_filename_collision_test";
+  int num_files = 10;
+  for (int i = 0; i < num_files; i++) {
+    SummaryWriterInterface* writer;
+    TF_CHECK_OK(CreateSummaryFileWriter(1, 1, testing::TmpDir(), test_name,
+                                        &env_, &writer));
+    core::ScopedUnref deleter(writer);
+  }
+  std::vector<std::string> files;
+  TF_CHECK_OK(env_.GetChildren(testing::TmpDir(), &files));
+  // Filter `files` down to just those generated in this test.
+  files.erase(std::remove_if(files.begin(), files.end(),
+                             [test_name](std::string f) {
+                               return !absl::StrContains(f, test_name);
+                             }),
+              files.end());
+  EXPECT_EQ(num_files, files.size())
+      << "files = [" << absl::StrJoin(files, ", ") << "]";
 }
 
 }  // namespace

@@ -1,4 +1,4 @@
-/* Copyright 2020 The TensorFlow Authors All Rights Reserved.
+/* Copyright 2020 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -17,22 +17,39 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_PROFILER_RPC_CLIENT_PROFILER_CLIENT_H_
 #define TENSORFLOW_CORE_PROFILER_RPC_CLIENT_PROFILER_CLIENT_H_
 
-#include "tensorflow/core/platform/status.h"
-#include "tensorflow/core/profiler/profiler_analysis.grpc.pb.h"
-#include "tensorflow/core/profiler/profiler_service.grpc.pb.h"
+#include <string>
+
+#include "absl/base/macros.h"
+#include "absl/status/status.h"
+#include "xla/tsl/profiler/rpc/client/profiler_client.h"
 
 namespace tensorflow {
 namespace profiler {
 
-Status ProfileGrpc(const std::string& service_addr,
-                   const ProfileRequest& request, ProfileResponse* response);
+ABSL_DEPRECATE_AND_INLINE()
+inline absl::Status MonitorGrpc(const std::string& service_address,
+                                const tensorflow::MonitorRequest& request,
+                                tensorflow::MonitorResponse* response) {
+  return tsl::profiler::MonitorGrpc(service_address, request, response);
+}
 
-Status NewSessionGrpc(const std::string& service_addr,
-                      const NewProfileSessionRequest& request,
-                      NewProfileSessionResponse* response);
+ABSL_DEPRECATE_AND_INLINE()
+inline absl::Status NewSessionGrpc(
+    const std::string& service_address,
+    const tensorflow::NewProfileSessionRequest& request,
+    tensorflow::NewProfileSessionResponse* response) {
+  return tsl::profiler::NewSessionGrpc(service_address, request, response);
+}
 
-Status MonitorGrpc(const std::string& service_addr,
-                   const MonitorRequest& request, MonitorResponse* response);
+ABSL_DEPRECATE_AND_INLINE()
+inline absl::Status ProfileGrpc(const std::string& service_address,
+                                const tensorflow::ProfileRequest& request,
+                                tensorflow::ProfileResponse* response) {
+  return tsl::profiler::ProfileGrpc(service_address, request, response);
+}
+
+using RemoteProfilerSession ABSL_DEPRECATE_AND_INLINE() =
+    tsl::profiler::RemoteProfilerSession;  // NOLINT
 
 }  // namespace profiler
 }  // namespace tensorflow

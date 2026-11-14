@@ -1,4 +1,3 @@
-# Lint as: python3
 # Copyright 2017 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for control_flow module."""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 import collections
 
@@ -39,13 +34,14 @@ from tensorflow.python.util import nest
 
 for_unaffected_global = None
 for_mixed_globals_nonglobals = None
+for_test_global_local = None
 
 
 class ControlFlowTestBase(converter_testing.TestCase):
 
   def assertValuesEqual(self, actual, expected):
     values = nest.map_structure(
-        lambda x: self.evaluate(x) if tensor_util.is_tensor(x) else x,
+        lambda x: self.evaluate(x) if tensor_util.is_tf_type(x) else x,
         actual)
     self.assertAllEqual(values, expected)
 
@@ -476,6 +472,23 @@ class IfStatementTest(ControlFlowTestBase):
 
     self.assertTransformedResult(f, constant_op.constant(1), 5)
     self.assertTransformedResult(f, constant_op.constant(-1), -1)
+
+  def test_global_local(self):
+
+    def f(n):
+      if n > 0:
+        global for_test_global_local
+        if for_test_global_local is None:
+          for_test_global_local = 1
+        else:
+          for_test_global_local += 1
+        n += for_test_global_local
+      return n
+
+    tr = self.transform(f, control_flow)
+    assert for_test_global_local is None
+    self.assertEqual(tr(1), 2)
+    self.assertEqual(for_test_global_local, 1)
 
   def test_no_outputs(self):
 

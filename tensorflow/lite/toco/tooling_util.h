@@ -17,25 +17,27 @@ limitations under the License.
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "absl/status/status.h"
 #include "absl/strings/string_view.h"
+#include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/logging.h"
-#if TOCO_SUPPORT_PORTABLE_PROTOS
-#include "third_party/protobuf/include/google/protobuf/text_format.h"
-#endif  // TOCO_SUPPORT_PORTABLE_PROTOS
 #include "tensorflow/lite/kernels/internal/types.h"
 #include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/model_flags.pb.h"
 #include "tensorflow/lite/toco/runtime/types.h"
 #include "tensorflow/lite/toco/toco_flags.pb.h"
 #include "tensorflow/lite/toco/types.pb.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/status.h"
 
 // TODO(aselle): Replace with using a container specific hash override instead.
 namespace std {
@@ -270,9 +272,9 @@ std::string CreateInt32Array(Model* model, const std::string& param_name,
                              const std::vector<int>& value);
 
 bool EstimateArithmeticOpsCount(const Model& model, const Operator& op,
-                                int64* result);
-bool EstimateArithmeticOpsCount(const Model& model, int64* result);
-std::string FormattedNumber(int64 x);
+                                int64_t* result);
+bool EstimateArithmeticOpsCount(const Model& model, int64_t* result);
+std::string FormattedNumber(int64_t x);
 
 int AxesCount(AxesOrder axes_order);
 
@@ -329,7 +331,7 @@ void UseArraysExtraInfo(Model* model, bool quantize_output);
 // doesn't have enough range to represent the sum of elements, an error is
 // returned.
 template <typename T, typename U>
-tensorflow::Status NumElements(const std::vector<T>& shape, U* num_elements) {
+absl::Status NumElements(const std::vector<T>& shape, U* num_elements) {
   static_assert(
       std::numeric_limits<T>::max() <= std::numeric_limits<uint64_t>::max(),
       "vector type exceed capabilities of NumElements");
@@ -340,18 +342,18 @@ tensorflow::Status NumElements(const std::vector<T>& shape, U* num_elements) {
       // TensorFlow's shapes sometimes include -1 to represent an "unknown"
       // size but TOCO isn't able to create arrays of unknown sizes and will
       // crash in RequiredBufferSizeForShape().
-      return tensorflow::errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           "Tensor shape should not include negative values");
     }
     if (*num_elements != 0 &&
         static_cast<uint64_t>(dim) >
             std::numeric_limits<U>::max() / *num_elements) {
       *num_elements = 0;
-      return tensorflow::errors::InvalidArgument("Tensor shape is too large");
+      return absl::InvalidArgumentError("Tensor shape is too large");
     }
     *num_elements *= dim;
   }
-  return tensorflow::Status::OK();
+  return absl::OkStatus();
 }
 
 // A model file may have shuffled FC weights.

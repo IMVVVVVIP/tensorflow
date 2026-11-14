@@ -46,7 +46,8 @@ TensorFlow Lite inference typically follows the following steps:
 ## Supported platforms
 
 TensorFlow inference APIs are provided for most common mobile/embedded platforms
-such as Android, iOS and Linux, in multiple programming languages.
+such as [Android](#android-platform), [iOS](#ios-platform) and
+[Linux](#linux-platform), in multiple programming languages.
 
 In most cases, the API design reflects a preference for performance over ease of
 use. TensorFlow Lite is designed for fast inference on small devices, so it
@@ -57,53 +58,51 @@ explicit goal and some variance between languages is to be expected.
 Across all libraries, the TensorFlow Lite API enables you to load models, feed
 inputs, and retrieve inference outputs.
 
-## Supported operations
-
-TensorFlow Lite supports a subset of TensorFlow operations with some
-limitations. For full list of operations and limitations see
-[TF Lite Ops page](https://www.tensorflow.org/mlir/tfl_ops).
-
-### Android
+### Android Platform
 
 On Android, TensorFlow Lite inference can be performed using either Java or C++
 APIs. The Java APIs provide convenience and can be used directly within your
 Android Activity classes. The C++ APIs offer more flexibility and speed, but may
 require writing JNI wrappers to move data between Java and C++ layers.
 
-See below for details about using C++ and Java, or follow the
-[Android quickstart](android.md) for a tutorial and example code.
+See below for details about using [C++](#load-and-run-a-model-in-c) and
+[Java](#load-and-run-a-model-in-java), or follow the
+[Android quickstart](../android) for a tutorial and example code.
 
 #### TensorFlow Lite Android wrapper code generator
 
 Note: TensorFlow Lite wrapper code generator is in experimental (beta) phase and
 it currently only supports Android.
 
-For TensorFlow Lite model enhanced with [metadata](../convert/metadata.md),
+For TensorFlow Lite model enhanced with [metadata](../inference_with_metadata/overview),
 developers can use the TensorFlow Lite Android wrapper code generator to create
 platform specific wrapper code. The wrapper code removes the need to interact
 directly with `ByteBuffer` on Android. Instead, developers can interact with the
 TensorFlow Lite model with typed objects such as `Bitmap` and `Rect`. For more
 information, please refer to the
-[TensorFlow Lite Android wrapper code generator](codegen.md).
+[TensorFlow Lite Android wrapper code generator](../inference_with_metadata/codegen.md).
 
-### iOS
+### iOS Platform
 
 On iOS, TensorFlow Lite is available with native iOS libraries written in
-[Swift](https://www.tensorflow.org/code/tensorflow/lite/experimental/swift)
+[Swift](https://www.tensorflow.org/code/tensorflow/lite/swift)
 and
-[Objective-C](https://www.tensorflow.org/code/tensorflow/lite/experimental/objc).
+[Objective-C](https://www.tensorflow.org/code/tensorflow/lite/objc).
 You can also use
 [C API](https://www.tensorflow.org/code/tensorflow/lite/c/c_api.h)
 directly in Objective-C codes.
 
-See below for details about using Swift, Objective-C and C API, or follow the
+See below for details about using [Swift](#load-and-run-a-model-in-swift),
+[Objective-C](#load-and-run-a-model-in-objective-c) and the
+[C API](#using-c-api-in-objective-c-code), or follow the
 [iOS quickstart](ios.md) for a tutorial and example code.
 
-### Linux
+### Linux Platform
 
-On Linux platforms (including [Raspberry Pi](build_rpi.md)), you can run
-inferences using TensorFlow Lite APIs available in C++ and Python, as shown in
-the following sections.
+On Linux platforms (including [Raspberry Pi](build_arm)), you can run
+inferences using TensorFlow Lite APIs available in
+[C++](#load-and-run-a-model-in-c) and [Python](#load-and-run-a-model-in-python),
+as shown in the following sections.
 
 ## Running a model
 
@@ -146,8 +145,34 @@ In both cases, you must provide a valid TensorFlow Lite model or the API throws
 `Interpreter`, it must remain unchanged for the whole lifetime of the
 `Interpreter`.
 
-To then run an inference with the model, simply call `Interpreter.run()`. For
-example:
+The preferred way to run inference on a model is to use signatures -
+Available for models converted starting Tensorflow 2.5
+
+```Java
+try (Interpreter interpreter = new Interpreter(file_of_tensorflowlite_model)) {
+  Map<String, Object> inputs = new HashMap<>();
+  inputs.put("input_1", input1);
+  inputs.put("input_2", input2);
+  Map<String, Object> outputs = new HashMap<>();
+  outputs.put("output_1", output1);
+  interpreter.runSignature(inputs, outputs, "mySignature");
+}
+```
+
+The `runSignature` method takes three arguments:
+
+-   **Inputs** : map for inputs from input name in the signature to an input
+    object.
+
+-   **Outputs** : map for output mapping from output name in signature to output
+    data.
+
+-   **Signature Name** [optional]: Signature name (Can be left empty if the
+    model has single signature).
+
+Another way to run an inference when the model doesn't
+have a defined signatures.
+Simply call `Interpreter.run()`. For example:
 
 ```java
 try (Interpreter interpreter = new Interpreter(file_of_a_tensorflowlite_model)) {
@@ -167,7 +192,7 @@ In this case, each entry in `inputs` corresponds to an input tensor and
 output data.
 
 In both cases, the tensor indices should correspond to the values you gave to
-the [TensorFlow Lite Converter](../convert/) when you created the model. Be
+the [TensorFlow Lite Converter](../models/convert/) when you created the model. Be
 aware that the order of tensors in `input` must match the order given to the
 TensorFlow Lite Converter.
 
@@ -207,7 +232,8 @@ primitive types. In particular, the shape of a string Tensor dictates the number
 and arrangement of strings in the Tensor, with each element itself being a
 variable length string. In this sense, the (byte) size of the Tensor cannot be
 computed from the shape and type alone, and consequently strings cannot be
-provided as a single, flat `ByteBuffer` argument.
+provided as a single, flat `ByteBuffer` argument. You can see some examples in
+this [page](https://www.tensorflow.org/lite/api_docs/java/org/tensorflow/lite/Interpreter).
 
 If other data types, including boxed types like `Integer` and `Float`, are used,
 an `IllegalArgumentException` will be thrown.
@@ -239,7 +265,7 @@ Java inference API, but planned extensions will make this possible.
 *Platform: iOS*
 
 The
-[Swift API](https://www.tensorflow.org/code/tensorflow/lite/experimental/swift)
+[Swift API](https://www.tensorflow.org/code/tensorflow/lite/swift)
 is available in `TensorFlowLiteSwift` Pod from Cocoapods.
 
 First, you need to import `TensorFlowLite` module.
@@ -293,7 +319,7 @@ do {
 *Platform: iOS*
 
 The
-[Objective-C API](https://www.tensorflow.org/code/tensorflow/lite/experimental/objc)
+[Objective-C API](https://www.tensorflow.org/code/tensorflow/lite/objc)
 is available in `TensorFlowLiteObjC` Pod from Cocoapods.
 
 First, you need to import `TensorFlowLite` module.
@@ -319,8 +345,12 @@ if (error != nil) { /* Error handling... */ }
 NSMutableData *inputData;  // Should be initialized
 // input data preparation...
 
+// Get the input `TFLTensor`
+TFLTensor *inputTensor = [interpreter inputTensorAtIndex:0 error:&error];
+if (error != nil) { /* Error handling... */ }
+
 // Copy the input data to the input `TFLTensor`.
-[interpreter copyData:inputData toInputTensorAtIndex:0 error:&error];
+[inputTensor copyData:inputData error:&error];
 if (error != nil) { /* Error handling... */ }
 
 // Run inference by invoking the `TFLInterpreter`.
@@ -332,7 +362,7 @@ TFLTensor *outputTensor = [interpreter outputTensorAtIndex:0 error:&error];
 if (error != nil) { /* Error handling... */ }
 
 // Copy output to `NSData` to process the inference results.
-NSData *outputData = [outputTensor dataWithError:&amp;error];
+NSData *outputData = [outputTensor dataWithError:&error];
 if (error != nil) { /* Error handling... */ }
 ```
 
@@ -365,7 +395,7 @@ TfLiteInterpreterInvoke(interpreter);
 
 // Extract the output tensor data.
 const TfLiteTensor* output_tensor =
-//      TfLiteInterpreterGetOutputTensor(interpreter, 0);
+    TfLiteInterpreterGetOutputTensor(interpreter, 0);
 TfLiteTensorCopyToBuffer(output_tensor, output.data(),
                          output.size() * sizeof(float));
 
@@ -377,7 +407,9 @@ TfLiteModelDelete(model);
 
 ## Load and run a model in C++
 
-*Platforms: Android and Linux*
+*Platforms: Android, iOS, and Linux*
+
+Note: C++ API on iOS is only available when using bazel.
 
 In C++, the model is stored in
 [`FlatBufferModel`](https://www.tensorflow.org/lite/api_docs/cc/class/tflite/flat-buffer-model.html)
@@ -463,6 +495,57 @@ to load a model and run an inference.
 The following example shows how to use the Python interpreter to load a
 `.tflite` file and run inference with random input data:
 
+This example is recommended if you're converting from SavedModel with a defined
+SignatureDef.
+Available starting from TensorFlow 2.5
+
+```python
+class TestModel(tf.Module):
+  def __init__(self):
+    super(TestModel, self).__init__()
+
+  @tf.function(input_signature=[tf.TensorSpec(shape=[1, 10], dtype=tf.float32)])
+  def add(self, x):
+    '''
+    Simple method that accepts single input 'x' and returns 'x' + 4.
+    '''
+    # Name the output 'result' for convenience.
+    return {'result' : x + 4}
+
+
+SAVED_MODEL_PATH = 'content/saved_models/test_variable'
+TFLITE_FILE_PATH = 'content/test_variable.tflite'
+
+# Save the model
+module = TestModel()
+# You can omit the signatures argument and a default signature name will be
+# created with name 'serving_default'.
+tf.saved_model.save(
+    module, SAVED_MODEL_PATH,
+    signatures={'my_signature':module.add.get_concrete_function()})
+
+# Convert the model using TFLiteConverter
+converter = tf.lite.TFLiteConverter.from_saved_model(SAVED_MODEL_PATH)
+tflite_model = converter.convert()
+with open(TFLITE_FILE_PATH, 'wb') as f:
+  f.write(tflite_model)
+
+# Load the TFLite model in TFLite Interpreter
+interpreter = tf.lite.Interpreter(TFLITE_FILE_PATH)
+# There is only 1 signature defined in the model,
+# so it will return it by default.
+# If there are multiple signatures then we can pass the name.
+my_signature = interpreter.get_signature_runner()
+
+# my_signature is callable with input as arguments.
+output = my_signature(x=tf.constant([1.0], shape=(1,10), dtype=tf.float32))
+# 'output' is dictionary with all outputs from the inference.
+# In this case we have single output 'result'.
+print(output['result'])
+```
+
+Another example if the model doesn't have SignatureDefs defined.
+
 ```python
 import numpy as np
 import tensorflow as tf
@@ -488,25 +571,24 @@ output_data = interpreter.get_tensor(output_details[0]['index'])
 print(output_data)
 ```
 
-Alternatively to loading the model as a pre-converted `.tflite` file, you can
-combine your code with the
-[TensorFlow Lite Converter Python API](../convert/python_api.md)
-(`tf.lite.TFLiteConverter`), allowing you to convert your TensorFlow model into
-the TensorFlow Lite format and then run an inference:
+As an alternative to loading the model as a pre-converted `.tflite` file, you
+can combine your code with the
+[TensorFlow Lite Converter Python API](https://www.tensorflow.org/lite/api_docs/python/tf/lite/TFLiteConverter)
+(`tf.lite.TFLiteConverter`), allowing you to convert your Keras model into the
+TensorFlow Lite format and then run inference:
 
 ```python
 import numpy as np
 import tensorflow as tf
 
-img = tf.placeholder(name="img", dtype=tf.float32, shape=(1, 64, 64, 3))
+img = tf.keras.Input(shape=(64, 64, 3), name="img")
 const = tf.constant([1., 2., 3.]) + tf.constant([1., 4., 4.])
 val = img + const
 out = tf.identity(val, name="out")
 
 # Convert to TF Lite format
-with tf.Session() as sess:
-  converter = tf.lite.TFLiteConverter.from_session(sess, [img], [out])
-  tflite_model = converter.convert()
+converter = tf.lite.TFLiteConverter.from_keras_model(tf.keras.models.Model(inputs=[img], outputs=[out]))
+tflite_model = converter.convert()
 
 # Load the TFLite model and allocate tensors.
 interpreter = tf.lite.Interpreter(model_content=tflite_model)
@@ -521,103 +603,45 @@ For more Python sample code, see
 Tip: Run `help(tf.lite.Interpreter)` in the Python terminal to get detailed
 documentation about the interpreter.
 
-## Write a custom operator
+## Run inference with dynamic shape model
 
-All TensorFlow Lite operators (both custom and builtin) are defined using a
-simple pure-C interface that consists of four functions:
+If you want to run a model with dynamic input shape,
+*resize the input shape* before running inference.
+Otherwise, the `None` shape in Tensorflow models will be replaced by a
+placeholder of `1` in TFLite models.
 
-```c++
-typedef struct {
-  void* (*init)(TfLiteContext* context, const char* buffer, size_t length);
-  void (*free)(TfLiteContext* context, void* buffer);
-  TfLiteStatus (*prepare)(TfLiteContext* context, TfLiteNode* node);
-  TfLiteStatus (*invoke)(TfLiteContext* context, TfLiteNode* node);
-} TfLiteRegistration;
-```
+The following examples show how to resize the input shape before
+running inference in different languages.
+All the examples assume that the input shape is defined as `[1/None, 10]`, and
+need to be resized to `[3, 10]`.
 
-Refer to `context.h` for details on `TfLiteContext` and `TfLiteNode`. The former
-provides error reporting facilities and access to global objects, including all
-the tensors. The latter allows implementations to access their inputs and
-outputs.
-
-When the interpreter loads a model, it calls `init()` once for each node in the
-graph. A given `init()` will be called more than once if the op is used multiple
-times in the graph. For custom ops a configuration buffer will be provided,
-containing a flexbuffer that maps parameter names to their values. The buffer is
-empty for builtin ops because the interpreter has already parsed the op
-parameters. Kernel implementations that require state should initialize it here
-and transfer ownership to the caller. For each `init()` call, there will be a
-corresponding call to `free()`, allowing implementations to dispose of the
-buffer they might have allocated in `init()`.
-
-Whenever the input tensors are resized, the interpreter will go through the
-graph notifying implementations of the change. This gives them the chance to
-resize their internal buffer, check validity of input shapes and types, and
-recalculate output shapes. This is all done through `prepare()`, and
-implementations can access their state using `node->user_data`.
-
-Finally, each time inference runs, the interpreter traverses the graph calling
-`invoke()`, and here too the state is available as `node->user_data`.
-
-Custom ops can be implemented in exactly the same way as builtin ops, by defined
-those four functions and a global registration function that usually looks like
-this:
+C++ example:
 
 ```c++
-namespace tflite {
-namespace ops {
-namespace custom {
-  TfLiteRegistration* Register_MY_CUSTOM_OP() {
-    static TfLiteRegistration r = {my_custom_op::Init,
-                                   my_custom_op::Free,
-                                   my_custom_op::Prepare,
-                                   my_custom_op::Eval};
-    return &r;
-  }
-}  // namespace custom
-}  // namespace ops
-}  // namespace tflite
+// Resize input tensors before allocate tensors
+interpreter->ResizeInputTensor(/*tensor_index=*/0, std::vector<int>{3,10});
+interpreter->AllocateTensors();
 ```
 
-Note that registration is not automatic and an explicit call to
-`Register_MY_CUSTOM_OP` should be made somewhere. While the standard
-`BuiltinOpResolver` (available from the `:builtin_ops` target) takes care of the
-registration of builtins, custom ops will have to be collected in separate
-custom libraries.
+Python example:
 
-### Customize the kernel library
-
-Behind the scenes the interpreter will load a library of kernels which will be
-assigned to execute each of the operators in the model. While the default
-library only contains builtin kernels, it is possible to replace it with a
-custom library.
-
-The interpreter uses an `OpResolver` to translate operator codes and names into
-actual code:
-
-```c++
-class OpResolver {
-  virtual TfLiteRegistration* FindOp(tflite::BuiltinOperator op) const = 0;
-  virtual TfLiteRegistration* FindOp(const char* op) const = 0;
-  virtual void AddOp(tflite::BuiltinOperator op, TfLiteRegistration* registration) = 0;
-  virtual void AddOp(const char* op, TfLiteRegistration* registration) = 0;
-};
+```python
+# Load the TFLite model in TFLite Interpreter
+interpreter = tf.lite.Interpreter(model_path=TFLITE_FILE_PATH)
+  
+# Resize input shape for dynamic shape model and allocate tensor
+interpreter.resize_tensor_input(interpreter.get_input_details()[0]['index'], [3, 10])
+interpreter.allocate_tensors()
+  
+# Get input and output tensors.
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
 ```
 
-Regular usage requires that you use the `BuiltinOpResolver` and write:
+</section>
 
-```c++
-tflite::ops::builtin::BuiltinOpResolver resolver;
-```
+## Supported operations
 
-You can optionally register custom ops (before you pass the resolver to the
-`InterpreterBuilder`):
-
-```c++
-resolver.AddOp("MY_CUSTOM_OP", Register_MY_CUSTOM_OP());
-```
-
-If the set of builtin ops is deemed to be too large, a new `OpResolver` could be
-code-generated based on a given subset of ops, possibly only the ones contained
-in a given model. This is the equivalent of TensorFlow's selective registration
-(and a simple version of it is available in the `tools` directory).
+TensorFlow Lite supports a subset of TensorFlow operations with some
+limitations. For full list of operations and limitations see
+[TF Lite Ops page](https://www.tensorflow.org/mlir/tfl_ops).

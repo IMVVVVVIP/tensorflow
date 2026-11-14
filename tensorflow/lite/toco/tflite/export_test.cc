@@ -14,12 +14,25 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/toco/tflite/export.h"
 
+#include <algorithm>
+#include <cstdint>
+#include <initializer_list>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "flatbuffers/flatbuffers.h"  // from @flatbuffers
+#include "absl/log/log.h"
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "tensorflow/compiler/mlir/lite/schema/schema_utils.h"
+#include "xla/tsl/protobuf/error_codes.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/tflite/builtin_operator.h"
 #include "tensorflow/lite/toco/tflite/operator.h"
 #include "tensorflow/lite/toco/tflite/types.h"
@@ -105,7 +118,7 @@ class ExportTest : public ::testing::Test {
     // Make the buffer large enough for QuantizeWeights transformation to take
     // effect.
     int buf_size = 1296;
-    auto weight_buf = absl::make_unique<float[]>(buf_size);
+    auto weight_buf = std::make_unique<float[]>(buf_size);
     for (int i = 0; i < buf_size; i++) {
       // Fill the array with some garbage values.
       weight_buf[i] = static_cast<float>(i % 128);
@@ -152,7 +165,7 @@ class ExportTest : public ::testing::Test {
     }
   }
 
-  tensorflow::Status ExportAndReturnStatus(const ExportParams& params) {
+  absl::Status ExportAndReturnStatus(const ExportParams& params) {
     std::string result;
     return Export(input_model_, &result, params);
   }
@@ -164,17 +177,17 @@ class ExportTest : public ::testing::Test {
     std::string result;
     auto status = Export(input_model_, &result, params);
     if (!status.ok()) {
-      LOG(INFO) << status.error_message();
+      LOG(INFO) << status.message();
       return names;
     }
 
     auto* model = ::tflite::GetModel(result.data());
 
     for (const ::tflite::OperatorCode* opcode : *model->operator_codes()) {
-      if (opcode->builtin_code() != ::tflite::BuiltinOperator_CUSTOM) {
-        names.push_back(
-            std::string("builtin:") +
-            ::tflite::EnumNameBuiltinOperator(opcode->builtin_code()));
+      auto builtin_code = GetBuiltinCode(opcode);
+      if (builtin_code != ::tflite::BuiltinOperator_CUSTOM) {
+        names.push_back(std::string("builtin:") +
+                        ::tflite::EnumNameBuiltinOperator(builtin_code));
       } else {
         names.push_back(std::string("custom:") +
                         opcode->custom_code()->c_str());
@@ -234,7 +247,7 @@ TEST_F(ExportTest, UnsupportedFunctionality) {
   params.allow_dynamic_tensors = false;
   auto status = ExportAndReturnStatus(params);
   EXPECT_EQ(status.code(), ::tensorflow::error::UNIMPLEMENTED);
-  EXPECT_THAT(status.error_message(),
+  EXPECT_THAT(status.message(),
               HasSubstr("Unsupported flag: allow_dynamic_tensors."));
 }
 
@@ -268,9 +281,7 @@ TEST_F(ExportTest, ExportMinRuntime) {
   auto buf = model->metadata()->Get(0)->buffer();
   auto* buffer = (*model->buffers())[buf];
   auto* array = buffer->data();
-  std::string version(reinterpret_cast<const char*>(array->data()),
-                      array->size());
-  EXPECT_EQ(version, "1.6.0");
+  EXPECT_EQ(reinterpret_cast<const char*>(array->data()), std::string("1.6.0"));
 }
 
 TEST_F(ExportTest, ExportEmptyMinRuntime) {
@@ -287,9 +298,7 @@ TEST_F(ExportTest, ExportEmptyMinRuntime) {
   auto buf = model->metadata()->Get(0)->buffer();
   auto* buffer = (*model->buffers())[buf];
   auto* array = buffer->data();
-  std::string version(reinterpret_cast<const char*>(array->data()),
-                      array->size());
-  EXPECT_EQ(version, "");
+  EXPECT_EQ(reinterpret_cast<const char*>(array->data()), std::string(""));
 }
 
 TEST_F(ExportTest, UnsupportedControlFlowErrors) {
@@ -304,7 +313,7 @@ TEST_F(ExportTest, UnsupportedControlFlowErrors) {
   std::string output;
   const auto ops_by_type = BuildOperatorByTypeMap();
   auto status = Export(input_model_, &output, params, ops_by_type);
-  EXPECT_EQ(status.error_message(),
+  EXPECT_EQ(status.message(),
             "We are continually in the process of adding support to TensorFlow "
             "Lite for more ops. It would be helpful if you could inform us of "
             "how this conversion went by opening a github issue at "
@@ -327,7 +336,7 @@ TEST_F(ExportTest, UnsupportedOpsAndNeedEnableFlex) {
   const auto ops_by_type = BuildOperatorByTypeMap();
   auto status = Export(input_model_, &output, params, ops_by_type);
   EXPECT_EQ(
-      status.error_message(),
+      status.message(),
       "We are continually in the process of adding support to TensorFlow Lite "
       "for more ops. It would be helpful if you could inform us of how this "
       "conversion went by opening a github issue at "
@@ -357,7 +366,7 @@ TEST_F(ExportTest, UnsupportedOpsNeedCustomImplementation) {
   const auto ops_by_type = BuildOperatorByTypeMap();
   auto status = Export(input_model_, &output, params, ops_by_type);
   EXPECT_EQ(
-      status.error_message(),
+      status.message(),
       "We are continually in the process of adding support to TensorFlow Lite "
       "for more ops. It would be helpful if you could inform us of how this "
       "conversion went by opening a github issue at "
@@ -387,7 +396,7 @@ TEST_F(ExportTest, UnsupportedControlFlowAndCustomOpsErrors) {
   const auto ops_by_type = BuildOperatorByTypeMap();
   auto status = Export(input_model_, &output, params, ops_by_type);
   EXPECT_EQ(
-      status.error_message(),
+      status.message(),
       "We are continually in the process of adding support to TensorFlow Lite "
       "for more ops. It would be helpful if you could inform us of how this "
       "conversion went by opening a github issue at "
@@ -661,10 +670,10 @@ TEST_F(VersionedOpExportTest, Export) {
   // different versions.
   EXPECT_EQ(2, operator_codes->size());
   EXPECT_EQ(::tflite::BuiltinOperator_CONV_2D,
-            (*operator_codes)[0]->builtin_code());
+            GetBuiltinCode((*operator_codes)[0]));
   EXPECT_EQ(1, (*operator_codes)[0]->version());
   EXPECT_EQ(::tflite::BuiltinOperator_CONV_2D,
-            (*operator_codes)[1]->builtin_code());
+            GetBuiltinCode((*operator_codes)[1]));
   EXPECT_EQ(2, (*operator_codes)[1]->version());
 
   // Verify that the 2 operators points to the correct indices of the operation
@@ -677,7 +686,7 @@ TEST_F(VersionedOpExportTest, Export) {
 
 TEST(OperatorKeyTest, TestBuiltinOp) {
   Model model;
-  auto op = absl::make_unique<ConvOperator>();
+  auto op = std::make_unique<ConvOperator>();
 
   // Test a normal float operation.
   op->inputs = {"input", "filter"};
@@ -700,7 +709,7 @@ TEST(OperatorKeyTest, TestBuiltinOp) {
 
 TEST(OperatorKeyTest, TestBuiltinOpWithVersionedInputTypes) {
   Model model;
-  auto op = absl::make_unique<DequantizeOperator>();
+  auto op = std::make_unique<DequantizeOperator>();
 
   op->inputs = {"input"};
   op->outputs = {"output"};
@@ -722,7 +731,7 @@ TEST(OperatorKeyTest, TestBuiltinOpWithVersionedInputTypes) {
 
 TEST(OperatorKeyTest, TestCustomOp) {
   Model model;
-  auto op = absl::make_unique<TensorFlowUnsupportedOperator>();
+  auto op = std::make_unique<TensorFlowUnsupportedOperator>();
   op->tensorflow_op = "MyCrazyCustomOp";
 
   const auto ops_by_type = BuildOperatorByTypeMap();
@@ -736,7 +745,7 @@ TEST(OperatorKeyTest, TestCustomOp) {
 
 TEST(OperatorKeyTest, TestFlexOp) {
   Model model;
-  auto op = absl::make_unique<TensorFlowUnsupportedOperator>();
+  auto op = std::make_unique<TensorFlowUnsupportedOperator>();
   op->tensorflow_op = "BatchMatMul";
 
   const auto ops_by_type = BuildOperatorByTypeMap();
@@ -766,7 +775,7 @@ TEST(OperatorKeyTest, TestFlexOp) {
 
 TEST(OperatorKeyTest, TestFlexWithControlFlowOp) {
   Model model;
-  auto op = absl::make_unique<TensorFlowUnsupportedOperator>();
+  auto op = std::make_unique<TensorFlowUnsupportedOperator>();
   op->tensorflow_op = "Merge";
 
   const auto ops_by_type = BuildOperatorByTypeMap();
@@ -784,19 +793,16 @@ TEST(OperatorKeyTest, TestFlexWithControlFlowOp) {
 
 TEST(OperatorKeyTest, TestFlexWithUnsupportedOp) {
   Model model;
-  auto op = absl::make_unique<TensorFlowUnsupportedOperator>();
-  op->tensorflow_op = "HashTableV2";
+  auto op = std::make_unique<TensorFlowUnsupportedOperator>();
+  op->tensorflow_op = "UnsupportedOp";
 
   const auto ops_by_type = BuildOperatorByTypeMap();
   const toco::OperatorSignature op_signature = {op.get(), &model};
   const auto key = details::OperatorKey(op_signature, ops_by_type, true);
 
   EXPECT_EQ(key.type(), ::tflite::BuiltinOperator_CUSTOM);
-  EXPECT_EQ(key.custom_code(), "HashTableV2");
+  EXPECT_EQ(key.custom_code(), "UnsupportedOp");
   EXPECT_EQ(key.version(), 1);
-  // While HashTableV2 is excluded from the allowlisted flex op list, eventually
-  // it won't be, and the following expectations will need to change as the op
-  // is explicitly denylisted due to lack of asset support.
   EXPECT_FALSE(key.is_flex_op());
   EXPECT_FALSE(key.is_unsupported_flex_op());
 }
@@ -804,9 +810,7 @@ TEST(OperatorKeyTest, TestFlexWithUnsupportedOp) {
 TEST(OperatorKeyTest, TestFlexWithPartiallySupportedOps) {
   // Test Toco-supported/TFLite-unsupported operators.
   Model model;
-  // TODO(ycling): The test will be broken if TensorFlowAssert is implemented in
-  // TFLite. Find a more robust way to test the fallback logic.
-  auto op = absl::make_unique<TensorFlowAssertOperator>();
+  auto op = std::make_unique<TensorFlowAssertOperator>();
 
   const auto ops_by_type = BuildOperatorByTypeMap();
 

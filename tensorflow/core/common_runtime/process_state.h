@@ -21,6 +21,7 @@ limitations under the License.
 #include <unordered_map>
 #include <vector>
 
+#include "absl/types/optional.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/allocator_registry.h"
 #include "tensorflow/core/platform/mutex.h"
@@ -30,7 +31,6 @@ limitations under the License.
 
 namespace tensorflow {
 
-class Allocator;
 class PoolAllocator;
 
 // Singleton that manages per-process state, e.g. allocation of
@@ -52,7 +52,7 @@ class ProcessState : public ProcessStateInterface {
           dev_index(0),
           gpu_registered(false),
           nic_registered(false) {}
-    string DebugString();
+    std::string DebugString();
   };
 
   // If NUMA Allocators are desired, call this before calling any
@@ -79,8 +79,9 @@ class ProcessState : public ProcessStateInterface {
 
  protected:
   ProcessState();
-  virtual ~ProcessState() {}
+  ~ProcessState() override {}
   friend class GPUProcessState;
+  friend class PluggableDeviceProcessState;
 
   // If these flags need to be runtime configurable consider adding
   // them to ConfigProto.
@@ -122,7 +123,7 @@ class RecordingAllocator : public Allocator {
                      ProcessState::MemDesc md, mutex* mu)
       : mm_(mm), a_(a), md_(md), mu_(mu) {}
 
-  string Name() override { return a_->Name(); }
+  std::string Name() override { return a_->Name(); }
   void* AllocateRaw(size_t alignment, size_t num_bytes) override {
     void* p = a_->AllocateRaw(alignment, num_bytes);
     mutex_lock l(*mu_);
@@ -145,7 +146,12 @@ class RecordingAllocator : public Allocator {
     return a_->AllocatedSize(p);
   }
   absl::optional<AllocatorStats> GetStats() override { return a_->GetStats(); }
-  void ClearStats() override { a_->ClearStats(); }
+  bool ClearStats() override { return a_->ClearStats(); }
+
+  AllocatorMemoryType GetMemoryType() const override {
+    return a_->GetMemoryType();
+  }
+
   ProcessState::MDMap* mm_;  // not owned
   Allocator* a_;             // not owned
   ProcessState::MemDesc md_;

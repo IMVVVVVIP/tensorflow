@@ -27,42 +27,43 @@ int UnsafeGetDimsFromIx(const Tensor& ix) {
   return ix.dim_size(1);
 }
 
-Status GetDimsFromIx(const Tensor& ix, int* result) {
+absl::Status GetDimsFromIx(const Tensor& ix, int* result) {
   if (!TensorShapeUtils::IsMatrix(ix.shape())) {
-    return errors::InvalidArgument("indices must be a matrix, but got: ",
-                                   ix.shape().DebugString());
+    return absl::InvalidArgumentError(absl::StrCat(
+        "indices must be a matrix, but got: ", ix.shape().DebugString()));
   }
   *result = UnsafeGetDimsFromIx(ix);
-  return Status();
+  return absl::Status();
 }
 
 }  // namespace
 
-/* static */ Status SparseTensor::Create(Tensor ix, Tensor vals,
-                                         const VarDimArray shape,
-                                         const VarDimArray order,
-                                         SparseTensor* result) {
+/* static */ absl::Status SparseTensor::Create(Tensor ix, Tensor vals,
+                                               const VarDimArray shape,
+                                               const VarDimArray order,
+                                               SparseTensor* result) {
   if (ix.dtype() != DT_INT64) {
-    return errors::InvalidArgument("indices must be type int64 but got: ",
-                                   ix.dtype());
+    return absl::InvalidArgumentError(
+        absl::StrCat("indices must be type int64 but got: ", ix.dtype()));
   }
   if (!TensorShapeUtils::IsVector(vals.shape())) {
-    return errors::InvalidArgument("vals must be a vec, but got: ",
-                                   vals.shape().DebugString());
+    return absl::InvalidArgumentError(absl::StrCat(
+        "vals must be a vec, but got: ", vals.shape().DebugString()));
   }
   if (ix.shape().dim_size(0) != vals.shape().dim_size(0)) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(absl::StrCat(
         "indices and values rows (indexing "
         "dimension) must match. (indices = ",
-        ix.shape().dim_size(0), ", values = ", vals.shape().dim_size(0), ")");
+        ix.shape().dim_size(0), ", values = ", vals.shape().dim_size(0), ")"));
   }
   int dims = 0;
   TF_RETURN_IF_ERROR(GetDimsFromIx(ix, &dims));
   if (order.size() != dims) {
-    return errors::InvalidArgument("Order length must be SparseTensor rank.");
+    return absl::InvalidArgumentError(
+        "Order length must be SparseTensor rank.");
   }
   if (shape.size() != dims) {
-    return errors::InvalidArgument("Shape rank must be SparseTensor rank.");
+    return absl::InvalidArgumentError("Shape rank must be SparseTensor rank.");
   }
 
   result->ix_ = std::move(ix);
@@ -70,27 +71,27 @@ Status GetDimsFromIx(const Tensor& ix, int* result) {
   result->shape_.assign(shape.begin(), shape.end());
   result->order_.assign(order.begin(), order.end());
   result->dims_ = dims;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-/* static */ Status SparseTensor::Create(Tensor ix, Tensor vals,
-                                         const TensorShape& shape,
-                                         SparseTensor* result) {
+/* static */ absl::Status SparseTensor::Create(Tensor ix, Tensor vals,
+                                               const TensorShape& shape,
+                                               SparseTensor* result) {
   return Create(std::move(ix), std::move(vals), TensorShapeToVector(shape),
                 UndefinedOrder(TensorShapeToVector(shape)), result);
 }
 
-/* static */ Status SparseTensor::Create(Tensor ix, Tensor vals,
-                                         const VarDimArray shape,
-                                         SparseTensor* result) {
+/* static */ absl::Status SparseTensor::Create(Tensor ix, Tensor vals,
+                                               const VarDimArray shape,
+                                               SparseTensor* result) {
   return Create(std::move(ix), std::move(vals), shape, UndefinedOrder(shape),
                 result);
 }
 
-/* static */ Status SparseTensor::Create(Tensor ix, Tensor vals,
-                                         const TensorShape& shape,
-                                         const VarDimArray order,
-                                         SparseTensor* result) {
+/* static */ absl::Status SparseTensor::Create(Tensor ix, Tensor vals,
+                                               const TensorShape& shape,
+                                               const VarDimArray order,
+                                               SparseTensor* result) {
   return Create(std::move(ix), std::move(vals), TensorShapeToVector(shape),
                 order, result);
 }
@@ -122,19 +123,19 @@ bool SparseTensor::IndicesValidVectorFastPath() const {
   DCHECK_EQ(shape_.size(), 1);
   DCHECK_EQ(order_[0], 0);
 
-  const int64 max_index = shape_[0];
+  const int64_t max_index = shape_[0];
 
   // We maintain separate bools for each validation predicate to enable
   // vectorization across loop iterations.
   bool index_in_range_valid = true;
   bool order_valid = true;
 
-  int64 prev_index = -1;
-  const auto ix_t = ix_.matrix<int64>();
-  const int64* const index_base_ptr = ix_t.data();
+  int64_t prev_index = -1;
+  const auto ix_t = ix_.matrix<int64_t>();
+  const int64_t* const index_base_ptr = ix_t.data();
 
   for (std::size_t n = 0; n < ix_t.dimension(0); ++n) {
-    const int64 index = index_base_ptr[n];
+    const int64_t index = index_base_ptr[n];
     index_in_range_valid = index_in_range_valid & (index < max_index);
     order_valid = order_valid & (index > prev_index);
     prev_index = index;
@@ -152,17 +153,17 @@ bool SparseTensor::IndicesValidVectorFastPath() const {
 // NOTE(mrry): If this method returns false, call IndicesValidHelper<true>()
 // to obtain a meaningful error message.
 bool SparseTensor::IndicesValidMatrix32BitFastPath() const {
-  const auto ix_t = ix_.matrix<int64>();
-  const int64* const shape_ptr = shape_.data();
+  const auto ix_t = ix_.matrix<int64_t>();
+  const int64_t* const shape_ptr = shape_.data();
 
   DCHECK_EQ(shape_.size(), 2);
   DCHECK_EQ(order_[0], 0);
   DCHECK_EQ(order_[1], 1);
-  DCHECK_LE(shape_ptr[0], std::numeric_limits<int32>::max());
-  DCHECK_LE(shape_ptr[1], std::numeric_limits<int32>::max());
+  DCHECK_LE(shape_ptr[0], std::numeric_limits<int32_t>::max());
+  DCHECK_LE(shape_ptr[1], std::numeric_limits<int32_t>::max());
 
-  const int32 max_rows = static_cast<int32>(shape_ptr[0]);
-  const int32 max_cols = static_cast<int32>(shape_ptr[1]);
+  const int32_t max_rows = static_cast<int32_t>(shape_ptr[0]);
+  const int32_t max_cols = static_cast<int32_t>(shape_ptr[1]);
 
   // We maintain separate bools for each validation predicate to enable
   // vectorization across loop iterations.
@@ -172,18 +173,18 @@ bool SparseTensor::IndicesValidMatrix32BitFastPath() const {
   bool col_in_range_valid = true;
   bool order_valid = true;
 
-  int64 prev_index = -1;
+  int64_t prev_index = -1;
 
   // Points to the beginning of the current row of the indices matrix.
   // Each row has two int64 elements, but we use an int32 pointer to access
   // the low and high 32 bits of each element separately. This means that our
   // stride per row is 4 elements.
-  const int32* const index_base_ptr =
-      reinterpret_cast<const int32*>(ix_t.data());
+  const int32_t* const index_base_ptr =
+      reinterpret_cast<const int32_t*>(ix_t.data());
   const size_t kInt32ElementsPerRow = 4;
 
   for (std::size_t n = 0; n < ix_t.dimension(0); ++n) {
-    const int32* const index_ptr = index_base_ptr + n * kInt32ElementsPerRow;
+    const int32_t* const index_ptr = index_base_ptr + n * kInt32ElementsPerRow;
 
     // Unpack the values on the current row of the indices matrix.
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -192,10 +193,10 @@ bool SparseTensor::IndicesValidMatrix32BitFastPath() const {
     const int32 col_zeros = index_ptr[2];
     const int32 col_32 = index_ptr[3];
 #else
-    const int32 row_32 = index_ptr[0];
-    const int32 row_zeros = index_ptr[1];
-    const int32 col_32 = index_ptr[2];
-    const int32 col_zeros = index_ptr[3];
+    const int32_t row_32 = index_ptr[0];
+    const int32_t row_zeros = index_ptr[1];
+    const int32_t col_32 = index_ptr[2];
+    const int32_t col_zeros = index_ptr[3];
 #endif
 
     // Validate that the high 32 bits of the row and column indices are zero.
@@ -211,8 +212,8 @@ bool SparseTensor::IndicesValidMatrix32BitFastPath() const {
 
     // Interpret the row and column as a concatenated 64-bit integer, and
     // validate that the concatenated indices are in strictly increasing order.
-    const int64 concatenated_index =
-        (static_cast<int64>(row_32) << 32) + col_32;
+    const int64_t concatenated_index =
+        (static_cast<int64_t>(row_32) << 32) + col_32;
     order_valid = order_valid & (concatenated_index > prev_index);
     prev_index = concatenated_index;
   }
@@ -222,9 +223,9 @@ bool SparseTensor::IndicesValidMatrix32BitFastPath() const {
 }
 
 template <bool standard_order>
-Status SparseTensor::IndicesValidHelper() const {
-  const auto ix_t = ix_.matrix<int64>();
-  const int64* const shape_ptr = shape_.data();
+absl::Status SparseTensor::IndicesValidHelper() const {
+  const auto ix_t = ix_.matrix<int64_t>();
+  const int64_t* const shape_ptr = shape_.data();
 
   for (std::size_t n = 0; n < num_entries(); ++n) {
     bool valid = true;
@@ -244,46 +245,46 @@ Status SparseTensor::IndicesValidHelper() const {
         } else {
           ordered_dim = order_[di];
         }
-        int64 diff = ix_t(n, ordered_dim) - ix_t(n - 1, ordered_dim);
+        int64_t diff = ix_t(n, ordered_dim) - ix_t(n - 1, ordered_dim);
         if (diff > 0) different = true;
         if (!different && diff < 0) increasing = false;
       }
     }
     if (TF_PREDICT_FALSE(!valid || !increasing || !different)) {
-      string index = strings::StrCat("indices[", n, "] = [");
+      std::string index = absl::StrCat("indices[", n, "] = [");
       for (int di = 0; di < dims_; ++di) {
-        strings::StrAppend(&index, ix_t(n, di), di < dims_ - 1 ? "," : "]");
+        absl::StrAppend(&index, ix_t(n, di), di < dims_ - 1 ? "," : "]");
       }
       if (!valid) {
-        return errors::InvalidArgument(index,
-                                       " is out of bounds: need 0 <= index < [",
-                                       str_util::Join(shape_, ","), "]");
+        return absl::InvalidArgumentError(
+            absl::StrCat(index, " is out of bounds: need 0 <= index < [",
+                         absl::StrJoin(shape_, ","), "]"));
       }
       if (!increasing) {
-        return errors::InvalidArgument(
+        return absl::InvalidArgumentError(absl::StrCat(
             index,
             " is out of order. Many sparse ops require sorted indices.\n"
             "    Use `tf.sparse.reorder` to create a correctly ordered copy."
-            "\n\n");
+            "\n\n"));
       }
       if (!different) {
-        return errors::InvalidArgument(index, " is repeated");
+        return absl::InvalidArgumentError(absl::StrCat(index, " is repeated"));
       }
     }
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status SparseTensor::IndicesValid() const {
+absl::Status SparseTensor::IndicesValid() const {
   if (shape_.size() == 1 && IndicesValidVectorFastPath()) {
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   bool standard_order = true;
   for (size_t i = 0; i < order_.size(); ++i) {
     if (order_[i] < 0) {
-      return errors::FailedPrecondition(
+      return absl::FailedPreconditionError(
           "Order was not provided.  Provide an order at "
           "construction time or run ReorderInPlace");
     }
@@ -293,13 +294,13 @@ Status SparseTensor::IndicesValid() const {
   if (standard_order) {
     if (shape_.size() == 1) {
       if (IndicesValidVectorFastPath()) {
-        return Status::OK();
+        return absl::OkStatus();
       }
     } else if (shape_.size() == 2 &&
-               shape_[0] <= std::numeric_limits<int32>::max() &&
-               shape_[1] <= std::numeric_limits<int32>::max()) {
+               shape_[0] <= std::numeric_limits<int32_t>::max() &&
+               shape_[1] <= std::numeric_limits<int32_t>::max()) {
       if (IndicesValidMatrix32BitFastPath()) {
-        return Status::OK();
+        return absl::OkStatus();
       }
     }
     return IndicesValidHelper<true>();

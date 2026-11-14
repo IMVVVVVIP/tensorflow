@@ -16,13 +16,14 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_MLIR_TENSORFLOW_IR_TF_REMAINING_OPS_H_
 #define TENSORFLOW_COMPILER_MLIR_TENSORFLOW_IR_TF_REMAINING_OPS_H_
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"  // from @llvm-project
 #include "mlir/Dialect/Traits.h"  // from @llvm-project
 #include "mlir/IR/Attributes.h"  // from @llvm-project
 #include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/BuiltinOps.h"  // from @llvm-project
+#include "mlir/IR/BuiltinTypes.h"  // from @llvm-project
 #include "mlir/IR/Matchers.h"  // from @llvm-project
-#include "mlir/IR/Module.h"  // from @llvm-project
 #include "mlir/IR/OpImplementation.h"  // from @llvm-project
-#include "mlir/IR/StandardTypes.h"  // from @llvm-project
 #include "mlir/IR/TypeUtilities.h"  // from @llvm-project
 #include "mlir/Interfaces/CallInterfaces.h"  // from @llvm-project
 #include "mlir/Interfaces/DerivedAttributeOpInterface.h"  // from @llvm-project
@@ -36,15 +37,9 @@ limitations under the License.
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_types.h"
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_verifiers.h"
 
-namespace mlir {
-namespace TF {
-
 #define GET_OP_FWD_DEFINES
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_all_ops.h.inc"
 #define GET_OP_CLASSES
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_remaining_ops.h.inc"
-
-}  // namespace TF
-}  // namespace mlir
 
 #endif  // TENSORFLOW_COMPILER_MLIR_TENSORFLOW_IR_TF_REMAINING_OPS_H_

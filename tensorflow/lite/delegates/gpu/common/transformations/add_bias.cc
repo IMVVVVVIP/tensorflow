@@ -15,13 +15,17 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/common/transformations/add_bias.h"
 
-#include "absl/memory/memory.h"
-#include "absl/strings/str_cat.h"
+#include <any>
+#include <memory>
+#include <vector>
+
 #include "absl/types/any.h"
 #include "tensorflow/lite/delegates/gpu/common/data_type.h"
 #include "tensorflow/lite/delegates/gpu/common/model.h"
+#include "tensorflow/lite/delegates/gpu/common/model_transformer.h"
 #include "tensorflow/lite/delegates/gpu/common/operations.h"
-#include "tensorflow/lite/delegates/gpu/common/status.h"
+#include "tensorflow/lite/delegates/gpu/common/shape.h"
+#include "tensorflow/lite/delegates/gpu/common/tensor.h"
 
 namespace tflite {
 namespace gpu {
@@ -54,24 +58,35 @@ class AddBias : public NodeTransformation {
                 "runtime input."};
       }
       auto& attr =
-          absl::any_cast<Convolution2DAttributes&>(node->operation.attributes);
+          std::any_cast<Convolution2DAttributes&>(node->operation.attributes);
       return FillBias(attr.weights.shape.o, &attr.bias);
     }
     if (node->operation.type ==
         ToString(OperationType::CONVOLUTION_TRANSPOSED)) {
-      auto& attr = absl::any_cast<ConvolutionTransposedAttributes&>(
+      auto& attr = std::any_cast<ConvolutionTransposedAttributes&>(
           node->operation.attributes);
       return FillBias(attr.weights.shape.o, &attr.bias);
     }
     if (node->operation.type ==
         ToString(OperationType::DEPTHWISE_CONVOLUTION)) {
-      auto& attr = absl::any_cast<DepthwiseConvolution2DAttributes&>(
+      if (graph->FindInputs(node->id).size() != 1) {
+        return {TransformStatus::DECLINED,
+                "This transformation is only applicable to depth wise conv "
+                "with one "
+                "runtime input."};
+      }
+      auto& attr = std::any_cast<DepthwiseConvolution2DAttributes&>(
           node->operation.attributes);
       return FillBias(attr.weights.shape.o * attr.weights.shape.i, &attr.bias);
     }
     if (node->operation.type == ToString(OperationType::FULLY_CONNECTED)) {
       auto& attr =
-          absl::any_cast<FullyConnectedAttributes&>(node->operation.attributes);
+          std::any_cast<FullyConnectedAttributes&>(node->operation.attributes);
+      return FillBias(attr.weights.shape.o, &attr.bias);
+    }
+    if (node->operation.type == ToString(OperationType::FULLY_CONNECTED_INT8)) {
+      auto& attr = std::any_cast<FullyConnectedInt8Attributes&>(
+          node->operation.attributes);
       return FillBias(attr.weights.shape.o, &attr.bias);
     }
     return {TransformStatus::SKIPPED, ""};
@@ -81,7 +96,7 @@ class AddBias : public NodeTransformation {
 }  // namespace
 
 std::unique_ptr<NodeTransformation> NewAddBias() {
-  return absl::make_unique<AddBias>();
+  return std::make_unique<AddBias>();
 }
 
 }  // namespace gpu

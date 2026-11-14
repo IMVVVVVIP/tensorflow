@@ -16,6 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_GENERIC_LAYOUT_OPTIMIZER_H_
 #define TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_GENERIC_LAYOUT_OPTIMIZER_H_
 
+#include <string>
+
 #include "tensorflow/core/grappler/optimizers/graph_optimizer.h"
 #include "tensorflow/core/protobuf/rewriter_config.pb.h"
 
@@ -25,23 +27,33 @@ namespace grappler {
 // Optimize the data layout for convolutional models.
 class GenericLayoutOptimizer : public GraphOptimizer {
  public:
-  GenericLayoutOptimizer() : GenericLayoutOptimizer(RewriterConfig::DEFAULT) {}
-  explicit GenericLayoutOptimizer(RewriterConfig::Toggle opt_level)
-      : opt_level_(opt_level) {}
+  explicit GenericLayoutOptimizer(std::string enforced_layout = "")
+      : GenericLayoutOptimizer(RewriterConfig::DEFAULT,
+                               RewriterConfig::NO_CONVERSION_ON_CPU,
+                               enforced_layout) {}
+  explicit GenericLayoutOptimizer(RewriterConfig::Toggle opt_level,
+                                  std::string enforced_layout = "")
+      : GenericLayoutOptimizer(opt_level, RewriterConfig::NO_CONVERSION_ON_CPU,
+                               enforced_layout) {}
+  explicit GenericLayoutOptimizer(RewriterConfig::Toggle opt_level,
+                                  RewriterConfig::CpuLayout layout_conversion,
+                                  std::string enforced_layout = "")
+      : opt_level_(opt_level),
+        cpu_layout_conversion_(layout_conversion),
+        enforced_layout_(enforced_layout) {}
   ~GenericLayoutOptimizer() override = default;
 
-  string name() const override { return "layout"; };
+  std::string name() const override { return "layout"; };
 
   bool UsesFunctionLibrary() const override { return false; }
 
-  Status Optimize(Cluster* cluster, const GrapplerItem& item,
-                  GraphDef* output) override;
-
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimize_output, double result) override;
+  absl::Status Optimize(Cluster* cluster, const GrapplerItem& item,
+                        GraphDef* output) override;
 
  private:
   RewriterConfig::Toggle opt_level_;
+  RewriterConfig::CpuLayout cpu_layout_conversion_;
+  const std::string enforced_layout_;
 };
 
 }  // namespace grappler

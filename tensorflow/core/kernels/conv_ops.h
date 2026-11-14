@@ -16,7 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_CONV_OPS_H_
 #define TENSORFLOW_CORE_KERNELS_CONV_OPS_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "absl/status/status.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/platform/mem.h"
 #include "tensorflow/core/util/tensor_format.h"
@@ -37,8 +38,18 @@ struct LaunchConv2DOp {
                   const Tensor& input, const Tensor& filter, int row_dilation,
                   int col_dilation, int row_stride, int col_stride,
                   const Padding& padding,
-                  const std::vector<int64>& explicit_paddings, Tensor* output,
+                  const std::vector<int64_t>& explicit_paddings, Tensor* output,
                   TensorFormat data_format);
+};
+
+template <typename Device, typename T>
+struct LaunchConvOp {
+  void operator()(OpKernelContext* context, bool cudnn_use_autotune,
+                  const Tensor& input, const Tensor& filter,
+                  const std::vector<int64_t>& dilations,
+                  const std::vector<int64_t>& strides, Padding padding,
+                  const std::vector<int64_t>& explicit_paddings,
+                  TensorFormat data_format, Tensor* output);
 };
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -48,8 +59,18 @@ struct LaunchConv2DOp<Eigen::GpuDevice, T> {
                   const Tensor& input, const Tensor& filter, int row_dilation,
                   int col_dilation, int row_stride, int col_stride,
                   const Padding& padding,
-                  const std::vector<int64>& explicit_paddings, Tensor* output,
+                  const std::vector<int64_t>& explicit_paddings, Tensor* output,
                   TensorFormat data_format);
+};
+
+template <typename T>
+struct LaunchConvOp<Eigen::GpuDevice, T> {
+  void operator()(OpKernelContext* context, bool cudnn_use_autotune,
+                  const Tensor& input, const Tensor& filter,
+                  const std::vector<int64_t>& dilations,
+                  const std::vector<int64_t>& strides, const Padding padding,
+                  const std::vector<int64_t>& explicit_paddings,
+                  TensorFormat data_format, Tensor* output);
 };
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
@@ -60,21 +81,21 @@ struct Im2ColBufferResource : public ResourceBase {
   Im2ColBufferResource<T, size>() {
     data = static_cast<T*>(port::Malloc(size * sizeof(T)));
   }
-  ~Im2ColBufferResource<T, size>() { port::Free(data); }
+  ~Im2ColBufferResource<T, size>() override { port::Free(data); }
   // This mutex ensures that only a single operation at a time is able to use
   // the buffer memory held by this resource.
   mutex mu;
   T* data;
-  string DebugString() const { return "Im2ColBufferResource"; }
+  std::string DebugString() const override { return "Im2ColBufferResource"; }
 };
 
 // Convolution parameters specified by Op attributes.
 struct Conv2DParameters {
-  std::vector<int32> dilations;
-  std::vector<int32> strides;
+  std::vector<int32_t> dilations;
+  std::vector<int32_t> strides;
   Padding padding;
   TensorFormat data_format;
-  std::vector<int64> explicit_paddings;
+  std::vector<int64_t> explicit_paddings;
 };
 
 // Convolution dimensions inferred from parameters, input and filter tensors.
@@ -95,25 +116,25 @@ struct Conv2DDimensions {
   int dilation_rows;
   int dilation_cols;
 
-  int64 out_rows;
-  int64 out_cols;
-  int64 pad_rows_before;
-  int64 pad_rows_after;
-  int64 pad_cols_before;
-  int64 pad_cols_after;
+  int64_t out_rows;
+  int64_t out_cols;
+  int64_t pad_rows_before;
+  int64_t pad_rows_after;
+  int64_t pad_cols_before;
+  int64_t pad_cols_after;
 };
 
 // Initializes and validates Conv2D parameters configured by OpKernel
 // attributes.
-Status InitConv2DParameters(const OpKernelConstruction* context,
-                            Conv2DParameters* params);
+absl::Status InitConv2DParameters(const OpKernelConstruction* context,
+                                  Conv2DParameters* params);
 
 // Computes and validates convolutions dimensions from Conv2D parameters. If
 // parameters are valid, dimensions will be updated with derived convolution
 // dimensions, otherwise an error will be returned.
-Status ComputeConv2DDimension(const Conv2DParameters& params,
-                              const Tensor& input, const Tensor& filter,
-                              Conv2DDimensions* dimensions);
+absl::Status ComputeConv2DDimension(const Conv2DParameters& params,
+                                    const Tensor& input, const Tensor& filter,
+                                    Conv2DDimensions* dimensions);
 
 }  // namespace tensorflow
 

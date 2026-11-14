@@ -16,10 +16,6 @@
 # RUN: %p/control_flow_duplicate_v1 | FileCheck %s
 
 # pylint: disable=missing-docstring,line-too-long
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import tensorflow.compat.v1 as tf
 from tensorflow.compiler.mlir.tensorflow.tests.tf_saved_model import common_v1
 
@@ -35,8 +31,8 @@ from tensorflow.compiler.mlir.tensorflow.tests.tf_saved_model import common_v1
 # CHECK-SAME: else_branch = @[[else]]
 # CHECK-SAME: then_branch = @[[then]]
 
-# CHECK: func @[[else]](
-# CHECK: func @[[then]](
+# CHECK: func private @[[else]](
+# CHECK: func private @[[then]](
 
 
 def Test():

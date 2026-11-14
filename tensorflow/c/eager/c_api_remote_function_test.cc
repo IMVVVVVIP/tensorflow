@@ -20,23 +20,23 @@ namespace {
 
 void TestRemoteExecuteSilentCopiesFunc(bool async, bool remote,
                                        bool heavy_load_on_streaming_rpc,
-                                       bool remote_func_outputs = false) {
+                                       bool remote_func_outputs = false,
+                                       bool has_packed_input = false) {
   return TestRemoteExecuteSilentCopies(async, remote, /*func=*/true,
                                        heavy_load_on_streaming_rpc,
-                                       remote_func_outputs);
+                                       remote_func_outputs, has_packed_input);
 }
 
 TEST(CAPI, RemoteExecuteSilentCopiesAsyncFunc) {
   TestRemoteExecuteSilentCopiesFunc(/*async=*/true, /*remote=*/true,
                                     /*heavy_load_on_streaming_rpc=*/false);
 }
-// TODO(b/164506563): Re-enable after the fix.
-TEST(CAPI, DISABLED_RemoteExecuteSilentCopiesFuncRemoteOutputs) {
+TEST(CAPI, RemoteExecuteSilentCopiesFuncRemoteOutputs) {
   TestRemoteExecuteSilentCopiesFunc(/*async=*/false, /*remote=*/true,
                                     /*heavy_load_on_streaming_rpc=*/false,
                                     /*remote_func_outputs=*/true);
 }
-TEST(CAPI, DISABLED_RemoteExecuteSilentCopiesAsyncFuncRemoteOutputs) {
+TEST(CAPI, RemoteExecuteSilentCopiesAsyncFuncRemoteOutputs) {
   TestRemoteExecuteSilentCopiesFunc(/*async=*/true, /*remote=*/true,
                                     /*heavy_load_on_streaming_rpc=*/false,
                                     /*remote_func_outputs=*/true);
@@ -60,6 +60,15 @@ TEST(CAPI, RemoteExecuteSilentCopiesLocalAsyncFuncOrdering) {
   // the function execution should wait until the remote input is ready.
   TestRemoteExecuteSilentCopiesFunc(/*async=*/true, /*remote=*/false,
                                     /*heavy_load_on_streaming_rpc=*/true);
+}
+TEST(CAPI, RemoteExecuteSilentCopiesRemoteAsyncPackedInputFuncOrdering) {
+  // A remote input (packed) may be not ready when we start running a function.
+  // Test that the function execution should wait until the remote input is
+  // ready.
+  TestRemoteExecuteSilentCopiesFunc(/*async=*/true, /*remote=*/true,
+                                    /*heavy_load_on_streaming_rpc=*/true,
+                                    /*remote_func_outputs*/ true,
+                                    /*has_packed_input=*/true);
 }
 
 }  // namespace

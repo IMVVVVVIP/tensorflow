@@ -14,7 +14,10 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/framework/tensor_slice.h"
+
+#include <limits>
 #include <vector>
+
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/strings/numbers.h"
 #include "tensorflow/core/lib/strings/str_util.h"
@@ -35,7 +38,7 @@ TensorSlice::TensorSlice(const TensorSliceProto& proto) {
 }
 
 TensorSlice::TensorSlice(
-    std::initializer_list<std::pair<int64, int64>> extents) {
+    std::initializer_list<std::pair<int64_t, int64_t>> extents) {
   starts_.reserve(extents.size());
   lengths_.reserve(extents.size());
   for (const auto& e : extents) {
@@ -44,37 +47,67 @@ TensorSlice::TensorSlice(
   }
 }
 
-Status TensorSlice::Parse(const string& str, TensorSlice* slice) {
-  std::vector<string> items = str_util::Split(str, ':', str_util::SkipEmpty());
+absl::Status TensorSlice::BuildTensorSlice(const TensorSliceProto& proto,
+                                           TensorSlice* output) {
+  output->Clear();
+  output->starts_.reserve(proto.extent_size());
+  output->lengths_.reserve(proto.extent_size());
+  for (const auto& e : proto.extent()) {
+    int64_t l = GetExtentLength(e);
+    if (e.start() != 0 || l != kFullExtent) {
+      if (e.start() < 0 || l <= 0) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Expected non-negative start and positive length but got start = ",
+            e.start(), ", length = ", l, ": extent = ", e.ShortDebugString()));
+      }
+      // Calculating the extent end must not cause signed integer overflow.
+      if (static_cast<uint64_t>(e.start()) + static_cast<uint64_t>(e.length()) >
+          std::numeric_limits<int64_t>::max()) {
+        return absl::InvalidArgumentError(absl::StrCat(
+            "Extent end exceeds the maximum possible size: extent = ",
+            e.ShortDebugString()));
+      }
+    }
+    output->starts_.push_back(e.start());
+    output->lengths_.push_back(l);
+  }
+
+  return absl::OkStatus();
+}
+
+absl::Status TensorSlice::Parse(const std::string& str, TensorSlice* slice) {
+  std::vector<std::string> items =
+      str_util::Split(str, ':', str_util::SkipEmpty());
   slice->starts_.reserve(items.size());
   slice->lengths_.reserve(items.size());
-  for (const string& x : items) {
-    int64 s, l;
+  for (const std::string& x : items) {
+    int64_t s, l;
     if (x == "-") {
       // "everything"
       s = 0;
       l = kFullExtent;
     } else {
-      std::vector<string> sl = str_util::Split(x, ',', str_util::SkipEmpty());
-      if (sl.size() != 2 || !strings::safe_strto64(sl[0], &s) ||
-          !strings::safe_strto64(sl[1], &l)) {
-        return errors::InvalidArgument(
-            "Expected a pair of numbers or '-' "
-            "but got '",
-            x, "': string = ", str);
+      std::vector<std::string> sl =
+          str_util::Split(x, ',', str_util::SkipEmpty());
+      if (sl.size() != 2 || !absl::SimpleAtoi(sl[0], &s) ||
+          !absl::SimpleAtoi(sl[1], &l)) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("Expected a pair of numbers or '-' "
+                         "but got '",
+                         x, "': string = ", str));
       }
       if (s < 0 || l <= 0) {
-        return errors::InvalidArgument(
-            "Expected non-negative start and "
-            "positive length but got start = ",
-            s, ", length = ", l, ": string = ", str);
+        return absl::InvalidArgumentError(
+            absl::StrCat("Expected non-negative start and "
+                         "positive length but got start = ",
+                         s, ", length = ", l, ": string = ", str));
       }
     }
     slice->starts_.push_back(s);
     slice->lengths_.push_back(l);
   }
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void TensorSlice::Clear() {
@@ -121,8 +154,8 @@ void TensorSlice::AsProto(TensorSliceProto* proto) const {
   }
 }
 
-string TensorSlice::DebugString() const {
-  string buffer;
+std::string TensorSlice::DebugString() const {
+  std::string buffer;
   bool first = true;
   for (int d = 0; d < dims(); ++d) {
     if (!first) {
@@ -131,7 +164,7 @@ string TensorSlice::DebugString() const {
     if (IsFullAt(d)) {
       buffer.append("-");
     } else {
-      strings::StrAppend(&buffer, starts_[d], ",", lengths_[d]);
+      absl::StrAppend(&buffer, starts_[d], ",", lengths_[d]);
     }
     first = false;
   }
@@ -165,8 +198,8 @@ bool TensorSlice::Intersect(const TensorSlice& other,
     } else {
       // If we have an intersection here, it should have a start that is the
       // max of the two starts and an end that is the min of the two ends.
-      int64 s = std::max(start(d), other.start(d));
-      int64 l = std::min(end(d), other.end(d)) - s;
+      int64_t s = std::max(start(d), other.start(d));
+      int64_t l = std::min(end(d), other.end(d)) - s;
       if (l > 0) {
         // We have a real intersection
         if (result) {
@@ -227,22 +260,23 @@ void TensorSlice::UpdateToCover(const TensorSlice& other) {
 
 // static
 bool TensorSlice::HasExtentLength(const TensorSliceProto::Extent& extent) {
-  return extent.has_length_case() == TensorSliceProto::Extent::kLength;
+  return extent.has_length();
 }
 
 // static
-int64 TensorSlice::GetExtentLength(const TensorSliceProto::Extent& extent) {
+int64_t TensorSlice::GetExtentLength(const TensorSliceProto::Extent& extent) {
   if (!HasExtentLength(extent)) return -1;
   return extent.length();
 }
 
-Status TensorSlice::SliceTensorShape(const TensorShape& shape,
-                                     TensorShape* result_shape) const {
+absl::Status TensorSlice::SliceTensorShape(const TensorShape& shape,
+                                           TensorShape* result_shape) const {
   result_shape->Clear();
   // Mismatching ranks: we can't apply the slice at all.
   if (shape.dims() != dims()) {
-    return errors::Internal("Mismatching ranks: shape = ", shape.DebugString(),
-                            ", slice = ", DebugString());
+    return absl::InternalError(
+        absl::StrCat("Mismatching ranks: shape = ", shape.DebugString(),
+                     ", slice = ", DebugString()));
   }
   for (int d = 0; d < dims(); ++d) {
     if (IsFullAt(d)) {
@@ -257,16 +291,16 @@ Status TensorSlice::SliceTensorShape(const TensorShape& shape,
       } else {
         // The extent doesn't apply to the dimension
         result_shape->Clear();
-        return errors::Internal("Extent in dimension ", d,
-                                " out of bounds: shape = ", shape.DebugString(),
-                                ", slice = ", DebugString());
+        return absl::InternalError(
+            absl::StrCat("Extent in dimension ", d, " out of bounds: shape = ",
+                         shape.DebugString(), ", slice = ", DebugString()));
       }
     }
   }
   // If we are here, we have successfully applied the shape.
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-const int64 TensorSlice::kFullExtent = -1;
+const int64_t TensorSlice::kFullExtent = -1;
 
 }  // namespace tensorflow

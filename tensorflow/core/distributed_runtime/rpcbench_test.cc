@@ -42,7 +42,7 @@ static const int kWorkers = 60;
 static thread::ThreadPool* worker_threads;
 
 void MakeGRPCCluster(const SessionOptions& options, int n,
-                     std::vector<string>* workers,
+                     std::vector<std::string>* workers,
                      std::vector<DeviceAttributes>* devices) {
   CHECK_GE(n, 1);
 
@@ -50,7 +50,7 @@ void MakeGRPCCluster(const SessionOptions& options, int n,
   std::vector<int> port(n);
   for (int i = 0; i < n; ++i) {
     port[i] = testing::PickUnusedPortOrDie();
-    workers->push_back(strings::StrCat("grpc://localhost:", port[i]));
+    workers->push_back(absl::StrCat("grpc://localhost:", port[i]));
   }
 
   int num_cpus = 1;
@@ -75,8 +75,7 @@ void MakeGRPCCluster(const SessionOptions& options, int n,
       auto job_def = server.mutable_cluster()->add_job();
       job_def->set_name("localhost");
       for (int i = 0; i < n; i++) {
-        (*(job_def->mutable_tasks()))[i] =
-            strings::StrCat("localhost:", port[i]);
+        (*(job_def->mutable_tasks()))[i] = absl::StrCat("localhost:", port[i]);
       }
 
       auto config = server.mutable_default_session_config();
@@ -101,7 +100,7 @@ void MakeGRPCCluster(const SessionOptions& options, int n,
 
 struct Cluster {
   SessionOptions options;
-  std::vector<string> workers;
+  std::vector<std::string> workers;
   std::vector<DeviceAttributes> devices;  // One per process
 
   Cluster() {
@@ -147,28 +146,28 @@ GraphDef CreateGraphDef(int num_stages, int width, int tensor_size,
   }
 
   // Create output.
-  /* Output y =*/AddN(s.WithOpName("y"), last_stage);
+  /* Output y =*/AddN give_me_a_name(s.WithOpName("y"), last_stage);
 
   GraphDef def;
   TF_CHECK_OK(s.ToGraphDef(&def));
   return def;
 }
 
-string DebugString(const Tensor& x, const Tensor& y, int tensor_size) {
+std::string DebugString(const Tensor& x, const Tensor& y, int tensor_size) {
   CHECK_EQ(x.NumElements(), tensor_size);
   CHECK_EQ(y.NumElements(), tensor_size);
   auto x_flat = x.flat<float>();
   auto y_flat = y.flat<float>();
   // Just print the first couple of elements of each tensor
   CHECK_GE(tensor_size, 2);
-  return strings::Printf("x = [%8.6f %8.6f] y = [%8.6f %8.6f]", x_flat(0),
+  return absl::StrFormat("x = [%8.6f %8.6f] y = [%8.6f %8.6f]", x_flat(0),
                          x_flat(1), y_flat(0), y_flat(1));
 }
 
 // TODO: Support sharding and depth.
-static void BM_Helper(int iters, int width, int num_stages, int tensor_size,
+static void BM_Helper(::testing::benchmark::State& state, int width,
+                      int num_stages, int tensor_size,
                       bool use_multiple_devices) {
-  testing::StopTiming();
   const Cluster* cluster = GetCluster();
 
   // Creates a session.
@@ -182,7 +181,7 @@ static void BM_Helper(int iters, int width, int num_stages, int tensor_size,
   // Randomly initialize the input.
   Tensor x(DT_FLOAT, TensorShape({tensor_size, 1}));
 
-  testing::SetLabel(
+  state.SetLabel(
       strings::StrCat(def.node_size(), " nodes; ",
                       use_multiple_devices ? "Multi device" : "Single device",
                       "; tensor bytes/send: ", tensor_size * sizeof(float)));
@@ -203,17 +202,18 @@ static void BM_Helper(int iters, int width, int num_stages, int tensor_size,
   }
 
   // Iterations.
-  testing::StartTiming();
-  for (int i = 0; i < iters; i++) {
+  for (auto s : state) {
     outputs.clear();
     TF_CHECK_OK(session->Run({{"x", x}}, {"y:0"}, {}, &outputs));
     CHECK_EQ(size_t{1}, outputs.size());
   }
-  testing::StopTiming();
   TF_CHECK_OK(session->Close());
 }
-static void BM_ShardedProgram(int iters, int width, int num_stages) {
-  BM_Helper(iters, width, num_stages, 2 /*tensor_size*/, true /*multi-device*/);
+static void BM_ShardedProgram(::testing::benchmark::State& state) {
+  const int width = state.range(0);
+  const int num_stages = state.range(1);
+
+  BM_Helper(state, width, num_stages, 2 /*tensor_size*/, true /*multi-device*/);
 }
 BENCHMARK(BM_ShardedProgram)
     ->ArgPair(1, 1)
@@ -232,13 +232,19 @@ BENCHMARK(BM_ShardedProgram)
     ->ArgPair(60, 3)
     ->ArgPair(60, 5);
 
-static void BM_RPC(int iters, int width, int tensor_size) {
-  BM_Helper(iters, width, 2 /*num_stages*/, tensor_size, true /*multi-device*/);
+static void BM_RPC(::testing::benchmark::State& state) {
+  const int width = state.range(0);
+  const int tensor_size = state.range(1);
+
+  BM_Helper(state, width, 2 /*num_stages*/, tensor_size, true /*multi-device*/);
 }
 BENCHMARK(BM_RPC)->ArgPair(30, 2)->ArgPair(30, 1000)->ArgPair(30, 100000);
 
-static void BM_SingleDevice(int iters, int width, int num_stages) {
-  BM_Helper(iters, width, num_stages, 2 /*tensor_size*/,
+static void BM_SingleDevice(::testing::benchmark::State& state) {
+  const int width = state.range(0);
+  const int num_stages = state.range(1);
+
+  BM_Helper(state, width, num_stages, 2 /*tensor_size*/,
             false /*not multi-device*/);
 }
 BENCHMARK(BM_SingleDevice)

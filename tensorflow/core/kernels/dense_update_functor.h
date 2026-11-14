@@ -18,7 +18,7 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
 
@@ -27,9 +27,6 @@ namespace tensorflow {
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
 
-#ifdef TENSORFLOW_USE_SYCL
-typedef Eigen::SyclDevice SYCLDevice;
-#endif  // TENSORFLOW_USE_SYCL
 
 enum DenseUpdateType { ADD, SUB, ASSIGN };
 
@@ -65,43 +62,19 @@ struct DenseUpdate<CPUDevice, T, ASSIGN> {
   }
 };
 
-#ifdef TENSORFLOW_USE_SYCL
-template <typename T>
-struct DenseUpdate<SYCLDevice, T, ADD> {
-  void operator()(const SYCLDevice& d, typename TTypes<T>::Flat params,
-                  typename TTypes<T>::ConstFlat update) {
-    params.device(d) += update;
-  }
-};
-
-template <typename T>
-struct DenseUpdate<SYCLDevice, T, SUB> {
-  void operator()(const SYCLDevice& d, typename TTypes<T>::Flat params,
-                  typename TTypes<T>::ConstFlat update) {
-    params.device(d) -= update;
-  }
-};
-
-template <typename T>
-struct DenseUpdate<SYCLDevice, T, ASSIGN> {
-  void operator()(const SYCLDevice& d, typename TTypes<T>::Flat params,
-                  typename TTypes<T>::ConstFlat update) {
-    params.device(d) = update;
-  }
-};
-#endif  // TENSORFLOW_USE_SYCL
 
 }  // end namespace functor
 
 template <typename Device>
-Status VariantCopyFn(OpKernelContext* context, const Tensor& from, Tensor* to);
+absl::Status VariantCopyFn(OpKernelContext* context, const Tensor& from,
+                           Tensor* to);
 
 template <>
-Status VariantCopyFn<CPUDevice>(OpKernelContext* context, const Tensor& from,
-                                Tensor* to);
+absl::Status VariantCopyFn<CPUDevice>(OpKernelContext* context,
+                                      const Tensor& from, Tensor* to);
 template <>
-Status VariantCopyFn<GPUDevice>(OpKernelContext* context, const Tensor& from,
-                                Tensor* to);
+absl::Status VariantCopyFn<GPUDevice>(OpKernelContext* context,
+                                      const Tensor& from, Tensor* to);
 
 }  // end namespace tensorflow
 

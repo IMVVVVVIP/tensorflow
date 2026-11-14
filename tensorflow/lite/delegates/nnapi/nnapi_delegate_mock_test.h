@@ -15,6 +15,9 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_DELEGATES_NNAPI_NNAPI_DELEGATE_MOCK_TEST_H_
 #define TENSORFLOW_LITE_DELEGATES_NNAPI_NNAPI_DELEGATE_MOCK_TEST_H_
 
+// WARNING: this header file is DEPRECATED.
+// See https://developer.android.com/ndk/guides/neuralnetworks/migration-guide.
+
 // Cannot mock the delegate when using the disabled version
 // (see the condition in the BUILD file).
 #ifndef NNAPI_DELEGATE_DISABLED
@@ -42,6 +45,7 @@ class NnApiMock : public ::tflite::nnapi::NnApiHandler {
       : ::tflite::nnapi::NnApiHandler(nnapi) {
     nnapi_->nnapi_exists = true;
     nnapi_->android_sdk_version = android_sdk_version;
+    nnapi_->nnapi_runtime_feature_level = android_sdk_version;
 
     nnapi_->ANeuralNetworksCompilation_free =
         [](ANeuralNetworksCompilation* compilation) {};
@@ -83,7 +87,7 @@ class NnApiDelegateMockTest : public ::testing::Test {
  protected:
   void SetUp() override {
     nnapi_ = *NnApiImplementation();
-    nnapi_mock_ = absl::make_unique<NnApiMock>(&nnapi_);
+    nnapi_mock_ = std::make_unique<NnApiMock>(&nnapi_);
   }
 
   std::unique_ptr<NnApiMock> nnapi_mock_;

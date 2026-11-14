@@ -15,7 +15,8 @@ limitations under the License.
 
 #include "tensorflow/lite/delegates/gpu/gl/egl_environment.h"
 
-#include "absl/memory/memory.h"
+#include <memory>
+
 #include "tensorflow/lite/delegates/gpu/common/status.h"
 #include "tensorflow/lite/delegates/gpu/gl/gl_call.h"
 #include "tensorflow/lite/delegates/gpu/gl/request_gpu_info.h"
@@ -47,7 +48,7 @@ absl::Status InitDisplay(EGLDisplay* egl_display) {
 
 absl::Status EglEnvironment::NewEglEnvironment(
     std::unique_ptr<EglEnvironment>* egl_environment) {
-  *egl_environment = absl::make_unique<EglEnvironment>();
+  *egl_environment = std::make_unique<EglEnvironment>();
   RETURN_IF_ERROR((*egl_environment)->Init());
   return absl::OkStatus();
 }
@@ -89,7 +90,7 @@ absl::Status EglEnvironment::Init() {
     }
   }
 
-  if (gpu_info_.type == GpuType::UNKNOWN) {
+  if (gpu_info_.vendor == GpuVendor::kUnknown) {
     RETURN_IF_ERROR(RequestGpuInfo(&gpu_info_));
   }
   // TODO(akulik): when do we need ForceSyncTurning?
@@ -110,7 +111,7 @@ absl::Status EglEnvironment::InitSurfacelessContext() {
   // PowerVR support EGL_KHR_surfaceless_context, but glFenceSync crashes on
   // PowerVR when it is surface-less.
   RETURN_IF_ERROR(RequestGpuInfo(&gpu_info_));
-  if (gpu_info_.type == GpuType::POWERVR) {
+  if (gpu_info_.IsPowerVR()) {
     return absl::UnavailableError(
         "Surface-less context is not properly supported on powervr.");
   }

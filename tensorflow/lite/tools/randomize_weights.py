@@ -12,53 +12,79 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-r"""Randomize all weights in a tflite file.
+r"""Randomize all weights in a tflite file."""
 
-Example usage:
-python randomize_weights.py \
-  --input_tflite_file=foo.tflite \
-  --output_tflite_file=foo_randomized.tflite
-"""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import argparse
-import sys
+import re
+from absl import app
+from absl import flags
 
 from tensorflow.lite.tools import flatbuffer_utils
-from tensorflow.python.platform import app
+
+FLAGS = flags.FLAGS
+
+flags.DEFINE_string('input_tflite_file', None,
+                    'Full path name to the input TFLite file.')
+flags.DEFINE_string('output_tflite_file', None,
+                    'Full path name to the output randomized TFLite file.')
+flags.DEFINE_multi_integer(
+    'buffers_to_skip', [], 'Buffer indices in the TFLite model to be skipped, '
+    'i.e., to be left unmodified.')
+flags.DEFINE_multi_string(
+    'ops_to_skip', [], 'Ops in the TFLite model to be skipped / unmodified.')
+flags.DEFINE_multi_string(
+    'ops_operands_to_skip',
+    [],
+    'Op operand indices in the TFLite model to be skipped / unmodified. It'
+    ' should be specified in the format'
+    ' <op_name>:<operand_index>[,<operand_index>]. For example,'
+    ' TRANSPOSE_CONV:0,2 stands for skipping the TRANSPOSE_CONV operands'
+    ' indexed 0 and 2',
+)
+flags.DEFINE_integer('random_seed', 0, 'Input to the random number generator.')
+
+flags.mark_flag_as_required('input_tflite_file')
+flags.mark_flag_as_required('output_tflite_file')
 
 
 def main(_):
-  parser = argparse.ArgumentParser(
-      description='Randomize weights in a tflite file.')
-  parser.add_argument(
-      '--input_tflite_file',
-      type=str,
-      required=True,
-      help='Full path name to the input tflite file.')
-  parser.add_argument(
-      '--output_tflite_file',
-      type=str,
-      required=True,
-      help='Full path name to the output randomized tflite file.')
-  parser.add_argument(
-      '--random_seed',
-      type=str,
-      required=False,
-      default=0,
-      help='Input to the random number generator. The default value is 0.')
-  args = parser.parse_args()
+  buffers_to_skip = FLAGS.buffers_to_skip
+  ops_to_skip = [op.upper() for op in FLAGS.ops_to_skip]
+  ops_operands_to_skip = {}
+  for op_operands_to_skip in FLAGS.ops_operands_to_skip:
+    op_name, indices = op_operands_to_skip.split(':')
+    op_name_upper = op_name.upper()
+    if op_name_upper in ops_operands_to_skip:
+      raise ValueError(
+          'Indices for the same op must be specified only once multiple'
+          f' specification for op {op_name}.'
+      )
+    ops_operands_to_skip[op_name_upper] = list(map(int, indices.split(',')))
 
-  # Read the model
-  model = flatbuffer_utils.read_model(args.input_tflite_file)
-  # Invoke the randomize weights function
-  flatbuffer_utils.randomize_weights(model, args.random_seed)
-  # Write the model
-  flatbuffer_utils.write_model(model, args.output_tflite_file)
+  model = flatbuffer_utils.read_model(FLAGS.input_tflite_file)
+
+  # Add in buffers for ops in ops_to_skip or ops_operands_to_skip to the list of
+  # skipped buffers.
+  for graph in model.subgraphs:
+    for op in graph.operators or []:
+      op_name = flatbuffer_utils.opcode_to_name(model, op.opcodeIndex)
+      if not op_name:
+        continue
+      op_name_upper = op_name.upper()
+      op_name_snake = re.sub(r'(?<!^)(?=[A-Z])', '_', op_name).upper()
+      if op_name_upper in ops_to_skip or op_name_snake in ops_to_skip:
+        for input_idx in op.inputs:
+          buffers_to_skip.append(graph.tensors[input_idx].buffer)
+      for key in (op_name_upper, op_name_snake):
+        if key in ops_operands_to_skip:
+          for operand_idx in ops_operands_to_skip[key]:
+            buffers_to_skip.append(
+                graph.tensors[op.inputs[operand_idx]].buffer
+            )
+
+  flatbuffer_utils.randomize_weights(model, FLAGS.random_seed,
+                                     FLAGS.buffers_to_skip)
+  flatbuffer_utils.write_model(model, FLAGS.output_tflite_file)
 
 
 if __name__ == '__main__':
-  app.run(main=main, argv=sys.argv[:1])
+  app.run(main)

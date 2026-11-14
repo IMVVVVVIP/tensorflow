@@ -17,6 +17,8 @@ limitations under the License.
 #define TENSORFLOW_PYTHON_GRAPPLER_COST_ANALYZER_H_
 
 #include <iostream>
+
+#include "absl/status/status.h"
 #include "tensorflow/core/framework/cost_graph.pb.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/framework/tensor_shape.pb.h"
@@ -35,14 +37,14 @@ struct GrapplerItem;
 
 // Aggregated perf summary for ops of the same type in a graph.
 struct OpPerfSummary {
-  string name;
-  int64 count;
-  int64 time;
-  int64 compute_time;
-  int64 memory_time;
+  std::string name;
+  int64_t count;
+  int64_t time;
+  int64_t compute_time;
+  int64_t memory_time;
   // Upper and lower bound for estimated time.
-  int64 time_upper;
-  int64 time_lower;
+  int64_t time_upper;
+  int64_t time_lower;
 };
 
 // Generate op-level performance insights on compute/memory
@@ -50,16 +52,17 @@ struct OpPerfSummary {
 class CostAnalyzer {
  public:
   explicit CostAnalyzer(const GrapplerItem& item, Cluster* cluster,
-                        const string& suffix);
-  Status GenerateReport(std::ostream& os, bool per_node_report, bool verbose);
+                        const std::string& suffix);
+  absl::Status GenerateReport(std::ostream& os, bool per_node_report,
+                              bool verbose);
 
  private:
   void PredictCosts(CostEstimator* cost_estimator, CostGraphDef* cost_graph,
-                    int64* total_time);
+                    int64_t* total_time);
   void GatherCosts();
   void PreprocessCosts();
   void AnalyzeCosts();
-  void SortOpsByTime(std::map<string, OpPerfSummary> ops);
+  void SortOpsByTime(std::map<std::string, OpPerfSummary> ops);
   void PrintAnalysis(std::ostream& os, bool per_node_report,
                      bool verbose) const;
 
@@ -68,13 +71,13 @@ class CostAnalyzer {
   AnalyticalCostEstimator analytical_estimator_;
   OpPerformanceList op_perf_;
   OpPerformanceList op_perf_analytical_;
-  int64 total_time_measured_;
-  int64 total_time_analytical_;
+  int64_t total_time_measured_;
+  int64_t total_time_analytical_;
   std::vector<OpPerfSummary> ops_;
-  int64 total_time_measured_serialized_;
-  int64 total_time_analytical_upper_;
-  int64 total_time_analytical_lower_;
-  string suffix_;
+  int64_t total_time_measured_serialized_;
+  int64_t total_time_analytical_upper_;
+  int64_t total_time_analytical_lower_;
+  std::string suffix_;
 };
 
 }  // end namespace grappler

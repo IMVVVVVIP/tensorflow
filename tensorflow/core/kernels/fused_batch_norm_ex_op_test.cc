@@ -79,7 +79,7 @@ class FusedBatchNormExOpTestBase : public OpsTestBase {
   // TODO(ezhulenev): RunAndFetch defined in FusedConv2D and FusedMatMul tests.
   // Add a base class for all FusedABC kernels and remove code duplication.
   void RunAndFetch(const tensorflow::Scope& root,
-                   const std::vector<string>& fetch,
+                   const std::vector<std::string>& fetch,
                    std::vector<Tensor>* outputs, bool allow_gpu_device,
                    const std::vector<const NodeDef*> add_nodes = {}) {
     tensorflow::GraphDef graph;
@@ -124,7 +124,8 @@ class FusedBatchNormExOpTestBase : public OpsTestBase {
     // this case.
     const bool place_all_on_gpu = allow_gpu_device && has_gpu_device;
 
-    const string device = place_all_on_gpu ? "/device:GPU:0" : "/device:CPU:0";
+    const std::string device =
+        place_all_on_gpu ? "/device:GPU:0" : "/device:CPU:0";
     for (NodeDef& mutable_node : *graph.mutable_node()) {
       mutable_node.set_device(device);
     }
@@ -138,7 +139,8 @@ class FusedBatchNormExOpTestBase : public OpsTestBase {
                          const Tensor& offset_data, const Tensor& mean_data,
                          const Tensor& var_data, const Tensor& side_input_data,
                          const TensorFormat data_format, bool is_training,
-                         bool has_side_input, const string& activation_mode,
+                         bool has_side_input,
+                         const std::string& activation_mode,
                          FusedBatchNormOutputs* forward,
                          FusedBatchNormGradOutputs* backward,
                          float epsilon = 0.1f) {
@@ -204,8 +206,8 @@ class FusedBatchNormExOpTestBase : public OpsTestBase {
         root,
         {"with_activation:0", "fused_batch_norm:1", "fused_batch_norm:2",
          "fused_batch_norm:3", "fused_batch_norm:4", "fused_batch_norm:5",
-         "activation_grad:0", "fused_batch_norm_grad:0",
-         "fused_batch_norm_grad:1", "fused_batch_norm_grad:2"},
+         "fused_batch_norm_grad:0", "fused_batch_norm_grad:1",
+         "fused_batch_norm_grad:2"},
         &out_tensors, /*allow_gpu_device=*/true);
 
     forward->y = out_tensors[0];
@@ -215,22 +217,19 @@ class FusedBatchNormExOpTestBase : public OpsTestBase {
     forward->reserve_space_2 = out_tensors[4];
     forward->reserve_space_3 = out_tensors[5];
 
-    backward->y_backprop = out_tensors[6];
-    backward->x_backprop = out_tensors[7];
-    backward->scale_backprop = out_tensors[8];
-    backward->offset_backprop = out_tensors[9];
+    backward->x_backprop = out_tensors[6];
+    backward->scale_backprop = out_tensors[7];
+    backward->offset_backprop = out_tensors[8];
   }
 
-  void RunFusedBatchNormEx(const Tensor& y_backprop_data,
-                           const Tensor& input_data, const Tensor& scale_data,
-                           const Tensor& offset_data, const Tensor& mean_data,
-                           const Tensor& var_data,
-                           const Tensor& side_input_data,
-                           const TensorFormat data_format, bool is_training,
-                           bool has_side_input, const string& activation_mode,
-                           FusedBatchNormOutputs* forward,
-                           FusedBatchNormGradOutputs* backward,
-                           float epsilon = 0.1f) {
+  void RunFusedBatchNormEx(
+      const Tensor& y_backprop_data, const Tensor& input_data,
+      const Tensor& scale_data, const Tensor& offset_data,
+      const Tensor& mean_data, const Tensor& var_data,
+      const Tensor& side_input_data, const TensorFormat data_format,
+      bool is_training, bool has_side_input, const std::string& activation_mode,
+      FusedBatchNormOutputs* forward, FusedBatchNormGradOutputs* backward,
+      float epsilon = 0.1f) {
     Scope root = tensorflow::Scope::NewRootScope();
 
     DataType t_dtype = DataTypeToEnum<T>::v();
@@ -279,46 +278,69 @@ class FusedBatchNormExOpTestBase : public OpsTestBase {
                      .Attr("is_training", is_training)
                      .Finalize(&fused_batch_norm_ex));
 
+    NodeDef fused_batch_norm_grad;
     NodeDef activation_grad;
-    if (activation_mode == "Relu") {
-      TF_EXPECT_OK(NodeDefBuilder("activation_grad", "ReluGrad")
-                       .Input({y_backprop.name(), 0, t_dtype})
-                       .Input({fused_batch_norm_ex.name(), 0, t_dtype})
-                       .Attr("T", t_dtype)
-                       .Finalize(&activation_grad));
+    std::vector<Tensor> out_tensors;
+    std::vector<const NodeDef*> add_nodes;
+    if (is_training) {
+      TF_EXPECT_OK(
+          NodeDefBuilder("fused_batch_norm_grad", "_FusedBatchNormGradEx")
+              .Input({y_backprop.name(), 0, t_dtype})
+              .Input({input.name(), 0, t_dtype})
+              .Input({scale.name(), 0, u_dtype})
+              .Input({fused_batch_norm_ex.name(), 3, u_dtype})
+              .Input({fused_batch_norm_ex.name(), 4, u_dtype})
+              .Input({fused_batch_norm_ex.name(), 5, u_dtype})
+              .Input({offset.name(), 0, u_dtype})
+              .Input({fused_batch_norm_ex.name(), 0, t_dtype})
+              .Attr("T", t_dtype)
+              .Attr("U", u_dtype)
+              .Attr("data_format", ToString(data_format))
+              .Attr("epsilon", epsilon)
+              .Attr("activation_mode", activation_mode)
+              .Attr("num_side_inputs", num_side_inputs)
+              .Attr("is_training", is_training)
+              .Finalize(&fused_batch_norm_grad));
+      add_nodes = {&fused_batch_norm_ex, &fused_batch_norm_grad};
     } else {
-      TF_EXPECT_OK(NodeDefBuilder("activation_grad", "Identity")
-                       .Input({y_backprop.name(), 0, t_dtype})
-                       .Attr("T", t_dtype)
-                       .Finalize(&activation_grad));
+      if (activation_mode == "Relu") {
+        TF_EXPECT_OK(NodeDefBuilder("activation_grad", "ReluGrad")
+                         .Input({y_backprop.name(), 0, t_dtype})
+                         .Input({fused_batch_norm_ex.name(), 0, t_dtype})
+                         .Attr("T", t_dtype)
+                         .Finalize(&activation_grad));
+      } else {
+        TF_EXPECT_OK(NodeDefBuilder("activation_grad", "Identity")
+                         .Input({y_backprop.name(), 0, t_dtype})
+                         .Attr("T", t_dtype)
+                         .Finalize(&activation_grad));
+      }
+      TF_EXPECT_OK(
+          NodeDefBuilder("fused_batch_norm_grad", "FusedBatchNormGradV3")
+              .Input({activation_grad.name(), 0, t_dtype})
+              .Input({input.name(), 0, t_dtype})
+              .Input({scale.name(), 0, u_dtype})
+              .Input({fused_batch_norm_ex.name(), 3, u_dtype})
+              .Input({fused_batch_norm_ex.name(), 4, u_dtype})
+              .Input({fused_batch_norm_ex.name(), 5, u_dtype})
+              .Attr("T", t_dtype)
+              .Attr("U", u_dtype)
+              .Attr("data_format", ToString(data_format))
+              .Attr("epsilon", epsilon)
+              .Attr("is_training", is_training)
+              .Finalize(&fused_batch_norm_grad));
+      add_nodes = {&fused_batch_norm_ex, &activation_grad,
+                   &fused_batch_norm_grad};
     }
 
-    NodeDef fused_batch_norm_grad;
-    TF_EXPECT_OK(NodeDefBuilder("fused_batch_norm_grad", "FusedBatchNormGradV3")
-                     .Input({activation_grad.name(), 0, t_dtype})
-                     .Input({input.name(), 0, t_dtype})
-                     .Input({scale.name(), 0, u_dtype})
-                     .Input({fused_batch_norm_ex.name(), 3, u_dtype})
-                     .Input({fused_batch_norm_ex.name(), 4, u_dtype})
-                     .Input({fused_batch_norm_ex.name(), 5, u_dtype})
-                     .Attr("T", t_dtype)
-                     .Attr("U", u_dtype)
-                     .Attr("data_format", ToString(data_format))
-                     .Attr("epsilon", epsilon)
-                     .Attr("is_training", is_training)
-                     .Finalize(&fused_batch_norm_grad));
-
-    std::vector<Tensor> out_tensors;
-    RunAndFetch(
-        root,
-        {"fused_batch_norm_ex:0", "fused_batch_norm_ex:1",
-         "fused_batch_norm_ex:2", "fused_batch_norm_ex:3",
-         "fused_batch_norm_ex:4", "fused_batch_norm_ex:5", "activation_grad:0",
-         "fused_batch_norm_grad:0", "fused_batch_norm_grad:1",
-         "fused_batch_norm_grad:2"},
-        &out_tensors,
-        /*allow_gpu_device=*/true,
-        {&fused_batch_norm_ex, &activation_grad, &fused_batch_norm_grad});
+    RunAndFetch(root,
+                {"fused_batch_norm_ex:0", "fused_batch_norm_ex:1",
+                 "fused_batch_norm_ex:2", "fused_batch_norm_ex:3",
+                 "fused_batch_norm_ex:4", "fused_batch_norm_ex:5",
+                 "fused_batch_norm_grad:0", "fused_batch_norm_grad:1",
+                 "fused_batch_norm_grad:2"},
+                &out_tensors,
+                /*allow_gpu_device=*/true, add_nodes);
 
     forward->y = out_tensors[0];
     forward->batch_mean = out_tensors[1];
@@ -327,10 +349,9 @@ class FusedBatchNormExOpTestBase : public OpsTestBase {
     forward->reserve_space_2 = out_tensors[4];
     forward->reserve_space_3 = out_tensors[5];
 
-    backward->y_backprop = out_tensors[6];
-    backward->x_backprop = out_tensors[7];
-    backward->scale_backprop = out_tensors[8];
-    backward->offset_backprop = out_tensors[9];
+    backward->x_backprop = out_tensors[6];
+    backward->scale_backprop = out_tensors[7];
+    backward->offset_backprop = out_tensors[8];
   }
 
   void VerifyTensorsNear(int batch, int height, int width, int channels,
@@ -427,7 +448,7 @@ class FusedBatchNormExOpTestBase : public OpsTestBase {
   void VerifyFusedBatchNormEx(int batch, int height, int width, int channels,
                               TensorFormat data_format, bool is_training,
                               bool has_side_input,
-                              const string& activation_mode) {
+                              const std::string& activation_mode) {
     const GraphRunner run_default =
         [&](const Tensor& y_backprop, const Tensor& input_data,
             const Tensor& scale_data, const Tensor& offset_data,
@@ -540,7 +561,7 @@ INSTANTIATE_TYPED_TEST_SUITE_P(Test, FusedBatchNormExOpInferenceTest,
 
 using fp16 = Eigen::half;
 using fp32 = float;
-using SideInputAndActivation = std::pair<bool, string>;
+using SideInputAndActivation = std::pair<bool, std::string>;
 
 SideInputAndActivation Identity() { return {false, "Identity"}; }
 SideInputAndActivation Relu() { return {false, "Relu"}; }
@@ -569,7 +590,7 @@ static Graph* FusedBatchNormEx(int n, int h, int w, int c,
 
   SideInputAndActivation side_input_and_activation = fn();
   bool has_side_input = side_input_and_activation.first;
-  string activation_mode = side_input_and_activation.second;
+  std::string activation_mode = side_input_and_activation.second;
 
   if (has_side_input) {
     num_side_inputs = 1;
@@ -602,17 +623,19 @@ static Graph* FusedBatchNormEx(int n, int h, int w, int c,
   BM_CONCAT(BM_FusedBatchNorm##_##DEVICE##_##T##_##N##_##H##_##W##_##C, \
             FORMAT##_##IS_TRAINING##_##A)
 
-#define BM_FusedBatchNorm(N, H, W, C, T, FORMAT, IS_TRAINING, ACTIVATION,     \
-                          DEVICE)                                             \
-  static void BM_NAME(N, H, W, C, T, FORMAT, IS_TRAINING, ACTIVATION,         \
-                      DEVICE)(int iters) {                                    \
-    testing::UseRealTime();                                                   \
-    testing::ItemsProcessed(static_cast<int64>(iters) * N * H * W * C);       \
-    test::Benchmark(#DEVICE, FusedBatchNormEx<T>(N, H, W, C, FORMAT_##FORMAT, \
-                                                 IS_TRAINING, {ACTIVATION}))  \
-        .Run(iters);                                                          \
-  }                                                                           \
-  BENCHMARK(BM_NAME(N, H, W, C, T, FORMAT, IS_TRAINING, ACTIVATION, DEVICE));
+#define BM_FusedBatchNorm(N, H, W, C, T, FORMAT, IS_TRAINING, ACTIVATION,    \
+                          DEVICE)                                            \
+  static void BM_NAME(N, H, W, C, T, FORMAT, IS_TRAINING, ACTIVATION,        \
+                      DEVICE)(::testing::benchmark::State & state) {         \
+    test::Benchmark(#DEVICE,                                                 \
+                    FusedBatchNormEx<T>(N, H, W, C, FORMAT_##FORMAT,         \
+                                        IS_TRAINING, {ACTIVATION}),          \
+                    /*old_benchmark_api*/ false)                             \
+        .Run(state);                                                         \
+    state.SetItemsProcessed(state.iterations() * N * H * W * C);             \
+  }                                                                          \
+  BENCHMARK(BM_NAME(N, H, W, C, T, FORMAT, IS_TRAINING, ACTIVATION, DEVICE)) \
+      ->UseRealTime();
 
 #if defined(GOOGLE_CUDA) && (CUDNN_VERSION >= 7402)
 BM_FusedBatchNorm(64, 14, 14, 256, fp16, NHWC, true, Identity, gpu);

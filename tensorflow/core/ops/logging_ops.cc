@@ -53,13 +53,13 @@ REGISTER_OP("PrintV2")
     .Attr("end: string = '\n'")
     .SetShapeFn([](InferenceContext* c) {
       // Early exit if rank is unknown.
-      if (!c->RankKnown(c->input(0))) return Status::OK();
+      if (!c->RankKnown(c->input(0))) return absl::OkStatus();
       // Make sure that the input is a scalar.
       if (c->Rank(c->input(0)) != 0) {
-        return errors::InvalidArgument("input must be a scalar, but has rank: ",
-                                       c->Rank(c->input(0)));
+        return absl::InvalidArgumentError(absl::StrCat(
+            "input must be a scalar, but has rank: ", c->Rank(c->input(0))));
       }
-      return Status::OK();
+      return absl::OkStatus();
     });
 
 ALLOW_STATEFUL_OP_FOR_DATASET_FUNCTIONS("PrintV2");
@@ -115,12 +115,6 @@ REGISTER_OP("AudioSummary")
     .Attr("max_outputs: int >= 1 = 3")
     .SetShapeFn(shape_inference::ScalarShape)
     .Deprecated(15, "Use AudioSummaryV2.");
-
-REGISTER_OP("MergeSummary")
-    .Input("inputs: N * string")
-    .Output("summary: string")
-    .Attr("N : int >= 1")
-    .SetShapeFn(shape_inference::ScalarShape);
 
 REGISTER_OP("Timestamp")
     .Output("ts: float64")

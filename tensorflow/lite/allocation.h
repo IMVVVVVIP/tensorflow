@@ -13,100 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 /// \file
+///
 /// Memory management for TF Lite.
 #ifndef TENSORFLOW_LITE_ALLOCATION_H_
 #define TENSORFLOW_LITE_ALLOCATION_H_
 
-#include <cstdio>
-#include <cstdlib>
-#include <memory>
-#include <vector>
-
-#include "tensorflow/lite/c/common.h"
-#include "tensorflow/lite/core/api/error_reporter.h"
-#include "tensorflow/lite/string_type.h"
-
-namespace tflite {
-
-// A memory allocation handle. This could be a mmap or shared memory.
-class Allocation {
- public:
-  virtual ~Allocation() {}
-
-  enum class Type {
-    kMMap,
-    kFileCopy,
-    kMemory,
-  };
-
-  // Base pointer of this allocation
-  virtual const void* base() const = 0;
-  // Size in bytes of the allocation
-  virtual size_t bytes() const = 0;
-  // Whether the allocation is valid
-  virtual bool valid() const = 0;
-  // Return the type of the Allocation.
-  Type type() const { return type_; }
-
- protected:
-  Allocation(ErrorReporter* error_reporter, Type type)
-      : error_reporter_(error_reporter), type_(type) {}
-  ErrorReporter* error_reporter_;
-
- private:
-  const Type type_;
-};
-
-class MMAPAllocation : public Allocation {
- public:
-  MMAPAllocation(const char* filename, ErrorReporter* error_reporter);
-  virtual ~MMAPAllocation();
-  const void* base() const override;
-  size_t bytes() const override;
-  bool valid() const override;
-
-  int fd() const { return mmap_fd_; }
-
-  static bool IsSupported();
-
- protected:
-  // Data required for mmap.
-  int mmap_fd_ = -1;  // mmap file descriptor
-  const void* mmapped_buffer_;
-  size_t buffer_size_bytes_ = 0;
-};
-
-class FileCopyAllocation : public Allocation {
- public:
-  FileCopyAllocation(const char* filename, ErrorReporter* error_reporter);
-  virtual ~FileCopyAllocation();
-  const void* base() const override;
-  size_t bytes() const override;
-  bool valid() const override;
-
- private:
-  // Data required for mmap.
-  std::unique_ptr<const char[]> copied_buffer_;
-  size_t buffer_size_bytes_ = 0;
-};
-
-class MemoryAllocation : public Allocation {
- public:
-  // Allocates memory with the pointer and the number of bytes of the memory.
-  // The pointer has to remain alive and unchanged until the destructor is
-  // called.
-  MemoryAllocation(const void* ptr, size_t num_bytes,
-                   ErrorReporter* error_reporter);
-  virtual ~MemoryAllocation();
-  const void* base() const override;
-  size_t bytes() const override;
-  bool valid() const override;
-
- private:
-  const void* buffer_;
-  size_t buffer_size_bytes_ = 0;
-};
-
-}  // namespace tflite
+#include "tensorflow/compiler/mlir/lite/allocation.h"
 
 #endif  // TENSORFLOW_LITE_ALLOCATION_H_

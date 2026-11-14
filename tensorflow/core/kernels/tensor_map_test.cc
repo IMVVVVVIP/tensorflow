@@ -14,7 +14,6 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/core/kernels/tensor_map.h"
-
 #include "absl/container/flat_hash_map.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
@@ -45,7 +44,6 @@ TEST(TensorKeyTest, Equal) {
 }
 
 TEST(TensorMapTest, Insert) {
-  EXPECT_EQ(1, 1);
   TensorMap tm;
   TensorKey k = Tensor(11);
   Tensor v = Tensor(22);
@@ -56,7 +54,7 @@ TEST(TensorMapTest, Insert) {
   absl::flat_hash_map<TensorKey, Tensor>::iterator map_it =
       tm.tensors().begin();
   EXPECT_EQ(map_it->first, k);
-  test::ExpectTensorEqual<int32>(map_it->second, v);
+  test::ExpectTensorEqual<int32_t>(map_it->second, v);
   map_it++;
   EXPECT_EQ(map_it, tm.tensors().end());
 }
@@ -70,7 +68,7 @@ TEST(TensorMapTest, Lookup) {
   Tensor f = map_it->second;
 
   EXPECT_EQ(map_it->first, k);
-  test::ExpectTensorEqual<int32>(f, v);
+  test::ExpectTensorEqual<int32_t>(f, v);
 }
 
 TEST(TensorMapTest, Erase) {
@@ -93,7 +91,7 @@ TEST(TensorMapTest, SameKeyInsert) {
   EXPECT_EQ(b2, false);
   absl::flat_hash_map<TensorKey, Tensor>::iterator map_it = tm.find(k);
   EXPECT_EQ(map_it->first, k);
-  test::ExpectTensorEqual<int32>(map_it->second, v1);
+  test::ExpectTensorEqual<int32_t>(map_it->second, v1);
 }
 
 TEST(TensorMapTest, Replace) {
@@ -102,10 +100,47 @@ TEST(TensorMapTest, Replace) {
   Tensor v1 = Tensor(22);
   Tensor v2 = Tensor(23);
   tm[k] = v2;
-
   absl::flat_hash_map<TensorKey, Tensor>::iterator map_it = tm.find(k);
   EXPECT_EQ(map_it->first, k);
-  test::ExpectTensorEqual<int32>(map_it->second, v2);
+  test::ExpectTensorEqual<int32_t>(map_it->second, v2);
+}
+
+TEST(TensorMapTest, ListKeys) {
+  TensorMap tm;
+  TensorKey k = Tensor(11.0);
+  TensorKey k2 = Tensor(12.0);
+  Tensor v = Tensor(22);
+  Tensor v2 = Tensor(23);
+  tm.insert(k, v);
+  tm.insert(k2, v2);
+  std::vector<Tensor> keys = tm.keys();
+
+  // Extract and sort double value for each key Tensor.
+  std::vector<std::pair<double, int>> key_doubles;
+  for (int i = 0; i < keys.size(); i++) {
+    double x = keys[i].scalar<double>()();
+    std::pair<double, int> p = std::pair<double, int>(x, i);
+    key_doubles.push_back(p);
+  }
+  sort(key_doubles.begin(), key_doubles.end());
+  // Check number of keys and each key.
+  EXPECT_EQ(keys.size(), 2);
+  EXPECT_EQ(key_doubles[0].first, 11.0);
+  EXPECT_EQ(key_doubles[1].first, 12.0);
+  // Check key shapes.
+  int ind1 = key_doubles[0].second;
+  int ind2 = key_doubles[1].second;
+  EXPECT_EQ(keys[ind1].shape(), k.shape());
+  EXPECT_EQ(keys[ind2].shape(), k2.shape());
+}
+
+TEST(TensorMapTest, Size) {
+  TensorMap tm;
+  EXPECT_EQ(tm.size(), 0);
+  TensorKey k = Tensor(11);
+  Tensor v = Tensor(22);
+  tm.insert(k, v);
+  EXPECT_EQ(tm.size(), 1);
 }
 
 TEST(TensorMapTest, Copy) {
@@ -118,7 +153,7 @@ TEST(TensorMapTest, Copy) {
   EXPECT_NE(tm.find(k), tm.tensors().end());
   EXPECT_NE(tmc.find(k), tmc.tensors().end());
   EXPECT_EQ(tm.find(k)->first, tmc.find(k)->first);
-  test::ExpectTensorEqual<int32>(tm.find(k)->second, tmc.find(k)->second);
+  test::ExpectTensorEqual<int32_t>(tm.find(k)->second, tmc.find(k)->second);
 }
 
 TEST(TensorMapTest, EncodeDecode) {
@@ -134,7 +169,7 @@ TEST(TensorMapTest, EncodeDecode) {
   EXPECT_NE(tm.find(k), tm.tensors().end());
   EXPECT_NE(tmc.find(k), tmc.tensors().end());
   EXPECT_EQ(tm.find(k)->first, tmc.find(k)->first);
-  test::ExpectTensorEqual<int32>(tm.find(k)->second, tmc.find(k)->second);
+  test::ExpectTensorEqual<int32_t>(tm.find(k)->second, tmc.find(k)->second);
 }
 
 }  // namespace

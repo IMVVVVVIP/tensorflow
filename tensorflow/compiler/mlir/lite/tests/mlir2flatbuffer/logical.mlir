@@ -1,15 +1,31 @@
+// Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
 // RUN: flatbuffer_translate -mlir-to-tflite-flatbuffer %s -o - | flatbuffer_to_string - | FileCheck %s
 
-func @main(tensor<4xi1>) -> tensor<4xi1> {
+func.func @main(tensor<4xi1>) -> tensor<4xi1> {
 ^bb0(%arg0: tensor<4xi1>):
   // CHECK:      {
   // CHECK-NEXT:   version: 3,
   // CHECK-NEXT:   operator_codes: [ {
-  // CHECK-NEXT:     builtin_code: LOGICAL_OR,
-  // CHECK-NEXT:     version: 1
+  // CHECK-NEXT:     deprecated_builtin_code: 84,
+  // CHECK-NEXT:     version: 1,
+  // CHECK-NEXT:     builtin_code: LOGICAL_OR
   // CHECK-NEXT:   }, {
-  // CHECK-NEXT:     builtin_code: LOGICAL_AND,
-  // CHECK-NEXT:     version: 1
+  // CHECK-NEXT:     deprecated_builtin_code: 86,
+  // CHECK-NEXT:     version: 1,
+  // CHECK-NEXT:     builtin_code: LOGICAL_AND
   // CHECK-NEXT:   } ],
   // CHECK-NEXT:   subgraphs: [ {
   // CHECK-NEXT:     tensors: [ {
@@ -19,7 +35,8 @@ func @main(tensor<4xi1>) -> tensor<4xi1> {
   // CHECK-NEXT:       name: "arg0",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       type: BOOL,
@@ -27,7 +44,8 @@ func @main(tensor<4xi1>) -> tensor<4xi1> {
   // CHECK-NEXT:       name: "Const1",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       type: BOOL,
@@ -35,7 +53,8 @@ func @main(tensor<4xi1>) -> tensor<4xi1> {
   // CHECK-NEXT:       name: "Const2",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       type: BOOL,
@@ -43,7 +62,8 @@ func @main(tensor<4xi1>) -> tensor<4xi1> {
   // CHECK-NEXT:       name: "logical_or",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     }, {
   // CHECK-NEXT:       shape: [ 4 ],
   // CHECK-NEXT:       type: BOOL,
@@ -51,7 +71,8 @@ func @main(tensor<4xi1>) -> tensor<4xi1> {
   // CHECK-NEXT:       name: "logical_and",
   // CHECK-NEXT:       quantization: {
   // CHECK-EMPTY:
-  // CHECK-NEXT:       }
+  // CHECK-NEXT:       },
+  // CHECK-NEXT:       has_rank: true
   // CHECK-NEXT:     } ],
   // CHECK-NEXT:     inputs: [ 0 ],
   // CHECK-NEXT:     outputs: [ 4 ],
@@ -85,6 +106,7 @@ func @main(tensor<4xi1>) -> tensor<4xi1> {
   // CHECK-NEXT:   name: "min_runtime_version",
   // CHECK-NEXT:   buffer: 6
   // CHECK-NEXT:   } ]
+  // CHECK-NEXT:   signature_defs: [ ]
   // CHECK-NEXT: }
   // CHECK-EMPTY:
 
@@ -92,5 +114,5 @@ func @main(tensor<4xi1>) -> tensor<4xi1> {
   %1 = "tfl.pseudo_const" () {value = dense<false> : tensor<4xi1>} : () -> tensor<4xi1> loc("Const2")
   %2 = "tfl.logical_or"(%arg0, %1) : (tensor<4xi1>, tensor<4xi1>) -> tensor<4xi1> loc("logical_or")
   %3 = "tfl.logical_and"(%2, %0) : (tensor<4xi1>, tensor<4xi1>) -> tensor<4xi1> loc("logical_and")
-  return %3 : tensor<4xi1>
+  func.return %3 : tensor<4xi1>
 }

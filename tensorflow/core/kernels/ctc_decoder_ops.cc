@@ -15,6 +15,13 @@ limitations under the License.
 
 // See docs in ../ops/ctc_ops.cc.
 
+#include <algorithm>
+#include <cstddef>
+#include <vector>
+
+#include "absl/log/check.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #define EIGEN_USE_THREADS
 
 #include <limits>
@@ -56,11 +63,11 @@ class CTCDecodeHelper {
   inline int GetTopPaths() const { return top_paths_; }
   void SetTopPaths(int tp) { top_paths_ = tp; }
 
-  Status ValidateInputsGenerateOutputs(
+  absl::Status ValidateInputsGenerateOutputs(
       OpKernelContext* ctx, const Tensor** inputs, const Tensor** seq_len,
       Tensor** log_prob, OpOutputList* decoded_indices,
       OpOutputList* decoded_values, OpOutputList* decoded_shape) const {
-    Status status = ctx->input("inputs", inputs);
+    absl::Status status = ctx->input("inputs", inputs);
     if (!status.ok()) return status;
     status = ctx->input("sequence_length", seq_len);
     if (!status.ok()) return status;
@@ -68,36 +75,38 @@ class CTCDecodeHelper {
     const TensorShape& inputs_shape = (*inputs)->shape();
 
     if (inputs_shape.dims() != 3) {
-      return errors::InvalidArgument("inputs is not a 3-Tensor");
+      return absl::InvalidArgumentError("inputs is not a 3-Tensor");
+    }
+    if (inputs_shape.num_elements() == 0) {
+      return absl::InvalidArgumentError("inputs must not be empty");
     }
 
-    const int64 max_time = inputs_shape.dim_size(0);
-    const int64 batch_size = inputs_shape.dim_size(1);
+    const int64_t max_time = inputs_shape.dim_size(0);
+    const int64_t batch_size = inputs_shape.dim_size(1);
 
     if (max_time == 0) {
-      return errors::InvalidArgument("max_time is 0");
+      return absl::InvalidArgumentError("max_time is 0");
     }
     if (!TensorShapeUtils::IsVector((*seq_len)->shape())) {
-      return errors::InvalidArgument("sequence_length is not a vector");
+      return absl::InvalidArgumentError("sequence_length is not a vector");
     }
 
     if (!(batch_size == (*seq_len)->dim_size(0))) {
-      return errors::FailedPrecondition(
-          "len(sequence_length) != batch_size.  ",
-          "len(sequence_length):  ", (*seq_len)->dim_size(0),
-          " batch_size: ", batch_size);
+      return absl::FailedPreconditionError(absl::StrCat(
+          "len(sequence_length) != batch_size.  ", "len(sequence_length):  ",
+          (*seq_len)->dim_size(0), " batch_size: ", batch_size));
     }
 
-    auto seq_len_t = (*seq_len)->vec<int32>();
+    auto seq_len_t = (*seq_len)->vec<int32_t>();
 
     for (int b = 0; b < batch_size; ++b) {
       if (!(seq_len_t(b) <= max_time)) {
-        return errors::FailedPrecondition("sequence_length(", b,
-                                          ") <= ", max_time);
+        return absl::FailedPreconditionError(
+            absl::StrCat("sequence_length(", b, ") <= ", max_time));
       }
     }
 
-    Status s = ctx->allocate_output(
+    absl::Status s = ctx->allocate_output(
         "log_probability", TensorShape({batch_size, top_paths_}), log_prob);
     if (!s.ok()) return s;
 
@@ -108,17 +117,17 @@ class CTCDecodeHelper {
     s = ctx->output_list("decoded_shape", decoded_shape);
     if (!s.ok()) return s;
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // sequences[b][p][ix] stores decoded value "ix" of path "p" for batch "b".
-  Status StoreAllDecodedSequences(
-      const std::vector<std::vector<std::vector<int> > >& sequences,
+  absl::Status StoreAllDecodedSequences(
+      const std::vector<std::vector<std::vector<int>>>& sequences,
       OpOutputList* decoded_indices, OpOutputList* decoded_values,
       OpOutputList* decoded_shape) const {
     // Calculate the total number of entries for each path
-    const int64 batch_size = sequences.size();
-    std::vector<int64> num_entries(top_paths_, 0);
+    const int64_t batch_size = sequences.size();
+    std::vector<int64_t> num_entries(top_paths_, 0);
 
     // Calculate num_entries per path
     for (const auto& batch_s : sequences) {
@@ -133,9 +142,9 @@ class CTCDecodeHelper {
       Tensor* p_values = nullptr;
       Tensor* p_shape = nullptr;
 
-      const int64 p_num = num_entries[p];
+      const int64_t p_num = num_entries[p];
 
-      Status s =
+      absl::Status s =
           decoded_indices->allocate(p, TensorShape({p_num, 2}), &p_indices);
       if (!s.ok()) return s;
       s = decoded_values->allocate(p, TensorShape({p_num}), &p_values);
@@ -143,16 +152,16 @@ class CTCDecodeHelper {
       s = decoded_shape->allocate(p, TensorShape({2}), &p_shape);
       if (!s.ok()) return s;
 
-      auto indices_t = p_indices->matrix<int64>();
-      auto values_t = p_values->vec<int64>();
-      auto shape_t = p_shape->vec<int64>();
+      auto indices_t = p_indices->matrix<int64_t>();
+      auto values_t = p_values->vec<int64_t>();
+      auto shape_t = p_shape->vec<int64_t>();
 
-      int64 max_decoded = 0;
-      int64 offset = 0;
+      int64_t max_decoded = 0;
+      int64_t offset = 0;
 
-      for (int64 b = 0; b < batch_size; ++b) {
+      for (int64_t b = 0; b < batch_size; ++b) {
         auto& p_batch = sequences[b][p];
-        int64 num_decoded = p_batch.size();
+        int64_t num_decoded = p_batch.size();
         max_decoded = std::max(max_decoded, num_decoded);
         if (num_decoded > 0) {
           DCHECK_NE(values_t.data(), nullptr)
@@ -162,7 +171,7 @@ class CTCDecodeHelper {
               << "offset should be smaller than values_t.size()";
           std::copy_n(p_batch.begin(), num_decoded, &values_t(offset));
         }
-        for (int64 t = 0; t < num_decoded; ++t, ++offset) {
+        for (int64_t t = 0; t < num_decoded; ++t, ++offset) {
           indices_t(offset, 0) = b;
           indices_t(offset, 1) = t;
         }
@@ -171,12 +180,13 @@ class CTCDecodeHelper {
       shape_t(0) = batch_size;
       shape_t(1) = max_decoded;
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
  private:
   int top_paths_;
-  TF_DISALLOW_COPY_AND_ASSIGN(CTCDecodeHelper);
+  CTCDecodeHelper(const CTCDecodeHelper&) = delete;
+  void operator=(const CTCDecodeHelper&) = delete;
 };
 
 template <typename T>
@@ -184,6 +194,7 @@ class CTCGreedyDecoderOp : public OpKernel {
  public:
   explicit CTCGreedyDecoderOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("merge_repeated", &merge_repeated_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("blank_index", &blank_index_));
   }
 
   void Compute(OpKernelContext* ctx) override {
@@ -200,12 +211,12 @@ class CTCGreedyDecoderOp : public OpKernel {
     const TensorShape& inputs_shape = inputs->shape();
 
     std::vector<typename TTypes<T>::UnalignedConstMatrix> input_list_t;
-    const int64 max_time = inputs_shape.dim_size(0);
-    const int64 batch_size = inputs_shape.dim_size(1);
-    const int64 num_classes_raw = inputs_shape.dim_size(2);
+    const int64_t max_time = inputs_shape.dim_size(0);
+    const int64_t batch_size = inputs_shape.dim_size(1);
+    const int64_t num_classes_raw = inputs_shape.dim_size(2);
     OP_REQUIRES(
         ctx, FastBoundsCheck(num_classes_raw, std::numeric_limits<int>::max()),
-        errors::InvalidArgument("num_classes cannot exceed max int"));
+        absl::InvalidArgumentError("num_classes cannot exceed max int"));
     const int num_classes = static_cast<const int>(num_classes_raw);
 
     auto inputs_t = inputs->tensor<T, 3>();
@@ -215,23 +226,29 @@ class CTCGreedyDecoderOp : public OpKernel {
       input_list_t.emplace_back(inputs_t.data() + t * batch_size * num_classes,
                                 batch_size, num_classes);
     }
-    auto seq_len_t = seq_len->vec<int32>();
+    auto seq_len_t = seq_len->vec<int32_t>();
     auto log_prob_t = log_prob->matrix<T>();
 
     log_prob_t.setZero();
 
-    // Assumption: the blank index is num_classes - 1
-    int blank_index = num_classes - 1;
+    int blank_index =
+        (blank_index_ < 0) ? num_classes + blank_index_ : blank_index_;
+    OP_REQUIRES(ctx, FastBoundsCheck(blank_index, num_classes),
+                absl::InvalidArgumentError(absl::StrCat(
+                    "blank_index expected to be between ", -num_classes,
+                    " and ", num_classes - 1, " but was ", blank_index_)));
 
     // Perform best path decoding
     std::vector<std::vector<std::vector<int> > > sequences(batch_size);
-    auto decode = [&](const int64 begin, const int64 end) {
+    auto decode = [&](const int64_t begin, const int64_t end) {
       for (int b = begin; b < end; ++b) {
         sequences[b].resize(1);
         auto &sequence = sequences[b][0];
         int prev_indices = -1;
         for (int t = 0; t < seq_len_t(b); ++t) {
           int max_class_indices;
+          OP_REQUIRES(ctx, input_list_t[t].dimension(1) > 0,
+                      absl::InvalidArgumentError("Invalid input dimensions."));
           log_prob_t(b, 0) +=
               -RowMax<T>(input_list_t[t], b, &max_class_indices);
           if (max_class_indices != blank_index &&
@@ -243,8 +260,8 @@ class CTCGreedyDecoderOp : public OpKernel {
       }
     };
 
-    const int64 kCostPerUnit = 50 * max_time * num_classes;
-    const int64 total = batch_size;
+    const int64_t kCostPerUnit = 50 * max_time * num_classes;
+    const int64_t total = batch_size;
     const DeviceBase::CpuWorkerThreads& worker_threads =
         *ctx->device()->tensorflow_cpu_worker_threads();
     Shard(worker_threads.num_threads, worker_threads.workers, total,
@@ -258,8 +275,10 @@ class CTCGreedyDecoderOp : public OpKernel {
  private:
   CTCDecodeHelper decode_helper_;
   bool merge_repeated_;
+  int blank_index_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(CTCGreedyDecoderOp);
+  CTCGreedyDecoderOp(const CTCGreedyDecoderOp&) = delete;
+  void operator=(const CTCGreedyDecoderOp&) = delete;
 };
 
 #define REGISTER_CPU(T)                                                   \
@@ -296,17 +315,17 @@ class CTCBeamSearchDecoderOp : public OpKernel {
                             &decoded_values, &decoded_shape));
 
     auto inputs_t = inputs->tensor<T, 3>();
-    auto seq_len_t = seq_len->vec<int32>();
+    auto seq_len_t = seq_len->vec<int32_t>();
     auto log_prob_t = log_prob->matrix<T>();
 
     const TensorShape& inputs_shape = inputs->shape();
 
-    const int64 max_time = inputs_shape.dim_size(0);
-    const int64 batch_size = inputs_shape.dim_size(1);
-    const int64 num_classes_raw = inputs_shape.dim_size(2);
+    const int64_t max_time = inputs_shape.dim_size(0);
+    const int64_t batch_size = inputs_shape.dim_size(1);
+    const int64_t num_classes_raw = inputs_shape.dim_size(2);
     OP_REQUIRES(
         ctx, FastBoundsCheck(num_classes_raw, std::numeric_limits<int>::max()),
-        errors::InvalidArgument("num_classes cannot exceed max int"));
+        absl::InvalidArgumentError("num_classes cannot exceed max int"));
     const int num_classes = static_cast<const int>(num_classes_raw);
 
     log_prob_t.setZero();
@@ -359,7 +378,8 @@ class CTCBeamSearchDecoderOp : public OpKernel {
   typename ctc::CTCBeamSearchDecoder<T>::DefaultBeamScorer beam_scorer_;
   bool merge_repeated_;
   int beam_width_;
-  TF_DISALLOW_COPY_AND_ASSIGN(CTCBeamSearchDecoderOp<T>);
+  CTCBeamSearchDecoderOp<T>(const CTCBeamSearchDecoderOp<T>&) = delete;
+  void operator=(const CTCBeamSearchDecoderOp<T>&) = delete;
 };
 
 #define REGISTER_CPU(T)                                                       \

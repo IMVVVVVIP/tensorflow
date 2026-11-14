@@ -42,11 +42,11 @@ class ErrorOp : public OpKernel {
     if (ctx->cancellation_manager() && log_error_) {
       LOG(ERROR) << "ErrorOp: " << errmsg_;
     }
-    ctx->SetStatus(errors::Internal(errmsg_));
+    ctx->SetStatus(absl::InternalError(errmsg_));
   }
 
  private:
-  string errmsg_;
+  std::string errmsg_;
   bool log_error_ = false;
 };
 REGISTER_KERNEL_BUILDER(Name("Error").Device(DEVICE_CPU), ErrorOp);
@@ -95,7 +95,7 @@ class DelayOp : public AsyncOpKernel {
   }
 
  private:
-  int64 micros_;
+  int64_t micros_;
 };
 REGISTER_KERNEL_BUILDER(Name("Delay").Device(DEVICE_CPU), DelayOp);
 

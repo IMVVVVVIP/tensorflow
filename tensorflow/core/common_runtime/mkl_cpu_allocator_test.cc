@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#if defined(INTEL_MKL) && defined(ENABLE_MKL)
+#if defined(INTEL_MKL)
 
 #include "tensorflow/core/common_runtime/mkl_cpu_allocator.h"
 
@@ -41,12 +41,12 @@ TEST(MKLBFCAllocatorTest, TestMaxLimit) {
   EXPECT_EQ(stats->bytes_limit, max_mem_bytes);
 
   setenv(MklCPUAllocator::kMaxLimitStr, "wrong-input", 1);
-  EXPECT_TRUE(errors::IsInvalidArgument(a.Initialize()));
+  EXPECT_TRUE(absl::IsInvalidArgument(a.Initialize()));
 
   setenv(MklCPUAllocator::kMaxLimitStr, "-20", 1);
-  EXPECT_TRUE(errors::IsInvalidArgument(a.Initialize()));
+  EXPECT_TRUE(absl::IsInvalidArgument(a.Initialize()));
 }
 
 }  // namespace tensorflow
 
-#endif  // INTEL_MKL && ENABLE_MKL
+#endif  // INTEL_MKL

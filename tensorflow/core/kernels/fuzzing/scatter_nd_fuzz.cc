@@ -15,9 +15,13 @@ limitations under the License.
 
 #include <vector>
 
+#include "tensorflow/cc/framework/scope.h"
 #include "tensorflow/cc/ops/array_ops.h"
-#include "tensorflow/cc/ops/standard_ops.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/fuzzing/fuzz_session.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace fuzzing {
@@ -54,7 +58,7 @@ class FuzzScatterNd : public FuzzSession {
     size_t data_ix = 0;
     size_t shape_dims = 1 + (data[data_ix++] % kMaxShapeDims);
     Tensor shape_tensor(tensorflow::DT_INT32,
-                        TensorShape({static_cast<int64>(shape_dims)}));
+                        TensorShape({static_cast<int64_t>(shape_dims)}));
 
     // Check that we have enough elements left for the shape tensor
     if (data_ix + shape_dims >= size) {
@@ -63,7 +67,7 @@ class FuzzScatterNd : public FuzzSession {
 
     // Subsequent elements give the contents of the shape tensor.
     // To not get out of memory, reduce all dimensions to at most kMaxDim
-    auto flat_shape = shape_tensor.flat<int32>();
+    auto flat_shape = shape_tensor.flat<int32_t>();
     for (i = 0; i < shape_dims; i++) {
       flat_shape(i) = data[data_ix++] % kMaxDim;
     }
@@ -79,18 +83,18 @@ class FuzzScatterNd : public FuzzSession {
     if (data_ix + indices_rank >= size) {
       return;
     }
-    std::vector<int64> indices_dims;
+    std::vector<int64_t> indices_dims;
     size_t num_indices = 1;
     for (i = 0; i < indices_rank; i++) {
       // Modulo kMaxDim to not request too much memory
-      int64 dim = data[data_ix++] % kMaxDim;
+      int64_t dim = data[data_ix++] % kMaxDim;
       num_indices *= dim;
       indices_dims.push_back(dim);
     }
     Tensor indices_tensor(tensorflow::DT_INT32, TensorShape(indices_dims));
 
     // Rest of the buffer is used to fill in the indices_tensor
-    auto flat_indices = indices_tensor.flat<int32>();
+    auto flat_indices = indices_tensor.flat<int32_t>();
     for (i = 0; i < num_indices && data_ix < size; i++) {
       flat_indices(i) = data[data_ix++];
     }
@@ -101,12 +105,12 @@ class FuzzScatterNd : public FuzzSession {
     // Given the values in the shape_tensor and the dimensions of the
     // indices_tensor, the shape of updates_tensor is fixed.
     num_indices = 1;
-    std::vector<int64> updates_dims;
+    std::vector<int64_t> updates_dims;
     for (i = 0; i < indices_rank - 1; i++) {
       updates_dims.push_back(indices_dims[i]);
       num_indices *= indices_dims[i];
     }
-    int64 last = indices_dims[indices_rank - 1];
+    int64_t last = indices_dims[indices_rank - 1];
     for (i = last; i < shape_dims; i++) {
       updates_dims.push_back(flat_shape(i));
       num_indices *= flat_shape(i);
@@ -114,7 +118,7 @@ class FuzzScatterNd : public FuzzSession {
     Tensor updates_tensor(tensorflow::DT_INT32, TensorShape(updates_dims));
 
     // We don't care about the values in the updates_tensor, make them all be 1
-    auto flat_updates = updates_tensor.flat<int32>();
+    auto flat_updates = updates_tensor.flat<int32_t>();
     for (i = 0; i < num_indices; i++) {
       flat_updates(i) = 1;
     }

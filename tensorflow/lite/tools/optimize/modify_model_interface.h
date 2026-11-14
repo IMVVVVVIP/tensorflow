@@ -15,16 +15,21 @@ limitations under the License.
 #ifndef TENSORFLOW_LITE_TOOLS_OPTIMIZE_MODIFY_MODEL_INTERFACE_H_
 #define TENSORFLOW_LITE_TOOLS_OPTIMIZE_MODIFY_MODEL_INTERFACE_H_
 
-#include "tensorflow/lite/model.h"
+#include <cstdint>
+#include <unordered_map>
+#include <utility>
+
+#include "tensorflow/lite/core/model.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace optimize {
 
 // Changes the interface of a quantized model. This method allows the users to
-// replace float interface with other types.
-// This populates the builder with the new model.
-// Currently only int8, int16 and uint8 are supported.
+// replace float interface with other types. Currently only int8, int16 and
+// uint8 are supported.
+//
+// This method populates the builder with the new model.
 //
 // Note: This is a private API, subject to change.
 TfLiteStatus ModifyModelInterface(flatbuffers::FlatBufferBuilder* builder,

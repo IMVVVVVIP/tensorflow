@@ -16,76 +16,110 @@ limitations under the License.
 // This file defines helper routines for XLA compilation.
 
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
-#include "tensorflow/compiler/tf2xla/lib/util.h"
 
+#include <cstdint>
+#include <numeric>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "absl/container/btree_map.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/synchronization/notification.h"
+#include "absl/time/time.h"
 #include "absl/types/span.h"
-#include "tensorflow/compiler/tf2xla/literal_util.h"
+#include "tensorflow/compiler/tf2xla/lib/util.h"
 #include "tensorflow/compiler/tf2xla/shape_util.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
-#include "tensorflow/compiler/xla/client/lib/arithmetic.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
-#include "tensorflow/compiler/xla/types.h"
+#include "xla/core/collectives/clique_id.h"
+#include "xla/core/collectives/clique_key.h"
+#include "xla/executable_run_options.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/literal.h"
+#include "xla/literal_util.h"
+#include "xla/service/device_assignment.h"
+#include "xla/service/gpu/gpu_executable_run_options.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/stream_executor/stream.h"
+#include "xla/stream_executor/stream_executor.h"
+#include "xla/tsl/platform/errors.h"
+#include "tensorflow/core/common_runtime/device_mgr.h"
+#include "tensorflow/core/framework/collective.h"
+#include "tensorflow/core/framework/device.h"
+#include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/refcount.h"
 
 namespace tensorflow {
 
 xla::XlaOp XlaHelpers::Zero(xla::XlaBuilder* b, DataType data_type) {
   xla::PrimitiveType type;
-  TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
+  CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
   return xla::ConstantLiteral(b, xla::LiteralUtil::Zero(type));
 }
 
 xla::XlaOp XlaHelpers::One(xla::XlaBuilder* b, DataType data_type) {
   xla::PrimitiveType type;
-  TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
+  CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
   return xla::ConstantLiteral(b, xla::LiteralUtil::One(type));
 }
 
 xla::XlaOp XlaHelpers::IntegerLiteral(xla::XlaBuilder* b, DataType data_type,
-                                      int64 value) {
+                                      int64_t value) {
   xla::PrimitiveType type;
-  TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
+  CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
   return ::tensorflow::IntegerLiteral(b, type, value);
 }
 
 xla::XlaOp XlaHelpers::FloatLiteral(xla::XlaBuilder* b, DataType data_type,
                                     double value) {
   xla::PrimitiveType type;
-  TF_CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
+  CHECK_OK(DataTypeToPrimitiveType(data_type, &type));
   return ::tensorflow::FloatLiteral(b, type, value);
 }
 
-/* static */ Status XlaHelpers::ReshapeLiteral(
-    const xla::Literal& input, absl::Span<const int64> dimensions,
+/* static */ absl::Status XlaHelpers::ReshapeLiteral(
+    const xla::Literal& input, absl::Span<const int64_t> dimensions,
     xla::Literal* output) {
   if (input.shape().IsTuple()) {
-    return errors::InvalidArgument("ReshapeLiteral does not support tuples.");
+    return absl::InvalidArgumentError(
+        "ReshapeLiteral does not support tuples.");
   }
   xla::Shape shape =
       xla::ShapeUtil::MakeShape(input.shape().element_type(), dimensions);
-  int64 elements_before = xla::ShapeUtil::ElementsIn(input.shape());
-  int64 elements_after = xla::ShapeUtil::ElementsIn(shape);
+  int64_t elements_before = xla::ShapeUtil::ElementsIn(input.shape());
+  int64_t elements_after = xla::ShapeUtil::ElementsIn(shape);
   if (elements_before != elements_after) {
-    return errors::InvalidArgument(
+    return absl::InvalidArgumentError(
         "Shapes before and after ReshapeLiteral have different numbers of "
         "elements.");
   }
 
   *output = input.Clone();
-  output->mutable_shape_do_not_use()->Swap(&shape);
-  return Status::OK();
+  std::swap(*output->mutable_shape_do_not_use(), shape);
+  return absl::OkStatus();
 }
 
-Status XlaHelpers::OneHot(xla::XlaBuilder* builder, int64 depth, int axis,
-                          DataType index_type, const TensorShape& indices_shape,
-                          const xla::XlaOp& indices, const xla::XlaOp& on_value,
-                          const xla::XlaOp& off_value, xla::XlaOp* one_hot) {
+absl::Status XlaHelpers::OneHot(xla::XlaBuilder* builder, int64_t depth,
+                                int axis, DataType index_type,
+                                const TensorShape& indices_shape,
+                                const xla::XlaOp indices,
+                                const xla::XlaOp on_value,
+                                const xla::XlaOp off_value,
+                                xla::XlaOp* one_hot) {
   // Broadcast the linspace constant across the indices along the new axis,
   // and test equality at each position.
-  std::vector<int64> broadcast_dims(indices_shape.dims());
+  std::vector<int64_t> broadcast_dims(indices_shape.dims());
   std::iota(broadcast_dims.begin(), broadcast_dims.begin() + axis, 0);
   std::iota(broadcast_dims.begin() + axis, broadcast_dims.end(), axis + 1);
 
@@ -100,7 +134,7 @@ Status XlaHelpers::OneHot(xla::XlaBuilder* builder, int64 depth, int axis,
       xla::Eq(indices, xla::Iota(builder, iota_shape, axis), broadcast_dims),
       xla::Broadcast(on_value, output_shape.dim_sizes()),
       xla::Broadcast(off_value, output_shape.dim_sizes()));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 DataType XlaHelpers::SumAccumulationType(const DataType& dtype) {
@@ -119,100 +153,131 @@ DataType XlaHelpers::SumAccumulationType(const DataType& dtype) {
   return dtype;
 }
 
-xla::XlaOp XlaHelpers::ConvertElementType(const xla::XlaOp& operand,
+xla::XlaOp XlaHelpers::ConvertElementType(const xla::XlaOp operand,
                                           const DataType new_element_type) {
   xla::PrimitiveType convert_to;
-  TF_CHECK_OK(DataTypeToPrimitiveType(new_element_type, &convert_to));
+  CHECK_OK(DataTypeToPrimitiveType(new_element_type, &convert_to));
   return xla::ConvertElementType(operand, convert_to);
 }
 
 XlaHelpers::ShapeRepresentationFn IdentityShapeRepresentationFn() {
-  return [](const TensorShape& shape, DataType dtype,
-            bool use_fast_memory) -> xla::StatusOr<xla::Shape> {
-    xla::Shape xla_shape;
-    TF_RETURN_IF_ERROR(TensorShapeToXLAShape(dtype, shape, &xla_shape));
-    return xla_shape;
-  };
+  return
+      [](const TensorShape& shape, DataType dtype, bool use_fast_memory,
+         XlaLayoutPreference layout_preference) -> absl::StatusOr<xla::Shape> {
+        xla::Shape xla_shape;
+        TF_RETURN_IF_ERROR(TensorShapeToXLAShape(dtype, shape, &xla_shape));
+        return xla_shape;
+      };
 }
 
-// Rewrites the layout of xla_shape if there is tiled sharding.
-Status RewriteLayoutWithShardedShape(
-    const absl::optional<xla::HloSharding>& sharding, bool use_fast_memory,
-    XlaHelpers::ShapeRepresentationFn shape_representation_fn,
-    xla::Shape* xla_shape) {
-  if (sharding && !sharding->IsTileMaximal()) {
-    // After sharding, per core shape might have different layout. For example,
-    // before sharding, a shape [128, 128] will be assigned default
-    // minor-to-major {1, 0}. But after we shard this shape to [128, 64] * 2,
-    // the sharded shapes will have minor-to-major {0, 1}.
-    //
-    // As a result, for sharded shapes, we set their layout to per core shape's
-    // layout.
-    //
-    // TODO(endlessroad): for variable input & update, we might have
-    // different layouts which will prevent input output aliasing and
-    // increase memory usage. Investigate such cases.
-    int64 device = *sharding->tile_assignment().begin();
-    std::vector<int64> offset =
-        sharding->TileOffsetForDevice(*xla_shape, device);
-    std::vector<int64> limit = sharding->TileLimitForDevice(*xla_shape, device);
-    std::vector<int64> dimensions(xla_shape->rank());
-    for (int64 i = 0; i < xla_shape->rank(); ++i) {
-      dimensions[i] = limit[i] - offset[i];
-    }
-    xla::Shape per_device_xla_shape =
-        xla::ShapeUtil::MakeShape(xla_shape->element_type(), dimensions);
-    TensorShape per_device_tensor_shape;
-    TF_RETURN_IF_ERROR(
-        XLAShapeToTensorShape(per_device_xla_shape, &per_device_tensor_shape));
-    TF_ASSIGN_OR_RETURN(DataType dtype, EncodePrimitiveTypeAsDataType(
-                                            xla_shape->element_type()));
-    TF_ASSIGN_OR_RETURN(per_device_xla_shape,
-                        shape_representation_fn(per_device_tensor_shape, dtype,
-                                                use_fast_memory));
-    *xla_shape->mutable_layout() = per_device_xla_shape.layout();
+absl::Status ResolveDeviceAssignment(
+    OpKernelContext* ctx,
+    const XlaCompilationResult::CollectiveInfo& collective_info,
+    xla::ExecutableRunOptions& run_options,
+    xla::DeviceAssignment& device_assignment,
+    xla::gpu::GpuExecutableRunOptions& gpu_options) {
+  // TODO(nnigania): workaround for b/199436990
+  static const int kTimeoutSeconds = 1000;
+  if (ctx->collective_executor() == nullptr) {
+    return absl::InvalidArgumentError(
+        "CollectiveExecutor is required but not available");
   }
-  return Status::OK();
-}
 
-// There is a shape_representation_fn or sharding for an output, this function
-// uses a reshape to fix the layout.
-xla::StatusOr<xla::XlaOp> ReshapeWithCorrectRepresentationAndSharding(
-    xla::XlaBuilder* builder, xla::XlaOp original, xla::Shape original_shape,
-    XlaHelpers::ShapeRepresentationFn shape_representation_fn,
-    absl::optional<xla::OpSharding> sharding, bool fast_mem) {
-  if (original_shape.IsTuple()) {
-    std::vector<xla::XlaOp> elements;
-    for (int64 i = 0; i < original_shape.tuple_shapes_size(); ++i) {
-      auto subsharding = sharding ? sharding->tuple_shardings(i) : sharding;
-      TF_ASSIGN_OR_RETURN(auto element,
-                          ReshapeWithCorrectRepresentationAndSharding(
-                              builder, xla::GetTupleElement(original, i),
-                              original_shape.tuple_shapes(i),
-                              shape_representation_fn, subsharding, fast_mem));
-      elements.push_back(element);
+  auto params = core::RefCountPtr<CollectiveParams>(new CollectiveParams());
+  params->name = "xla-reduction-compilation";
+  params->group.device_type =
+      DeviceType{static_cast<Device*>(ctx->device())->device_type()};
+  params->group.group_size = collective_info.group_size;
+  params->group.group_key = collective_info.group_key;
+  params->instance.type = REDUCTION_COLLECTIVE;
+  params->instance.impl_details.communication_hint = "nccl";
+  params->instance.impl_details.timeout_seconds = kTimeoutSeconds;
+  params->instance.impl_details.collective_name = "NcclReduce";
+  // TODO(cheshire): Avoid passing a dummy shape, TF runtime does not resolve
+  // devices otherwise.
+  params->instance.shape = TensorShape({1});
+
+  VLOG(5) << "Using collective params to resolve device assignment: "
+          << params->ToString();
+
+  absl::Status st;
+  absl::Notification n;
+  ctx->collective_executor()->CompleteParamsAsync(
+      ctx->device()->attributes(), params.get(), ctx->cancellation_manager(),
+      [&](const absl::Status& s) {
+        st = s;
+        n.Notify();
+      });
+  if (!n.WaitForNotificationWithTimeout(absl::Seconds(kTimeoutSeconds))) {
+    return absl::InvalidArgumentError("Timeout reached");
+  }
+  TF_RETURN_IF_ERROR(st);
+  VLOG(5) << "Collective params completed: " << params->ToString();
+
+  // Identify the physical device associated with each replica.
+  device_assignment = xla::DeviceAssignment(params->group.group_size, 1);
+  for (int device_idx = 0; device_idx < params->group.group_size;
+       device_idx++) {
+    const DeviceAttributes& device = params->group.members[device_idx].device;
+    if (device.xla_global_id() == -1) {
+      if (params->group.device_type == DEVICE_TPU) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("No global ID was set for TPU device ", device.name(),
+                         ". Try initializing the TPU system, e.g. "
+                         "`tf.tpu.experimental.initialize_tpu_system()`."));
+      } else if (params->group.device_type == DEVICE_GPU) {
+        return absl::InternalError(
+            absl::StrCat("No global ID was set for ", device.name(),
+                         ". This is unexpected, please file a bug."));
+      } else {
+        // TODO(b/194942685): Implement CPU collectives.
+        return absl::UnimplementedError(
+            absl::StrCat("Collectives are not yet implemented for ",
+                         params->group.device_type.type_string(),
+                         " devices when compiling with XLA. Attempted to "
+                         "compile a collective running on",
+                         device.name(),
+                         ". Please comment on b/194942685 or "
+                         "file a new bug if you don't have access."));
+      }
     }
-    return xla::Tuple(builder, elements);
+    VLOG(2) << "Assigning physical id " << device.xla_global_id()
+            << " for replica " << device_idx << " (" << device.name() << ")";
+    device_assignment(device_idx, 0) = device.xla_global_id();
   }
-  if (!original_shape.IsArray()) return original;
-  TensorShape shape;
-  TF_RETURN_IF_ERROR(XLAShapeToTensorShape(original_shape, &shape));
-  TF_ASSIGN_OR_RETURN(DataType dtype, EncodePrimitiveTypeAsDataType(
-                                          original_shape.element_type()));
-  TF_ASSIGN_OR_RETURN(auto to_shape,
-                      shape_representation_fn(shape, dtype, fast_mem));
-  if (sharding) {
-    TF_ASSIGN_OR_RETURN(auto hlo_sharding,
-                        xla::HloSharding::FromProto(*sharding));
-    TF_RETURN_IF_ERROR(RewriteLayoutWithShardedShape(
-        hlo_sharding, fast_mem, shape_representation_fn, &to_shape));
-  }
-  if (xla::ShapeUtil::Compatible(original_shape, to_shape)) {
-    for (int64 i = 0; i < original_shape.rank(); ++i) {
-      to_shape.set_dynamic_dimension(i, original_shape.is_dynamic_dimension(i));
+  VLOG(5) << "Generated device assignment: " << device_assignment.ToString();
+  if (params->group.device_type == DEVICE_GPU) {
+    // For GPU collectives, `xla_global_id`s are arbitrary integers, and XLA
+    // requires a mapping from local device IDs to global device IDs.
+    const DeviceMgr* device_mgr = ctx->function_library()->device_mgr();
+    absl::btree_map<xla::LocalDeviceId, xla::GlobalDeviceId> global_device_ids;
+
+    for (int device_idx = 0; device_idx < params->group.group_size;
+         device_idx++) {
+      const DeviceAttributes& device_attributes =
+          params->group.members[device_idx].device;
+      Device* resolved_device = nullptr;
+      absl::Status lookup_status =
+          device_mgr->LookupDevice(device_attributes.name(), &resolved_device);
+      if (lookup_status.ok()) {
+        // This is a local device, so include it in the mapping.
+        const DeviceBase::AcceleratorDeviceInfo* accelerator_device_info =
+            resolved_device->tensorflow_accelerator_device_info();
+        global_device_ids[xla::LocalDeviceId(
+            accelerator_device_info->stream->parent()->device_ordinal())] =
+            device_attributes.xla_global_id();
+      }
     }
+    gpu_options.set_gpu_global_device_ids(global_device_ids);
   }
-  return xla::Reshape(to_shape, original);
+  const std::string& communicator_key =
+      params->group.runtime_details.communicator_key;
+  gpu_options.set_clique_id_callback([=](const xla::CliqueKey& key) {
+    return xla::CliqueIds(xla::CliqueId(communicator_key));
+  });
+  run_options.set_device_assignment(&device_assignment);
+  run_options.set_gpu_executable_run_options(&gpu_options);
+  return absl::OkStatus();
 }
 
 }  // end namespace tensorflow

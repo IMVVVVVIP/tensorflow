@@ -13,11 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for concat."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-import tensorflow.compat.v1 as tf
+import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
 from tensorflow.lite.testing.zip_test_utils import make_zip_of_tests
 from tensorflow.lite.testing.zip_test_utils import register_make_test_function
@@ -56,6 +52,14 @@ def make_concat_tests(options):
       "num_tensors": [6],
       "axis": [1],
       "type": [tf.float32],
+      "fully_quantize": [False],
+      "quant_16x8": [False],
+      "dynamic_range_quantize": [True],
+  }, {
+      "base_shape": [[1, 3, 4, 3]],
+      "num_tensors": [6],
+      "axis": [1],
+      "type": [tf.bool],
       "fully_quantize": [False],
       "quant_16x8": [False],
       "dynamic_range_quantize": [True],

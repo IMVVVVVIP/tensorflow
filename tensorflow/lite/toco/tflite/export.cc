@@ -14,16 +14,34 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/toco/tflite/export.h"
 
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
 #include "flatbuffers/flexbuffers.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
+#include "flatbuffers/buffer.h"  // from @flatbuffers
+#include "flatbuffers/flatbuffer_builder.h"  // from @flatbuffers
+#include "flatbuffers/string.h"  // from @flatbuffers
+#include "flatbuffers/vector.h"  // from @flatbuffers
+#include "tensorflow/compiler/mlir/lite/quantization/lite/toco_legacy/quantize_weights.h"
+#include "tensorflow/compiler/mlir/lite/schema/schema_conversion_utils.h"
+#include "tensorflow/compiler/mlir/lite/tools/versioning/runtime_version.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/lite/context.h"
+#include "tensorflow/core/platform/status.h"
 #include "tensorflow/lite/schema/schema_generated.h"
-#include "tensorflow/lite/toco/tflite/op_version.h"
+#include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/tflite/operator.h"
 #include "tensorflow/lite/toco/tflite/types.h"
+#include "tensorflow/lite/toco/toco_types.h"
 #include "tensorflow/lite/toco/tooling_util.h"
-#include "tensorflow/lite/tools/optimize/quantize_weights.h"
+#include "tensorflow/lite/util.h"
 #include "tensorflow/lite/version.h"
 
 namespace toco {
@@ -63,7 +81,6 @@ bool IsControlFlowOp(const std::string& tensorflow_op) {
       tensorflow_op == "NextIteration" || tensorflow_op == "RefNextIteration") {
     return true;
   }
-  // TODO(ycling): Also check how to handle Variable ops and Assign ops.
   return false;
 }
 
@@ -428,8 +445,8 @@ Offset<Vector<Offset<Buffer>>> ExportBuffers(
   return builder->CreateVector(buffer_vector);
 }
 
-tensorflow::Status Export(const Model& model, std::string* output_file_contents,
-                          const ExportParams& params) {
+absl::Status Export(const Model& model, std::string* output_file_contents,
+                    const ExportParams& params) {
   const auto ops_by_type = BuildOperatorByTypeMap(params.enable_select_tf_ops);
   return Export(model, output_file_contents, params, ops_by_type);
 }
@@ -459,27 +476,35 @@ void ParseControlFlowErrors(std::set<std::string>* custom_ops,
   }
 }
 
-// Exports a string buffer that contains the model's minimum required runtime
-// version.
-void ExportModelVersionBuffer(
+// Exports appropriate model metadata.
+// This consists of a 16-byte placeholder string buffer that will be populated
+// with the model's minimum required runtime version after the model is
+// finalized. We choose 16 bytes as it's the alignment of flatbuffer buffers
+// and prevents wasted space if the final string is shorter than 16 bytes.
+// Note: This logic matches that used in the MLIR flatbuffer export path.
+flatbuffers::Offset<tflite::Metadata> ExportMetadata(
     const Model& model, std::vector<Offset<Vector<uint8_t>>>* buffers_to_write,
     FlatBufferBuilder* builder) {
-  const std::string min_runtime = GetMinimumRuntimeVersionForModel(model);
+  auto metadata =
+      CreateMetadata(*builder, builder->CreateString("min_runtime_version"),
+                     buffers_to_write->size());
+  const std::string min_runtime_placeholder = std::string(16, '\0');
   buffers_to_write->push_back(builder->CreateVector(
-      reinterpret_cast<const uint8_t*>(min_runtime.data()),
-      min_runtime.size()));
+      reinterpret_cast<const uint8_t*>(min_runtime_placeholder.data()),
+      min_runtime_placeholder.size()));
+  return metadata;
 }
 
-tensorflow::Status Export(
+absl::Status Export(
     const Model& model, std::string* output_file_contents,
     const ExportParams& params,
     const std::map<OperatorType, std::unique_ptr<BaseOperator>>& ops_by_type) {
   for (const std::string& input_array : model.GetInvalidInputArrays()) {
     if (model.HasArray(input_array)) {
-      return tensorflow::errors::InvalidArgument(
-          absl::StrCat("Placeholder ", input_array,
-                       " should be specified by "
-                       "input_arrays."));
+      return absl::InvalidArgumentError(absl::StrCat("Placeholder ",
+                                                     input_array,
+                                                     " should be specified by "
+                                                     "input_arrays."));
     }
   }
 
@@ -594,14 +619,14 @@ tensorflow::Status Export(
         }
       }
       if (!error_msgs.empty()) {
-        return tensorflow::errors::InvalidArgument(absl::StrCat(
+        return absl::InvalidArgumentError(absl::StrCat(
             please_report_bug_message(), absl::StrJoin(error_msgs, " ")));
       }
     }
   }
 
   if (!unsupported_flex_ops.empty()) {
-    return tensorflow::errors::InvalidArgument(
+    return absl::InvalidArgumentError(
         absl::StrCat("Some of the operators in the model are not supported by "
                      "TensorFlow Flex runtime: ",
                      absl::StrJoin(unsupported_flex_ops, ", "), "."));
@@ -623,16 +648,12 @@ tensorflow::Status Export(
 
   // TODO(wangtz): offline memory planning for activation Tensors.
   if (!params.allow_dynamic_tensors) {
-    return tensorflow::errors::Unimplemented(
+    return absl::UnimplementedError(
         "Unsupported flag: allow_dynamic_tensors. Offline memory planning is "
         "not implemented yet.");
   }
 
-  // Write the minimum required runtime version into metadata.
-  auto metadata =
-      CreateMetadata(builder, builder.CreateString("min_runtime_version"),
-                     buffers_to_write.size());
-  ExportModelVersionBuffer(model, &buffers_to_write, &builder);
+  auto metadata = ExportMetadata(model, &buffers_to_write, &builder);
   std::vector<flatbuffers::Offset<Metadata>> metadatas = {metadata};
 
   auto buffers = ExportBuffers(model, buffers_to_write, &builder);
@@ -643,6 +664,7 @@ tensorflow::Status Export(
                   builder.CreateVector(subgraphs), description, buffers,
                   /* metadata_buffer */ 0, builder.CreateVector(metadatas));
   ::tflite::FinishModelBuffer(builder, new_model_location);
+  ::tflite::UpdateMinimumRuntimeVersionForModel(builder.GetBufferPointer());
 
   if (params.quantize_weights == QuantizedBufferType::NONE) {
     WriteModelToString(builder, output_file_contents);
@@ -655,24 +677,26 @@ tensorflow::Status Export(
     flatbuffers::FlatBufferBuilder q_builder(/*initial_size=*/10240);
     const uint8_t* buffer = builder.GetBufferPointer();
     const ::tflite::Model* input_model = ::tflite::GetModel(buffer);
-    ::tflite::optimize::BufferType quantized_type;
+    ::mlir::lite::toco_legacy::BufferType quantized_type;
     if (params.quantize_weights == QuantizedBufferType::INT8) {
-      quantized_type = ::tflite::optimize::BufferType::QUANTIZED_INT8;
+      quantized_type = ::mlir::lite::toco_legacy::BufferType::QUANTIZED_INT8;
     } else if (params.quantize_weights == QuantizedBufferType::FLOAT16) {
-      quantized_type = ::tflite::optimize::BufferType::QUANTIZED_FLOAT16;
+      quantized_type = ::mlir::lite::toco_legacy::BufferType::QUANTIZED_FLOAT16;
     } else {
-      return tensorflow::errors::InvalidArgument(
-          "Quantized type not recognized");
+      return absl::InvalidArgumentError("Quantized type not recognized");
     }
-    if (::tflite::optimize::QuantizeWeights(&q_builder, input_model,
-                                            quantized_type) != kTfLiteOk) {
-      return tensorflow::errors::InvalidArgument(
+    if (!::mlir::lite::toco_legacy::QuantizeWeights(
+             &q_builder, input_model, quantized_type,
+             !params.disable_per_channel,
+             ::mlir::lite::toco_legacy::QuantizerType::OLD_QUANTIZER)
+             .ok()) {
+      return absl::InvalidArgumentError(
           "Quantize weights transformation failed.");
     }
     WriteModelToString(q_builder, output_file_contents);
   }
 
-  return tensorflow::Status();
+  return absl::Status();
 }
 
 }  // namespace tflite

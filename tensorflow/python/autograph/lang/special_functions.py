@@ -19,10 +19,6 @@ so that the exact same code works in both modes. In general, AutoGraph will
 replace these calls.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.autograph.operators import data_structures
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import tensor_util
@@ -32,7 +28,7 @@ def _validate_list_constructor(elements, element_dtype, element_shape):
   """Validates the inputs of tensor_list."""
   if element_dtype is not None and element_shape is not None:
     return
-  if tensor_util.is_tensor(elements):
+  if tensor_util.is_tf_type(elements):
     return
   if isinstance(elements, (list, tuple)):
     if elements:
@@ -49,7 +45,7 @@ def _validate_list_constructor(elements, element_dtype, element_shape):
 
 def match_staging_level(value, like_value):
   """Casts a value to be staged at the same level as another."""
-  if tensor_util.is_tensor(like_value):
+  if tensor_util.is_tf_type(like_value):
     return constant_op.constant(value)
   return value
 
@@ -58,7 +54,7 @@ def tensor_list(elements,
                 element_dtype=None,
                 element_shape=None,
                 use_tensor_array=False):
-  """Creates an tensor list and populates it with the given elements.
+  """Creates a tensor list and populates it with the given elements.
 
   This function provides a more uniform access to tensor lists and tensor
   arrays, and allows optional initialization.
@@ -68,13 +64,14 @@ def tensor_list(elements,
 
   Args:
     elements: Iterable[tf.Tensor, ...], the elements to initially fill the list
-        with
+      with
     element_dtype: Optional[tf.DType], data type for the elements in the list;
-        required if the list is empty
+      required if the list is empty
     element_shape: Optional[tf.TensorShape], shape for the elements in the list;
-        required if the list is empty
+      required if the list is empty
     use_tensor_array: bool, whether to use the more compatible but restrictive
-        tf.TensorArray implementation
+      tf.TensorArray implementation
+
   Returns:
     Union[tf.Tensor, tf.TensorArray], the new list.
   Raises:

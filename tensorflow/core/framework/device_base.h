@@ -24,44 +24,45 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/framework/device_attributes.pb.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/refcount.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/threadpool.h"
+#include "tensorflow/core/util/device_name_utils.h"
 
 namespace Eigen {
 struct ThreadPoolDevice;
-#ifdef TENSORFLOW_USE_SYCL
-struct SyclDevice;
-#endif
 }  // end namespace Eigen
 
 namespace stream_executor {
 class Stream;
 }  // namespace stream_executor
 
+namespace tsl {
+class Env;
+namespace thread {
+class ThreadPool;
+}  // namespace thread
+}  // namespace tsl
 namespace tensorflow {
 
 class Device;
 class DeviceAttributes;
-class Env;
 class EventMgr;
 class OpKernelContext;
 class ResourceMgr;
 class ScopedAllocatorMgr;
 class TensorProto;
 
-namespace thread {
-class ThreadPool;
-}
-
 // A wrapper for an Eigen Gpu Device that includes per-op state. The
 // class is defined even for non-GPU devices since the
 // OpKernelContext::Params structure wants to fill it in.
 class PerOpGpuDevice {
  public:
-  virtual ~PerOpGpuDevice() {}
+  virtual ~PerOpGpuDevice() = default;
   virtual const Eigen::GpuDevice& device() const = 0;
 };
 
@@ -69,7 +70,7 @@ class PerOpGpuDevice {
 // Device-specific context to OpKernels.
 class DeviceContext : public core::RefCounted {
  public:
-  ~DeviceContext() override {}
+  ~DeviceContext() override = default;
   virtual stream_executor::Stream* stream() const { return nullptr; }
   virtual void MaintainLifetimeOnStream(const Tensor* t,
                                         stream_executor::Stream* stream) const {
@@ -81,54 +82,63 @@ class DeviceContext : public core::RefCounted {
   virtual void CopyCPUTensorToDevice(const Tensor* cpu_tensor, Device* device,
                                      Tensor* device_tensor, StatusCallback done,
                                      bool sync_dst_compute = true) const {
-    done(errors::Internal("Unrecognized device type in CPU-to-device Copy"));
+    done(absl::InternalError("Unrecognized device type in CPU-to-device Copy"));
   }
 
   // Same as CopyCPUTensorToDevice, but in a synchronous way.
-  Status CopyCPUTensorToDeviceSync(const Tensor* cpu_tensor, Device* device,
-                                   Tensor* device_tensor) const;
+  absl::Status CopyCPUTensorToDeviceSync(const Tensor* cpu_tensor,
+                                         Device* device,
+                                         Tensor* device_tensor) const;
 
   // Copies a tensor in this device.
   virtual void CopyTensorInSameDevice(const Tensor* input_tensor,
                                       Device* device, Tensor* output_tensor,
                                       StatusCallback done) const {
-    done(errors::Unimplemented("Copy in same device not implemented."));
+    done(absl::UnimplementedError("Copy in same device not implemented."));
   }
 
   // "device_tensor" is a tensor on a non-CPU device.  Copies
   // device_tensor into "cpu_tensor".  "cpu_tensor" must be allocated
   // to be of the same size as "device_tensor".
   virtual void CopyDeviceTensorToCPU(const Tensor* device_tensor,
-                                     StringPiece tensor_name, Device* device,
-                                     Tensor* cpu_tensor, StatusCallback done) {
-    done(errors::Internal("Unrecognized device type in device-to-CPU Copy"));
+                                     absl::string_view tensor_name,
+                                     Device* device, Tensor* cpu_tensor,
+                                     StatusCallback done) {
+    done(absl::InternalError("Unrecognized device type in device-to-CPU Copy"));
   }
 
   // Same as `CopyDeviceTensorToCPU`, but blocks until the copy is done.
-  Status CopyDeviceTensorToCPUSync(const Tensor* device_tensor,
-                                   StringPiece tensor_name, Device* device,
-                                   Tensor* cpu_tensor);
+  absl::Status CopyDeviceTensorToCPUSync(const Tensor* device_tensor,
+                                         absl::string_view tensor_name,
+                                         Device* device, Tensor* cpu_tensor);
 
   // If possible, wait for all events on *stream to complete then execute func.
   // A non-OK Status is returned otherwise.  The stream argument should be the
-  // one provided by GpuDeviceInfo.  This function is not applicable to devices
-  // that don't provide such a value.
-  virtual Status ThenExecute(Device* device, stream_executor::Stream* stream,
-                             std::function<void()> func) {
-    return errors::Internal("ThenExecute not supported by device");
+  // one provided by AcceleratorDeviceInfo.  This function is not applicable to
+  // devices that don't provide such a value.
+  virtual absl::Status ThenExecute(Device* device,
+                                   stream_executor::Stream* stream,
+                                   std::function<void()> func) {
+    return absl::InternalError("ThenExecute not supported by device");
   }
+
+  // check if device is a pluggable device
+  virtual bool IsPluggableDevice() { return false; }
+
+  // Returns the pinned host memory allocator for the device.
+  virtual Allocator* host_memory_allocator() const { return nullptr; }
 };
 
 class DeviceBase {
  public:
-  explicit DeviceBase(Env* env) : env_(env) {}
+  explicit DeviceBase(tsl::Env* env) : env_(env) {}
   virtual ~DeviceBase();
 
-  Env* env() const { return env_; }
+  tsl::Env* env() const { return env_; }
 
   struct CpuWorkerThreads {
     int num_threads = 0;
-    thread::ThreadPool* workers = nullptr;
+    tsl::thread::ThreadPool* workers = nullptr;
   };
 
   // Does not take ownership.
@@ -148,37 +158,35 @@ class DeviceBase {
   // using a single stream.)
   // "event_mgr" is used to delay deallocation of temporary GPU buffers.
   // TODO(pbar) Work out how to move this out of DeviceBase.
-  // GpuDeviceInfo name is an unfortunate legacy, it is used not only by GPUs
-  // but also by TPU devices (to provide default device context).
-  struct GpuDeviceInfo {
+  struct AcceleratorDeviceInfo {
     // Make sure all the defaults are NULL, so we can spot missing assignments.
     stream_executor::Stream* stream = nullptr;
     DeviceContext* default_context = nullptr;
+    DeviceContext* pjrt_context = nullptr;
+    bool use_pjrt_tensor_buffer = false;
     EventMgr* event_mgr = nullptr;
     int gpu_id = -1;
   };
 
   // Does not take ownership.
-  void set_tensorflow_gpu_device_info(GpuDeviceInfo* g) {
-    gpu_device_info_ = g;
+  void set_tensorflow_accelerator_device_info(
+      AcceleratorDeviceInfo* device_info) {
+    accelerator_device_info_ = device_info;
   }
 
-  virtual const GpuDeviceInfo* tensorflow_gpu_device_info() const {
-    return gpu_device_info_;
+  virtual const AcceleratorDeviceInfo* tensorflow_accelerator_device_info()
+      const {
+    return accelerator_device_info_;
   }
 
   // The preferred thread pool for this device. If it is nullptr, the system
   // automatically assigns a thread pool for execution.
-  virtual thread::ThreadPool* tensorflow_device_thread_pool() {
+  virtual tsl::thread::ThreadPool* tensorflow_device_thread_pool() {
     return device_thread_pool_;
   }
 
   // Does not take ownership.
   void set_eigen_cpu_device(Eigen::ThreadPoolDevice* d);
-
-#ifdef TENSORFLOW_USE_SYCL
-  void set_eigen_sycl_device(Eigen::SyclDevice* d) { eigen_sycl_device_ = d; }
-#endif
 
   // Return the Allocator implementation to use based on the allocator
   // attributes requested.  See allocator.h for more details.
@@ -197,7 +205,7 @@ class DeviceBase {
   // Return an Allocator prepared for use in particular places by graph
   // optimization
   virtual Allocator* GetScopedAllocator(AllocatorAttributes attr,
-                                        int64 step_id) {
+                                        int64_t step_id) {
     LOG(FATAL) << "Device does not implement GetScopedAllocator()";
     return nullptr;
   }
@@ -210,13 +218,6 @@ class DeviceBase {
 
   virtual const Eigen::ThreadPoolDevice* eigen_cpu_device();
 
-#ifdef TENSORFLOW_USE_SYCL
-  virtual const Eigen::SyclDevice* eigen_sycl_device() const {
-    CHECK(eigen_sycl_device_ != nullptr);
-    return eigen_sycl_device_;
-  }
-#endif
-
   // Caller owns the return value. The OpKernelContext calls this even
   // for devices that do not implement an eigen_gpu_device. Overridden
   // by GPU devices to return a derived type.
@@ -227,17 +228,26 @@ class DeviceBase {
 
   // This is overridden by GPU devices to reinitialize the derived
   // type returned by MakeGpuDevice.
-  virtual Status ReinitializeGpuDevice(OpKernelContext* /*context*/,
-                                       PerOpGpuDevice* /*device*/,
-                                       DeviceContext* /*dc*/,
-                                       Allocator* /*allocator*/) {
-    return Status::OK();
+  virtual absl::Status ReinitializeGpuDevice(OpKernelContext* /*context*/,
+                                             PerOpGpuDevice* /*device*/,
+                                             DeviceContext* /*dc*/,
+                                             Allocator* /*allocator*/) {
+    return absl::OkStatus();
   }
 
   // Unimplemented by default
   virtual const DeviceAttributes& attributes() const;
   virtual int NumaNode() const { return attributes().locality().numa_node(); }
   virtual const std::string& name() const;
+  virtual const DeviceNameUtils::ParsedName& parsed_name() const;
+  virtual const std::string& device_type() const;
+
+  // Updates `attributes()`, indicating the XLA global ID associated with this
+  // device. This ID is unique across clients in a multi-client setup. For TPUs
+  // this does not happen until the TPU system has been initialized.
+  //
+  // Implemented in Device.
+  virtual void set_xla_global_id(int64_t id) {}
 
   // Materializes the given TensorProto into 'tensor' stored in Device
   // memory.  Most devices will want to override this.
@@ -246,10 +256,11 @@ class DeviceBase {
   // OpKernelContext and handle the copies from device memory via send
   // and receive nodes, instead of requiring that each device handle
   // the copies here as well as in copy ops.
-  virtual Status MakeTensorFromProto(const TensorProto& tensor_proto,
-                                     const AllocatorAttributes alloc_attrs,
-                                     Tensor* tensor) {
-    return errors::Internal("Device does not implement MakeTensorFromProto()");
+  virtual absl::Status MakeTensorFromProto(
+      const TensorProto& tensor_proto, const AllocatorAttributes alloc_attrs,
+      Tensor* tensor) {
+    return absl::InternalError(
+        "Device does not implement MakeTensorFromProto()");
   }
 
   // Some devices (i.e. GPUs) may free device memory prior to its actual use
@@ -259,7 +270,7 @@ class DeviceBase {
   // device memory tagged with an earlier freed-at count is really unencumbered
   // by pending uses.  For this to be useful the device memory allocator must
   // be tagging deallocated memory chunks using the same counter.
-  virtual uint64 SafeAllocFrontier(uint64 old_value) { return 0; }
+  virtual uint64_t SafeAllocFrontier(uint64_t old_value) { return 0; }
 
   // Copies `input_tensor` to `output_tensor`, where both tensors are on this
   // device. This function assumes that `output_tensor` has already been
@@ -273,26 +284,23 @@ class DeviceBase {
                                       Tensor* output_tensor,
                                       const DeviceContext* device_context,
                                       StatusCallback done) {
-    done(errors::Internal("Device ", name(), " does not implement ",
-                          "CopyTensorInSameDevice"));
+    done(absl::InternalError(absl::StrCat(
+        "Device ", name(), " does not implement ", "CopyTensorInSameDevice")));
   }
 
  protected:
   // Does not take ownership.
-  void set_tensorflow_device_thread_pool(thread::ThreadPool* thread_pool) {
+  void set_tensorflow_device_thread_pool(tsl::thread::ThreadPool* thread_pool) {
     device_thread_pool_ = thread_pool;
   }
 
  private:
-  Env* const env_;
+  tsl::Env* const env_;
   CpuWorkerThreads* cpu_worker_threads_ = nullptr;
   // Set by GPUs as well as by TPU devices.
-  GpuDeviceInfo* gpu_device_info_ = nullptr;
-  thread::ThreadPool* device_thread_pool_ = nullptr;
+  AcceleratorDeviceInfo* accelerator_device_info_ = nullptr;
+  tsl::thread::ThreadPool* device_thread_pool_ = nullptr;
   std::vector<Eigen::ThreadPoolDevice*> eigen_cpu_devices_;
-#ifdef TENSORFLOW_USE_SYCL
-  Eigen::SyclDevice* eigen_sycl_device_ = nullptr;
-#endif
 };
 
 // Methods to create and check for Symbolic execution devices.

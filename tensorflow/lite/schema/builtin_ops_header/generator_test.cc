@@ -15,7 +15,7 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/lite/schema/builtin_ops_header/generator.h"
-#include <fstream>
+
 #include <gtest/gtest.h>
 
 namespace {
@@ -56,8 +56,3 @@ TEST(TestConstantizeVariableName, TestWithValidInputNames) {
 }
 
 }  // anonymous namespace
-
-int main(int argc, char** argv) {
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

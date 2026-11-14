@@ -34,29 +34,46 @@ namespace tensorflow {
 class ImmediateExecutionTensorHandle : public AbstractTensorHandle {
  public:
   // Returns number of dimensions.
-  virtual Status NumDims(int* num_dims) const = 0;
+  virtual absl::Status NumDims(int* num_dims) const = 0;
   // Returns number of elements across all dimensions.
-  virtual Status NumElements(int64* num_elements) const = 0;
+  virtual absl::Status NumElements(int64_t* num_elements) const = 0;
   // Returns size of specified dimension
-  virtual Status Dim(int dim_index, int64* dim) const = 0;
+  //
+  // -1 indicates an unknown axis length; this is unreachable for most standard
+  // ImmediateExecutionTensorHandles, but comes up for example when computing
+  // the shape of a parallel tensor with component shapes differing across
+  // devices.
+  virtual absl::Status Dim(int dim_index, int64_t* dim) const = 0;
 
   // Returns the device which created the handle.
-  virtual const char* DeviceName(Status* status) const = 0;
+  virtual const char* DeviceName(absl::Status* status) const = 0;
   // Returns the device where the tensor was placed.
-  virtual const char* BackingDeviceName(Status* status) const = 0;
+  virtual const char* BackingDeviceName(absl::Status* status) const = 0;
+  // Returns the device type which created the handle.
+  virtual const char* DeviceType(absl::Status* status) const = 0;
+  // Returns the device ID which created the handle.
+  virtual int DeviceId(absl::Status* status) const = 0;
   // Returns a tensor for the handle. If tensor is remote, it will be copied.
-  virtual AbstractTensorInterface* Resolve(Status* status) = 0;
+  virtual AbstractTensorInterface* Resolve(absl::Status* status) = 0;
 
-  // Return a copy of the handle.
-  virtual ImmediateExecutionTensorHandle* Copy() = 0;
+  std::string DebugString() const override;
 
-  // Release any underlying resources, including the interface object.
+  // Returns a Boolean hint indicating whether callers should prefer
+  // `SummarizeValue` to resolving this handle and formatting the tensor.
   //
-  // WARNING: The destructor of this class is marked as protected to disallow
-  // clients from directly destroying this object since it may manage it's own
-  // lifetime through ref counting. Thus this must be allocated on the heap and
-  // clients MUST call Release() in order to destroy an instance of this class.
-  virtual void Release() = 0;
+  // For example some tensor handles may represent distributed values, in which
+  // case placement information is lost when resolving the handle.
+  //
+  // If false, a caller might implement pretty-printing by resolving and
+  // iterating over the resulting tensor. This may still be viable if resolving
+  // the handle loses information, but `SummarizeValue` would be more precise.
+  virtual bool PreferCustomSummarizer() const { return false; }
+
+  // Returns a string which summarizes the value of this TensorHandle, for
+  // debugging. Does not include a shape or dtype.
+  //
+  // Included in the default implementation of DebugString.
+  virtual absl::Status SummarizeValue(std::string& summary) const;
 
   // For LLVM style RTTI.
   static bool classof(const AbstractTensorHandle* ptr) {
@@ -66,14 +83,14 @@ class ImmediateExecutionTensorHandle : public AbstractTensorHandle {
  protected:
   explicit ImmediateExecutionTensorHandle(AbstractTensorHandleKind kind)
       : AbstractTensorHandle(kind) {}
-  ~ImmediateExecutionTensorHandle() override {}
+  ~ImmediateExecutionTensorHandle() override = default;
 };
 
 namespace internal {
 struct ImmediateExecutionTensorHandleDeleter {
   void operator()(ImmediateExecutionTensorHandle* p) const {
     if (p != nullptr) {
-      p->Release();
+      p->Unref();
     }
   }
 };

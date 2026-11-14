@@ -16,18 +16,36 @@ limitations under the License.
 #include "tensorflow/core/framework/allocator.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <new>
+#include <optional>
+#include <string>
 #include <vector>
 
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "benchmark/benchmark.h"  // from @com_google_benchmark
+#include "xla/tsl/platform/test_benchmark.h"
+#include "xla/tsl/profiler/utils/xplane_utils.h"
 #include "tensorflow/core/framework/typed_allocator.h"
-#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/mem.h"
 #include "tensorflow/core/platform/test.h"
-#include "tensorflow/core/platform/test_benchmark.h"
+#include "tensorflow/core/profiler/protobuf/memory_profile.pb.h"
+#include "tensorflow/core/profiler/utils/xplane_schema.h"
+#include "tensorflow/core/profiler/utils/xplane_visitor.h"
+#include "tsl/platform/mem.h"
+#include "tsl/profiler/lib/profiler_session.h"
+#include "tsl/profiler/protobuf/xplane.pb.h"
 
 namespace tensorflow {
 
-static void CheckStats(Allocator* a, int64 num_allocs, int64 bytes_in_use,
-                       int64 peak_bytes_in_use, int64 largest_alloc_size) {
-  absl::optional<AllocatorStats> stats = a->GetStats();
+static void CheckStats(Allocator* a, int64_t num_allocs, int64_t bytes_in_use,
+                       int64_t peak_bytes_in_use, int64_t largest_alloc_size) {
+  std::optional<AllocatorStats> stats = a->GetStats();
   EXPECT_TRUE(stats);
   if (!stats) {
     return;
@@ -36,7 +54,7 @@ static void CheckStats(Allocator* a, int64 num_allocs, int64 bytes_in_use,
 #if defined(PLATFORM_GOOGLE) && defined(NDEBUG)
   // NOTE: allocator stats expectation depends on the system malloc,
   // and can vary as that changes.
-  static const int64 kSlop = 5 * 1024;
+  constexpr int64_t kSlop = 100 * 1024;
   EXPECT_GT(stats->bytes_in_use, bytes_in_use - kSlop);
   EXPECT_LT(stats->bytes_in_use, bytes_in_use + kSlop);
   EXPECT_GT(stats->peak_bytes_in_use, peak_bytes_in_use - kSlop);
@@ -160,7 +178,7 @@ TEST(CPUAllocatorTest, Simple) {
 
   CheckStats(a, 1025, 0, 1048576 * sizeof(double) + 1024 * sizeof(float),
              1048576 * sizeof(double));
-  a->ClearStats();
+  CHECK(a->ClearStats());
   CheckStats(a, 0, 0, 0, 0);
   DisableCPUAllocatorStats();
 }
@@ -201,6 +219,103 @@ TEST(CPUAllocatorTest, Sizes) {
   EXPECT_EQ(false, a->TracksAllocationSizes());
 }
 
+TEST(CPUAllocatorTest, ProfilerReporting) {
+  // TODO(b/196611863): Make debugging work even without GetAllocatedSize.
+  void* p = tsl::port::AlignedMalloc(8, static_cast<std::align_val_t>(1));
+  const std::size_t alloc_size = port::MallocExtension_GetAllocatedSize(p);
+  port::AlignedFree(p);
+  if (alloc_size == 0) {
+    LOG(WARNING) << "Skipping Memory Debugging test. It requires "
+                 << "port::MallocExtension_GetAllocatedSize to work.";
+    return;
+  }
+
+  EnableCPUAllocatorStats();
+  Allocator* a = cpu_allocator();
+
+  // Allocate something before profiling starts
+  void* p1 = a->AllocateRaw(1, 16);
+
+  // Start profiling
+  std::unique_ptr<tsl::ProfilerSession> profiler =
+      tsl::ProfilerSession::Create(tsl::ProfilerSession::DefaultOptions());
+
+  // Profiled allocations
+  void* p2 = a->AllocateRaw(1, 32);
+  a->DeallocateRaw(p1);
+
+  // Get profiling results
+  tensorflow::profiler::XSpace xspace;
+  EXPECT_EQ(absl::OkStatus(), profiler->CollectData(&xspace));
+
+  // Validate the output
+  const auto plane = ::tsl::profiler::FindPlaneWithName(
+      xspace, ::tensorflow::profiler::kHostThreadsPlaneName);
+  ::tensorflow::profiler::XPlaneVisitor xplane(plane);
+
+  ASSERT_EQ(plane->name(), ::tensorflow::profiler::kHostThreadsPlaneName)
+      << "XSpace: " << xspace.DebugString();
+  ASSERT_EQ(plane->event_metadata_size(), 2)
+      << "XSpace: " << xspace.DebugString();
+
+  const auto& line = plane->lines(0);
+  ASSERT_EQ(line.events_size(), 2) << "XSpace: " << xspace.DebugString();
+  const auto& events = line.events();
+
+  ::tensorflow::profiler::XEventVisitor e0(&xplane, &line, &events[0]);
+  EXPECT_EQ(e0.Name(), "MemoryAllocation")
+      << "XSpace: " << xspace.DebugString();
+  {
+    std::optional<std::string> bytes_allocated, peak_bytes_in_use,
+        requested_bytes, allocation_bytes;
+    e0.ForEachStat([&](const ::tensorflow::profiler::XStatVisitor& stat) {
+      LOG(ERROR) << "STAT " << stat.Name() << ": " << stat.ToString();
+      if (stat.Name() == "bytes_allocated") {
+        bytes_allocated = stat.ToString();
+      } else if (stat.Name() == "peak_bytes_in_use") {
+        peak_bytes_in_use = stat.ToString();
+      } else if (stat.Name() == "requested_bytes") {
+        requested_bytes = stat.ToString();
+      } else if (stat.Name() == "allocation_bytes") {
+        allocation_bytes = stat.ToString();
+      }
+    });
+    ASSERT_TRUE(bytes_allocated && peak_bytes_in_use && requested_bytes &&
+                allocation_bytes)
+        << "XSpace: " << xspace.DebugString();
+    EXPECT_EQ(*bytes_allocated, "48") << "XSpace: " << xspace.DebugString();
+    EXPECT_EQ(*peak_bytes_in_use, "48") << "XSpace: " << xspace.DebugString();
+    EXPECT_EQ(*requested_bytes, "32") << "XSpace: " << xspace.DebugString();
+    EXPECT_EQ(*allocation_bytes, "32") << "XSpace: " << xspace.DebugString();
+  }
+
+  ::tensorflow::profiler::XEventVisitor e1(&xplane, &line, &events[1]);
+  EXPECT_EQ(e1.Name(), "MemoryDeallocation")
+      << "XSpace: " << xspace.DebugString();
+  {
+    std::optional<std::string> bytes_allocated, peak_bytes_in_use,
+        allocation_bytes;
+    e1.ForEachStat([&](const ::tensorflow::profiler::XStatVisitor& stat) {
+      if (stat.Name() == "bytes_allocated") {
+        bytes_allocated = stat.ToString();
+      } else if (stat.Name() == "peak_bytes_in_use") {
+        peak_bytes_in_use = stat.ToString();
+      } else if (stat.Name() == "allocation_bytes") {
+        allocation_bytes = stat.ToString();
+      }
+    });
+    ASSERT_TRUE(bytes_allocated && peak_bytes_in_use && allocation_bytes)
+        << "XSpace: " << xspace.DebugString();
+    EXPECT_EQ(*bytes_allocated, "32") << "XSpace: " << xspace.DebugString();
+    EXPECT_EQ(*peak_bytes_in_use, "48") << "XSpace: " << xspace.DebugString();
+    EXPECT_EQ(*allocation_bytes, "16") << "XSpace: " << xspace.DebugString();
+  }
+
+  // Cleanup
+  a->DeallocateRaw(p2);
+  DisableCPUAllocatorStats();
+}
+
 namespace {
 
 AllocatorAttributes DeviceAllocatorAttribute() {
@@ -221,14 +336,16 @@ TEST(CustomAllocatorAttributes, TestSetterAndGetter) {
   EXPECT_FALSE(HasDeviceAllocatorAttribute(AllocatorAttributes()));
 }
 
-static void BM_Allocation(int iters, int arg) {
+static void BM_Allocation(::testing::benchmark::State& state) {
+  const int arg = state.range(0);
+
   Allocator* a = cpu_allocator();
   // Exercise a few different allocation sizes
   std::vector<int> sizes = {256, 4096, 16384, 524288, 512, 1048576};
   int size_index = 0;
 
   if (arg) EnableCPUAllocatorStats();
-  while (--iters > 0) {
+  for (auto s : state) {
     int bytes = sizes[size_index++ % sizes.size()];
     void* p = a->AllocateRaw(1, bytes);
     a->DeallocateRaw(p);

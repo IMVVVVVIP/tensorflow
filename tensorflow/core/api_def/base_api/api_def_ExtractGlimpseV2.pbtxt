@@ -49,13 +49,14 @@ END
     description: <<END
 indicates if the noise should be generated using a
 uniform distribution or a Gaussian distribution.
+It should not be `True` when `noise` is not `uniform`.
 END
   }
   attr {
     name: "noise"
     description: <<END
 indicates if the noise should `uniform`, `gaussian`, or
-`zero`. The default is `uniform` which means the the noise type
+`zero`. The default is `uniform` which means the noise type
 will be decided by `uniform_noise`.
 END
   }

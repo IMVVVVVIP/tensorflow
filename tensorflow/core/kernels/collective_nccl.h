@@ -22,25 +22,20 @@ namespace tensorflow {
 
 class NcclBase : public CollectiveImplementationInterface {
  public:
-  explicit NcclBase(CollectiveType type, const string& name);
+  explicit NcclBase(CollectiveType type, const std::string& name);
   ~NcclBase() override = default;
 
   // No-op for this collective implementation.
-  Status InitializeCollectiveParams(CollectiveParams* col_params) override;
+  absl::Status InitializeCollectiveParams(
+      CollectiveParams* col_params) override;
 
   // Initializes the device objects and device localities.
-  Status InitializeCollectiveContext(
+  absl::Status InitializeCollectiveContext(
       std::shared_ptr<CollectiveContext> col_ctx) override;
 
-  // Initialize nccl communicator key.
-  Status InitializeCollectiveGroupRuntimeDetails(
-      CollGroupRuntimeDetails* col_group_runtime_details) override;
-
  protected:
-  const string NcclCollectiveKey(const string& exec_key, int step_id);
-
   const CollectiveType type_;
-  const string name_;
+  const std::string name_;
   std::shared_ptr<CollectiveContext> col_ctx_;
   const CollectiveParams* col_params_;  // Not owned
 };

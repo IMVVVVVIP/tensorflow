@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"runtime"
 	"testing"
 )
 
@@ -77,14 +78,6 @@ func TestNewTensor(t *testing.T) {
 		// native ints not supported
 		int(5),
 		[]int{5},
-		// Mismatched dimensions
-		[][]float32{{1, 2, 3}, {4}},
-		// Mismatched dimensions. Should return "mismatched slice lengths" error instead of "BUG"
-		[][][]float32{{{1, 2}, {3, 4}}, {{1}, {3}}},
-		// Mismatched dimensions. Should return error instead of valid tensor
-		[][][]float32{{{1, 2}, {3, 4}}, {{1}, {3}}, {{1, 2, 3}, {2, 3, 4}}},
-		// Mismatched dimensions for strings
-		[][]string{{"abc"}, {"abcd", "abcd"}},
 	}
 
 	for _, test := range tests {
@@ -100,9 +93,8 @@ func TestNewTensor(t *testing.T) {
 		// Test that encode and decode gives the same value. We skip arrays because
 		// they're returned as slices.
 		if reflect.TypeOf(test.value).Kind() != reflect.Array {
-			got := tensor.Value()
-			if !reflect.DeepEqual(test.value, got) {
-				t.Errorf("encode/decode: got %v, want %v", got, test.value)
+			if !reflect.DeepEqual(test.value, tensor.Value()) {
+				t.Errorf("encode/decode: got %v, want %v", tensor.Value(), test.value)
 			}
 		}
 	}
@@ -116,6 +108,43 @@ func TestNewTensor(t *testing.T) {
 			t.Errorf("NewTensor(%v) = %v, want nil", test, tensor)
 		}
 	}
+}
+
+func TestNewTensorValidateDimensions(t *testing.T) {
+	var errorTests = []interface{}{
+		// Mismatched dimensions
+		[][]float32{{1, 2, 3}, {4}},
+		// Mismatched dimensions. Should return "mismatched slice lengths" error instead of "BUG"
+		[][][]float32{{{1, 2}, {3, 4}}, {{1}, {3}}},
+		// Mismatched dimensions. Should return error instead of valid tensor
+		[][][]float32{{{1, 2}, {3, 4}}, {{1}, {3}}, {{1, 2, 3}, {2, 3, 4}}},
+		// Mismatched dimensions for strings
+		[][]string{{"abc"}, {"abcd", "abcd"}},
+	}
+
+	// Test that an error is returned in response to mismatched dimensions
+	// and that no tensor is returned.  Dimensions should be checked and a
+	// mismatch caught in NewTensor prior to actually allocating a new
+	// tensor in cgo. Given how string tensors are encoded and how tensors
+	// are freed, a mismatch caught partway through encoding a string
+	// tensor may result in a segfault, once the finalizer is called. A
+	// single run of this test is not reliable at producing a segfault,
+	// hence iteration. See github.com/tensorflow/tensorflow/pull/52257
+	// for some detail on the issue.
+	for i := 0; i < 1e5; i++ {
+		for _, test := range errorTests {
+			tensor, err := NewTensor(test)
+			if err == nil {
+				t.Errorf("NewTensor(%v): %v", test, err)
+			}
+			if tensor != nil {
+				t.Errorf("NewTensor(%v) = %v, want nil", test, tensor)
+			}
+		}
+	}
+
+	// Execute any finalizers (blocking).
+	runtime.GC()
 }
 
 func TestTensorSerialization(t *testing.T) {
@@ -276,6 +305,14 @@ func TestReadTensorReadAll(t *testing.T) {
 	}
 }
 
+func TestReadTensorNegativeDimention(t *testing.T) {
+	buf := new(bytes.Buffer)
+	_, err := ReadTensor(Int32, []int64{-1, 1}, buf)
+	if err == nil {
+		t.Fatal("ReadTensor should failed if shape contains negative dimention")
+	}
+}
+
 func benchmarkNewTensor(b *testing.B, v interface{}) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -349,4 +386,32 @@ func BenchmarkTensor(b *testing.B) {
 		}
 	})
 
+}
+
+func TestReshape(t *testing.T) {
+	tensor, err := NewTensor([]int64{1, 2})
+	if err != nil {
+		t.Fatalf("Unable to create new tensor: %v", err)
+	}
+
+	if got, want := len(tensor.Shape()), 1; got != want {
+		t.Fatalf("len(tensor.Shape()): got %d, want %d", got, want)
+	}
+	if got, want := tensor.Shape()[0], int64(2); got != want {
+		t.Errorf("tensor.Shape()[0]: got %d, want %d", got, want)
+	}
+
+	if err := tensor.Reshape([]int64{1, 2}); err != nil {
+		t.Fatalf("tensor.Reshape([1, 2]) failed: %v", err)
+	}
+
+	if got, want := len(tensor.Shape()), 2; got != want {
+		t.Fatalf("After reshape, len(tensor.Shape()): got %d, want %d", got, want)
+	}
+	if got, want := tensor.Shape()[0], int64(1); got != want {
+		t.Errorf("After reshape, tensor.Shape()[0]: got %d, want %d", got, want)
+	}
+	if got, want := tensor.Shape()[1], int64(2); got != want {
+		t.Errorf("After reshape, tensor.Shape()[1]: got %d, want %d", got, want)
+	}
 }

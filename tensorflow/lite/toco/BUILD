@@ -1,65 +1,57 @@
-load(
-    "//tensorflow/core/platform:build_config.bzl",
-    "tf_proto_library_cc",
-    "tf_proto_library_py",
-)
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_python//python:proto.bzl", "py_proto_library")
 load(
     "//tensorflow:tensorflow.bzl",
     "tf_cc_binary",
     "tf_cc_test",
     "tf_copts",
 )
+load("//tensorflow:tensorflow.default.bzl", "get_compatible_with_portable")
+load(
+    "//tensorflow/core/platform:build_config.bzl",
+    "tf_proto_library",
+)
+load("//tensorflow/lite/toco:api_visibility.bzl", "TOCO_API_VISIBILITY")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:LICENSE"],
     default_visibility = ["//visibility:public"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
-tf_proto_library_cc(
+# OSS only: This target is header-only. Link `types_proto_cc_impl` only to
+# `libtensorflow_framework.so` via `lib_internal_impl`. Do NOT link `types_flags_proto_cc_impl`
+# directly unless the target does not link `libtensorflow_framework.so`.
+tf_proto_library(
     name = "types_proto",
     srcs = ["types.proto"],
-    cc_api_version = 2,
+    make_default_target_header_only = True,
     visibility = ["//visibility:public"],
 )
 
-tf_proto_library_cc(
+# OSS only: This target is header-only. Link `toco_flags_proto_cc_impl` only to
+# `libtensorflow_framework.so` via `lib_internal_impl`. Do NOT link `toco_flags_proto_cc_impl`
+# directly unless the target does not link `libtensorflow_framework.so`.
+tf_proto_library(
     name = "toco_flags_proto",
     srcs = ["toco_flags.proto"],
-    cc_api_version = 2,
-    protodeps = [":types_proto"],
+    make_default_target_header_only = True,
+    protodeps = [
+        "//tensorflow/compiler/mlir/quantization/stablehlo:quantization_options_proto",
+        "//tensorflow/compiler/mlir/quantization/stablehlo:quantization_config_proto",
+        "//tensorflow/compiler/mlir/lite/debug:debug_options_proto",
+        ":types_proto",
+    ],
     visibility = ["//visibility:public"],
 )
 
-tf_proto_library_cc(
+# OSS only: This target is header-only. Link `model_flags_proto_cc_impl` only to
+# `libtensorflow_framework.so` via `lib_internal_impl`. Do NOT link `model_flags_proto_cc_impl`
+# directly unless the target does not link `libtensorflow_framework.so`.
+tf_proto_library(
     name = "model_flags_proto",
     srcs = ["model_flags.proto"],
-    cc_api_version = 2,
-    protodeps = [":types_proto"],
-    visibility = ["//visibility:public"],
-)
-
-tf_proto_library_py(
-    name = "types_proto",
-    srcs = [
-        "types.proto",
-    ],
-    visibility = ["//visibility:public"],
-)
-
-tf_proto_library_py(
-    name = "toco_flags_proto",
-    srcs = [
-        "toco_flags.proto",
-    ],
-    protodeps = [":types_proto"],
-    visibility = ["//visibility:public"],
-)
-
-tf_proto_library_py(
-    name = "model_flags_proto",
-    srcs = [
-        "model_flags.proto",
-    ],
+    make_default_target_header_only = True,
     protodeps = [":types_proto"],
     visibility = ["//visibility:public"],
 )
@@ -75,8 +67,9 @@ cc_library(
         "runtime/common.h",
         "runtime/types.h",
     ],
+    compatible_with = get_compatible_with_portable(),
     linkstatic = 1,
-    visibility = ["//visibility:public"],
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         "//tensorflow/lite/kernels/internal:common",
         "//tensorflow/lite/kernels/internal:compatibility",
@@ -94,7 +87,8 @@ cc_library(
     hdrs = [
         "model.h",
     ],
-    visibility = ["//visibility:public"],
+    compatible_with = get_compatible_with_portable(),
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         ":model_flags_proto_cc",
         ":runtime",
@@ -112,7 +106,8 @@ cc_library(
     hdrs = [
         "toco_graphviz_dump_options.h",
     ],
-    visibility = ["//visibility:public"],
+    compatible_with = get_compatible_with_portable(),
+    visibility = TOCO_API_VISIBILITY,
 )
 
 cc_library(
@@ -123,7 +118,8 @@ cc_library(
     hdrs = [
         "toco_cmdline_flags.h",
     ],
-    visibility = ["//visibility:public"],
+    compatible_with = get_compatible_with_portable(),
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         ":model_cmdline_flags",
         ":toco_flags_proto_cc",
@@ -131,6 +127,8 @@ cc_library(
         ":types_proto_cc",
         "//tensorflow/core:framework_internal",
         "//tensorflow/core:lib",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:optional",
     ],
@@ -146,7 +144,8 @@ cc_library(
         "args.h",
         "model_cmdline_flags.h",
     ],
-    visibility = ["//visibility:public"],
+    compatible_with = get_compatible_with_portable(),
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         ":model_flags_proto_cc",
         ":toco_graphviz_dump_options",
@@ -154,6 +153,8 @@ cc_library(
         ":types_proto_cc",
         "//tensorflow/core:framework_internal",
         "//tensorflow/core:lib",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -168,10 +169,15 @@ cc_library(
         "toco_port.h",
         "toco_types.h",
     ],
+    compatible_with = get_compatible_with_portable(),
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         "//tensorflow/core:framework_lite",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/strings:string_view",
         "@com_google_protobuf//:protobuf_headers",
     ],
 )
@@ -288,7 +294,8 @@ cc_library(
         "graph_transformations/identify_util.h",
         "graph_transformations/lstm_utils.h",
     ],
-    visibility = ["//visibility:public"],
+    compatible_with = get_compatible_with_portable(),
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         ":model",
         ":model_flags_proto_cc",
@@ -299,9 +306,15 @@ cc_library(
         "//tensorflow/core:lib",
         "//tensorflow/lite/kernels/internal:quantization_util",
         "//tensorflow/lite/kernels/internal:strided_slice_logic",
+        "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:inlined_vector",
-        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:absl_check",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/strings:string_view",
     ],
 )
 
@@ -323,24 +336,18 @@ cc_library(
         "tensorflow_util.h",
         "toco_tooling.h",
     ],
-    copts = tf_copts() + select({
-        "//tensorflow:macos": ["-DTOCO_SUPPORT_PORTABLE_PROTOS=0"],
-        "//conditions:default": [],
-    }),
-    visibility = ["//visibility:public"],
+    compatible_with = get_compatible_with_portable(),
+    copts = tf_copts(),
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         ":graph_transformations",
         ":model",
         ":model_flags_proto_cc",
-        ":types_proto_cc",
         ":runtime",
-        ":toco_graphviz_dump_options",
         ":toco_flags_proto_cc",
         ":toco_port",
         ":tooling_util",
-        "@com_google_protobuf//:protobuf_headers",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
+        ":types_proto_cc",
         "//tensorflow/core:core_cpu_lib",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
@@ -348,10 +355,13 @@ cc_library(
         "//tensorflow/lite/toco/tensorflow_graph_matching:resolve_cluster",
         "//tensorflow/lite/toco/tflite:export",
         "//tensorflow/lite/toco/tflite:import",
-    ] + select({
-        # Placeholder for internal macOS rule.
-        "//conditions:default": [],
-    }),
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_protobuf//:protobuf_headers",
+    ],
 )
 
 tf_cc_test(
@@ -380,8 +390,9 @@ cc_library(
         "dump_graphviz.h",
         "tooling_util.h",
     ],
+    compatible_with = get_compatible_with_portable(),
     copts = tf_copts(),
-    visibility = ["//visibility:public"],
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         ":model",
         ":model_flags_proto_cc",
@@ -392,9 +403,12 @@ cc_library(
         ":types_proto_cc",
         "//tensorflow/core:lib",
         "//tensorflow/lite/kernels/internal:types",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/log:vlog_is_on",
         "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
-        "@com_google_protobuf//:protobuf_headers",
         "@com_googlesource_code_re2//:re2",
     ],
 )
@@ -408,6 +422,7 @@ tf_cc_test(
         ":tooling_util",
         "//tensorflow/core:lib",
         "//tensorflow/lite/testing:util",
+        "@com_google_absl//absl/status",
         "@com_google_googletest//:gtest",
     ],
 )
@@ -418,7 +433,8 @@ cc_library(
     name = "toco_convert",
     srcs = ["toco_convert.cc"],
     hdrs = ["toco_convert.h"],
-    visibility = ["//visibility:public"],
+    compatible_with = get_compatible_with_portable(),
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         ":model",
         ":model_cmdline_flags",
@@ -428,6 +444,8 @@ cc_library(
         ":toco_port",
         ":toco_tooling",
         ":types_proto_cc",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "//tensorflow/core:lib",
         # We cannot embed the core:ops dependency directly into :toco_tooling as
@@ -439,7 +457,7 @@ cc_library(
 tf_cc_binary(
     name = "toco",
     srcs = ["toco.cc"],
-    visibility = ["//visibility:public"],
+    visibility = TOCO_API_VISIBILITY,
     deps = [
         ":model",
         ":model_cmdline_flags",
@@ -450,6 +468,7 @@ tf_cc_binary(
         ":toco_port",
         ":toco_tooling",
         ":types_proto_cc",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "//tensorflow/core:lib",
         # We cannot embed the core:ops dependency directly into :toco_tooling as
@@ -520,3 +539,23 @@ tf_cc_test(
         "@com_google_googletest//:gtest",
     ],
 )
+
+# copybara:uncomment_begin(google-only)
+# py_proto_library(
+#     name = "model_flags_proto_py",
+#     visibility = ["//visibility:public"],
+#     deps = [":model_flags_proto"],
+# )
+#
+# py_proto_library(
+#     name = "toco_flags_proto_py",
+#     visibility = ["//visibility:public"],
+#     deps = [":toco_flags_proto"],
+# )
+#
+# py_proto_library(
+#     name = "types_proto_py",
+#     visibility = ["//visibility:public"],
+#     deps = [":toco_flags_proto"],
+# )
+# copybara:uncomment_end

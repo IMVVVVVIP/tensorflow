@@ -86,11 +86,11 @@ string TRTEngineCacheResource::DebugString() const {
   for (const auto& item : cache_) {
     mutex_lock lock(item.second->mu);
     oss << TensorShapeUtils::ShapeListString(item.first) << ": " << hex
-        << "ICudaEngine: " << item.second->cuda_engine.get() << ", "
+        << "ICudaEngine: " << item.second->GetCudaEngine() << ", "
         << "IExecutionContext: ";
-    for (auto& ctx : item.second->execution_context) {
-      oss << ctx.get() << ", ";
-    }
+    absl::c_for_each(
+        item.second->execution_contexts,
+        [&](const ExecutionContext& ctx) { oss << ctx.get() << ","; });
     oss << dec << endl;
   }
   return oss.str();
@@ -99,7 +99,7 @@ string TRTEngineCacheResource::DebugString() const {
 EngineContext* TRTEngineCacheResource::GetEngineContext(
     const std::vector<TensorShape>& input_shapes) {
   EngineContext* engine_context = nullptr;
-  int64 min_matched_batch_size = kint64max;
+  int64 min_matched_batch_size = std::numeric_limits<int64_t>::max();
   for (const auto& pair : cache_) {
     const std::vector<TensorShape>& cached_input_shapes = pair.first;
     // This should not happen, but just for safety.
@@ -120,7 +120,7 @@ EngineContext* TRTEngineCacheResource::GetEngineContext(
 }
 
 EngineContext* TRTEngineCacheResource::GetEngineContext(const int profile_id) {
-  if (profile_id >= profiles_.GetNumProfiles()) {
+  if (profiles_.NeedProfiles() && profile_id >= profiles_.GetNumProfiles()) {
     LOG(ERROR) << "Out of range: profile_id " << profile_id
                << " is larger than number of profiles "
                << profiles_.GetNumProfiles();

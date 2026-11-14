@@ -21,15 +21,18 @@ limitations under the License.
 #define EIGEN_USE_THREADS
 
 #define GEMMLOWP_ALLOW_SLOW_SCALAR_FALLBACK
+#include "absl/status/status.h"
 #include "public/gemmlowp.h"
 #include "tensorflow/core/framework/kernel_shape_util.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/kernels/conv_ops.h"
 #include "tensorflow/core/kernels/meta_support.h"
 #include "tensorflow/core/kernels/quantization_utils.h"
 #include "tensorflow/core/kernels/reference_gemm.h"
 #include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/util/padding.h"
 
 namespace tensorflow {
@@ -60,15 +63,16 @@ class ReferenceConvFunctor {
                   int output_shift, int output_offset, int output_mult) {
     // Set up some constants we need for the output down-shifting and
     // saturation.
-    const int32 highest = static_cast<int32>(Eigen::NumTraits<T3>::highest());
-    const int32 lowest = static_cast<int32>(Eigen::NumTraits<T3>::lowest());
+    const int32_t highest =
+        static_cast<int32_t>(Eigen::NumTraits<T3>::highest());
+    const int32_t lowest = static_cast<int32_t>(Eigen::NumTraits<T3>::lowest());
 
     // When we're converting the 32 bit accumulator to a lower bit depth, we
     // need to add on 0.5 in fixed-point terms to make the operation round half
     // up towards positive infinity, rather than a floor.
     // We also need to watch out for the case when there's no down shift,
     // because a left shift by a negative number gives undefined results.
-    const int32 rounding = (output_shift < 1) ? 0 : (1 << (output_shift - 1));
+    const int32_t rounding = (output_shift < 1) ? 0 : (1 << (output_shift - 1));
 
     // The two different padding modes we support can be a bit confusing. SAME
     // means we're trying to produce an output image that's the same size as the
@@ -128,14 +132,14 @@ class ReferenceConvFunctor {
             */
             const int in_x_origin = (out_x * stride) - filter_left_offset;
             const int in_y_origin = (out_y * stride) - filter_top_offset;
-            int32 total = 0;
+            int32_t total = 0;
             for (int filter_y = 0; filter_y < filter_height; ++filter_y) {
               for (int filter_x = 0; filter_x < filter_width; ++filter_x) {
                 for (int in_channel = 0; in_channel < input_depth;
                      ++in_channel) {
                   const int in_x = in_x_origin + filter_x;
                   const int in_y = in_y_origin + filter_y;
-                  int32 input_value;
+                  int32_t input_value;
                   // If the location is outside the bounds of the input image,
                   // use zero as a default value.
                   if ((in_x >= 0) && (in_x < input_width) && (in_y >= 0) &&
@@ -148,7 +152,7 @@ class ReferenceConvFunctor {
                     // We're promoting the T1 type to a higher bit depth here as
                     // we do the subtraction.
                     input_value =
-                        static_cast<int32>(input_source_value) - input_offset;
+                        static_cast<int32_t>(input_source_value) - input_offset;
                   } else {
                     input_value = 0;
                   }
@@ -158,8 +162,8 @@ class ReferenceConvFunctor {
                                   (filter_x * input_depth * filter_count) +
                                   (in_channel * filter_count) + out_channel];
                   // Another promotion to 32 bit, as above.
-                  const int32 filter_value =
-                      static_cast<int32>(filter_source_value) - filter_offset;
+                  const int32_t filter_value =
+                      static_cast<int32_t>(filter_source_value) - filter_offset;
                   total += (input_value * filter_value);
                 }
               }
@@ -171,8 +175,8 @@ class ReferenceConvFunctor {
                  output_shift);
             // We need to saturate the results against the largest and smallest
             // values that can be represented in this type.
-            const int32 top_clamped_output = std::min(output, highest);
-            const int32 clamped_output = std::max(top_clamped_output, lowest);
+            const int32_t top_clamped_output = std::min(output, highest);
+            const int32_t clamped_output = std::max(top_clamped_output, lowest);
             output_data[(batch * output_height * output_width * filter_count) +
                         (out_y * output_width * filter_count) +
                         (out_x * filter_count) + out_channel] = clamped_output;
@@ -227,8 +231,12 @@ class Im2ColConvFunctor {
       return;
     }
 
-    CHECK_GT(output_width, 0);
-    CHECK_GT(output_height, 0);
+    OP_REQUIRES(
+        context, output_width > 0,
+        absl::InvalidArgumentError("output_width must be strictly positive"));
+    OP_REQUIRES(
+        context, output_height > 0,
+        absl::InvalidArgumentError("output_height must be strictly positive"));
     int filter_left_offset;
     int filter_top_offset;
     if (padding == VALID) {
@@ -255,9 +263,12 @@ class Im2ColConvFunctor {
     // by the width, then the height. This is the standard memory order in the
     // image world if it helps to visualize it.
     const int filter_value_count = filter_width * filter_height * input_depth;
-    const int64 patches_per_chunk =
+    OP_REQUIRES(context, filter_value_count > 0,
+                absl::InvalidArgumentError(
+                    "filter patch must contain at least one element"));
+    const int64_t patches_per_chunk =
         kMaxChunkSize / (filter_value_count * sizeof(T1));
-    const int64 chunk_value_count =
+    const int64_t chunk_value_count =
         (kMaxChunkSize + (sizeof(T1) - 1)) / sizeof(T1);
     // TODO(petewarden) - Memory allocation can be very slow on Android. Can we
     // optimize this by keeping the scratch buffer around?
@@ -266,7 +277,7 @@ class Im2ColConvFunctor {
     // use TensorFlow's resource management to ensure that the memory will be
     // released when the session is over.
     Im2ColBufferResource<T1, chunk_value_count>* im2col_buffer_resource;
-    std::function<Status(Im2ColBufferResource<T1, chunk_value_count>**)>
+    std::function<absl::Status(Im2ColBufferResource<T1, chunk_value_count>**)>
         creator = [](Im2ColBufferResource<T1, chunk_value_count>** resource) {
 #ifdef _MSC_VER
           // MSVC complains about the capture of chunk_value_count which oddly
@@ -276,7 +287,7 @@ class Im2ColConvFunctor {
               (kMaxChunkSize + (sizeof(T1) - 1)) / sizeof(T1);
 #endif
           *resource = new Im2ColBufferResource<T1, chunk_value_count>();
-          return Status::OK();
+          return absl::OkStatus();
         };
     OP_REQUIRES_OK(context, context->resource_manager()->LookupOrCreate(
                                 "Conv2d", "im2col_buffer",
@@ -289,19 +300,19 @@ class Im2ColConvFunctor {
     core::ScopedUnref unref_buffer(im2col_buffer_resource);
     T1* im2col_buffer = im2col_buffer_resource->data;
 
-    const int64 patch_count = (input_batches * output_height * output_width);
-    const int64 chunk_count =
+    const int64_t patch_count = (input_batches * output_height * output_width);
+    const int64_t chunk_count =
         (patch_count + (patches_per_chunk - 1)) / patches_per_chunk;
 
-    for (int64 chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
-      const int64 patch_index_start = chunk_index * patches_per_chunk;
-      const int64 patch_index_end =
+    for (int64_t chunk_index = 0; chunk_index < chunk_count; ++chunk_index) {
+      const int64_t patch_index_start = chunk_index * patches_per_chunk;
+      const int64_t patch_index_end =
           std::min(patch_index_start + patches_per_chunk, patch_count);
-      for (int64 patch_index = patch_index_start; patch_index < patch_index_end;
-           ++patch_index) {
-        const int64 batch = patch_index / (output_height * output_width);
-        const int64 out_y = (patch_index / output_width) % output_height;
-        const int64 out_x = patch_index % output_width;
+      for (int64_t patch_index = patch_index_start;
+           patch_index < patch_index_end; ++patch_index) {
+        const int64_t batch = patch_index / (output_height * output_width);
+        const int64_t out_y = (patch_index / output_width) % output_height;
+        const int64_t out_x = patch_index % output_width;
         const T1* input_batch_start =
             input_data + (batch * input_height * input_width * input_depth);
         const int in_y_origin = (out_y * stride) - filter_top_offset;
@@ -397,9 +408,9 @@ class Im2ColConvFunctor {
         // The gemmlowp optimized library only works for a particular set of
         // data types, so check if we meet those requirements and fall back to a
         // slower reference implementation if not.
-        const uint8* im2col_data_as_uint8 = &(im2col_buffer->value);
-        const uint8* filter_data_as_uint8 = &(filter_data->value);
-        int32* output_data_as_int32 = &(chunk_output_data->value);
+        const uint8_t* im2col_data_as_uint8 = &(im2col_buffer->value);
+        const uint8_t* filter_data_as_uint8 = &(filter_data->value);
+        int32_t* output_data_as_int32 = &(chunk_output_data->value);
         // All of the transpose_* variables are currently compile-time consts,
         // so we could just hard-code these values too, but that would break if
         // anybody changed those values in the future (e.g. to match the ability
@@ -453,27 +464,27 @@ class QuantizedConv2DOp : public OpKernel {
       : OpKernel(context) {
     OP_REQUIRES_OK(context, context->GetAttr("strides", &strides_));
     OP_REQUIRES(context, strides_.size() == 4,
-                errors::InvalidArgument("Sliding window strides field must "
-                                        "specify 4 dimensions"));
+                absl::InvalidArgumentError("Sliding window strides field must "
+                                           "specify 4 dimensions"));
     OP_REQUIRES(context, strides_[1] == strides_[2],
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(
                     "Current implementation only supports equal length "
                     "strides in the row and column dimensions."));
-    OP_REQUIRES(
-        context, (strides_[0] == 1 && strides_[3] == 1),
-        errors::InvalidArgument("Current implementation does not yet support "
-                                "strides in the batch and depth dimensions."));
-    std::vector<int32> dilations;
+    OP_REQUIRES(context, (strides_[0] == 1 && strides_[3] == 1),
+                absl::InvalidArgumentError(
+                    "Current implementation does not yet support "
+                    "strides in the batch and depth dimensions."));
+    std::vector<int32_t> dilations;
     OP_REQUIRES_OK(context, context->GetAttr("dilations", &dilations));
     OP_REQUIRES(context, dilations.size() == 4,
-                errors::InvalidArgument("Dilations field must "
-                                        "specify 4 dimensions"));
+                absl::InvalidArgumentError("Dilations field must "
+                                           "specify 4 dimensions"));
     OP_REQUIRES(context, dilations[1] == 1 && dilations[2] == 1,
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(
                     "Current implementation only supports dilated rate as 1 "
                     "in the row and column dimensions."));
     OP_REQUIRES(context, (dilations[0] == 1 && dilations[3] == 1),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(
                     "Current implementation does not yet support "
                     "dilations in the batch and depth dimensions."));
     OP_REQUIRES_OK(context, context->GetAttr("padding", &padding_));
@@ -484,70 +495,110 @@ class QuantizedConv2DOp : public OpKernel {
     // [ batch, in_rows, in_cols, in_depth ]
     const Tensor& input = context->input(0);
 
+    // validate for non zero dimensions of input.
+    int input_dims = input.shape().dims();
+    for (int i = 0; i < input_dims; ++i) {
+      OP_REQUIRES(context, input.shape().dim_size(i) != 0,
+                  absl::InvalidArgumentError(
+                      "Invalid input: Shapes dimension cannot be 0."));
+    }
+
     // Input filter is of the following dimensions:
     // [ filter_rows, filter_cols, in_depth, out_depth]
     const Tensor& filter = context->input(1);
 
     // For 2D convolution, there should be 4 dimensions.
-    OP_REQUIRES(context, input.dims() == 4,
-                errors::InvalidArgument("input must be 4-dimensional",
-                                        input.shape().DebugString()));
-    OP_REQUIRES(context, filter.dims() == 4,
-                errors::InvalidArgument("filter must be 4-dimensional: ",
-                                        filter.shape().DebugString()));
+    OP_REQUIRES(
+        context, input.dims() == 4,
+        absl::InvalidArgumentError(absl::StrCat(
+            "input must be rank 4 but is rank ", input.shape().dims())));
+    OP_REQUIRES(
+        context, filter.dims() == 4,
+        absl::InvalidArgumentError(absl::StrCat(
+            "filter must be rank 4 but is rank ", filter.shape().dims())));
+    OP_REQUIRES(context, filter.dim_size(0) > 0,
+                absl::InvalidArgumentError(
+                    absl::StrCat("filter_rows must be greater than 0, but got ",
+                                 filter.dim_size(0))));
+    OP_REQUIRES(context, filter.dim_size(1) > 0,
+                absl::InvalidArgumentError(
+                    absl::StrCat("filter_cols must be greater than 0, but got ",
+                                 filter.dim_size(1))));
+
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(context->input(2).shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("min_input must be rank 0 but is rank ",
+                                 context->input(2).shape().dims())));
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(context->input(3).shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("max_input must be rank 0 but is rank ",
+                                 context->input(3).shape().dims())));
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(context->input(4).shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("min_filter must be rank 0 but is rank ",
+                                 context->input(4).shape().dims())));
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(context->input(5).shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("max_filter must be rank 0 but is rank ",
+                                 context->input(5).shape().dims())));
 
     const float min_input = context->input(2).flat<float>()(0);
     const float max_input = context->input(3).flat<float>()(0);
     const float min_filter = context->input(4).flat<float>()(0);
     const float max_filter = context->input(5).flat<float>()(0);
-    const int32 offset_input =
+    const int32_t offset_input =
         FloatToQuantizedUnclamped<T1>(0.0f, min_input, max_input);
-    const int32 offset_filter =
+    const int32_t offset_filter =
         FloatToQuantizedUnclamped<T2>(0.0f, min_filter, max_filter);
-    const int32 offset_output = 0;
-    const int32 mult_output = 1;
-    const int32 shift_output = 0;
+    const int32_t offset_output = 0;
+    const int32_t mult_output = 1;
+    const int32_t shift_output = 0;
 
     // The last dimension for input is in_depth. It must be the same as the
     // filter's in_depth.
-    const int64 in_depth = input.dim_size(3);
+    const int64_t in_depth = input.dim_size(3);
     OP_REQUIRES(context, in_depth == filter.dim_size(2),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "input and filter must have the same depth: ", in_depth,
-                    " vs ", filter.dim_size(2)));
+                    " vs ", filter.dim_size(2))));
 
     // The last dimension for filter is out_depth.
-    const int64 out_depth = filter.dim_size(3);
+    const int64_t out_depth = filter.dim_size(3);
 
     // The second dimension for input is rows/height.
     // The first dimension for filter is rows/height.
-    const int64 input_rows = input.dim_size(1);
-    const int64 filter_rows = filter.dim_size(0);
+    const int64_t input_rows = input.dim_size(1);
+    const int64_t filter_rows = filter.dim_size(0);
 
     // The third dimension for input is columns/width.
     // The second dimension for filter is columns/width.
-    const int64 input_cols = input.dim_size(2);
-    const int64 filter_cols = filter.dim_size(1);
+    const int64_t input_cols = input.dim_size(2);
+    const int64_t filter_cols = filter.dim_size(1);
 
     // The first dimension for input is batch.
-    const int64 batch = input.dim_size(0);
+    const int64_t batch = input.dim_size(0);
 
     // For now we take the stride from the second dimension only (we
     // assume row = col stride, and do not support striding on the
     // batch or depth dimension).
     const int stride = strides_[1];
 
-    int64 out_rows = 0, out_cols = 0, pad_rows = 0, pad_cols = 0;
-    OP_REQUIRES_OK(context,
-                   GetWindowedOutputSize(input_rows, filter_rows, stride,
-                                         padding_, &out_rows, &pad_rows));
-    OP_REQUIRES_OK(context,
-                   GetWindowedOutputSize(input_cols, filter_cols, stride,
-                                         padding_, &out_cols, &pad_cols));
-    CHECK_GT(batch, 0);
-    CHECK_GT(out_rows, 0);
-    CHECK_GT(out_cols, 0);
-    CHECK_GT(out_depth, 0);
+    int64_t out_rows = 0, out_cols = 0, pad_rows = 0, pad_cols = 0;
+    OP_REQUIRES_OK(context, GetWindowedOutputSize(
+                                input_rows, filter_rows, /*dilation_rate=*/1,
+                                stride, padding_, &out_rows, &pad_rows));
+    OP_REQUIRES_OK(context, GetWindowedOutputSize(
+                                input_cols, filter_cols, /*dilation_rate=*/1,
+                                stride, padding_, &out_cols, &pad_cols));
+    OP_REQUIRES(context, out_rows > 0,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "out_rows must be greater than 0, but got ", out_rows)));
+    OP_REQUIRES(context, out_cols > 0,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "out_cols must be greater than 0, but got ", out_cols)));
+    OP_REQUIRES(context, out_depth > 0,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "out_depth must be greater than 0, but got ", out_depth)));
     TensorShape out_shape({batch, out_rows, out_cols, out_depth});
 
     // Output tensor is of the following dimensions:
@@ -580,7 +631,7 @@ class QuantizedConv2DOp : public OpKernel {
   }
 
  private:
-  std::vector<int32> strides_;
+  std::vector<int32_t> strides_;
   Padding padding_;
 };
 

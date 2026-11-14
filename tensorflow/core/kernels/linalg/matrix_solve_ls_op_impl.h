@@ -18,9 +18,11 @@ limitations under the License.
 
 // See docs in ../ops/linalg_ops.cc.
 
-#include "third_party/eigen3/Eigen/Cholesky"
-#include "third_party/eigen3/Eigen/Core"
-#include "third_party/eigen3/Eigen/QR"
+#include <limits>
+
+#include "Eigen/Cholesky"  // from @eigen_archive
+#include "Eigen/Core"  // from @eigen_archive
+#include "Eigen/QR"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -62,13 +64,14 @@ class MatrixSolveLsOp : public LinearAlgebraOp<Scalar> {
                                       input_matrix_shapes[1].dim_size(1)})});
   }
 
-  int64 GetCostPerUnit(const TensorShapes& input_matrix_shapes) const final {
+  int64_t GetCostPerUnit(const TensorShapes& input_matrix_shapes) const final {
     double m = static_cast<double>(input_matrix_shapes[0].dim_size(0));
     double n = static_cast<double>(input_matrix_shapes[0].dim_size(1));
     double num_rhss = static_cast<double>(input_matrix_shapes[1].dim_size(1));
     double cost = std::max(m, n) * std::min(m, n) * (std::min(m, n) + num_rhss);
-    return cost >= static_cast<double>(kint64max) ? kint64max
-                                                  : static_cast<int64>(cost);
+    return cost >= static_cast<double>(std::numeric_limits<int64_t>::max())
+               ? std::numeric_limits<int64_t>::max()
+               : static_cast<int64_t>(cost);
   }
 
   bool EnableInputForwarding() const final { return false; }
@@ -78,17 +81,17 @@ class MatrixSolveLsOp : public LinearAlgebraOp<Scalar> {
     const ConstMatrixMap& matrix = inputs[0];
     const ConstMatrixMap& rhs = inputs[1];
     const auto& l2_regularizer_in = context->input(2);
-    OP_REQUIRES(
-        context, TensorShapeUtils::IsScalar(l2_regularizer_in.shape()),
-        errors::InvalidArgument("l2_regularizer must be scalar, got shape ",
-                                l2_regularizer_in.shape().DebugString()));
+    OP_REQUIRES(context, TensorShapeUtils::IsScalar(l2_regularizer_in.shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("l2_regularizer must be scalar, got shape ",
+                                 l2_regularizer_in.shape().DebugString())));
     const double l2_regularizer = l2_regularizer_in.scalar<double>()();
     OP_REQUIRES(context, l2_regularizer >= 0,
-                errors::InvalidArgument("l2_regularizer must be >= 0."));
+                absl::InvalidArgumentError("l2_regularizer must be >= 0."));
 
-    const int64 rows = matrix.rows();
-    const int64 cols = matrix.cols();
-    if (rows == 0 || cols == 0) {
+    const int64_t rows = matrix.rows();
+    const int64_t cols = matrix.cols();
+    if (rows == 0 || cols == 0 || rhs.rows() == 0 || rhs.cols() == 0) {
       // The result is the empty matrix.
       return;
     }
@@ -99,7 +102,7 @@ class MatrixSolveLsOp : public LinearAlgebraOp<Scalar> {
       //   1 / cond(matrix) > sqrt(std::numeric_limits<Scalar>::epsilon()).
       // This branch solves over- or underdetermined least-squares problems
       // via the normal equations and Cholesky decomposition.
-      if (matrix.rows() >= matrix.cols()) {
+      if (rows >= cols) {
         // Overdetermined case (rows >= cols): Solves the ordinary (possibly
         // regularized) least-squares problem
         //   min || A * X - RHS ||_F^2 + l2_regularizer ||X||_F^2
@@ -114,11 +117,11 @@ class MatrixSolveLsOp : public LinearAlgebraOp<Scalar> {
               (Scalar(l2_regularizer) * Matrix::Ones(cols, 1)).asDiagonal();
         }
         const Eigen::LLT<Eigen::Ref<Matrix>, Eigen::Lower> llt(gramian);
-        OP_REQUIRES(
-            context, llt.info() == Eigen::Success,
-            errors::InvalidArgument("Input matrix was rank deficient or "
-                                    "ill-conditioned. Try setting fast=False "
-                                    "or provide a larger l2_regularizer > 0."));
+        OP_REQUIRES(context, llt.info() == Eigen::Success,
+                    absl::InvalidArgumentError(
+                        "Input matrix was rank deficient or "
+                        "ill-conditioned. Try setting fast=False "
+                        "or provide a larger l2_regularizer > 0."));
         outputs->at(0).noalias() = matrix.adjoint() * rhs;
         llt.solveInPlace(outputs->at(0));
       } else {
@@ -135,11 +138,11 @@ class MatrixSolveLsOp : public LinearAlgebraOp<Scalar> {
               (Scalar(l2_regularizer) * Matrix::Ones(rows, 1)).asDiagonal();
         }
         const Eigen::LLT<Eigen::Ref<Matrix>, Eigen::Lower> llt(gramian);
-        OP_REQUIRES(
-            context, llt.info() == Eigen::Success,
-            errors::InvalidArgument("Input matrix was rank deficient or "
-                                    "ill-conditioned. Try setting fast=False "
-                                    "or provide an l2_regularizer > 0."));
+        OP_REQUIRES(context, llt.info() == Eigen::Success,
+                    absl::InvalidArgumentError(
+                        "Input matrix was rank deficient or "
+                        "ill-conditioned. Try setting fast=False "
+                        "or provide an l2_regularizer > 0."));
         outputs->at(0).noalias() = matrix.adjoint() * llt.solve(rhs);
       }
     } else {

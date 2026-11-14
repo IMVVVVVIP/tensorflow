@@ -16,7 +16,8 @@ limitations under the License.
 
 #include <stdint.h>
 
-#include "tensorflow/lite/c/common.h"
+#include "Eigen/Core"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
 #include "tensorflow/lite/kernels/internal/reference/process_broadcast_shapes.h"
@@ -57,6 +58,8 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
 
   OpContext op_context(context, node);
+  TF_LITE_ENSURE(context, op_context.input1 != nullptr);
+  TF_LITE_ENSURE(context, op_context.input2 != nullptr);
   TF_LITE_ENSURE_TYPES_EQ(context, op_context.input1->type,
                           op_context.input2->type);
   op_context.output->type = op_context.input1->type;
@@ -157,35 +160,46 @@ template <KernelType kernel_type, typename OpType>
 TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   OpContext op_context(context, node);
 
-    switch (op_context.output->type) {
-      case kTfLiteFloat32:
-        TFLiteOperation<kernel_type, float, OpType>(context, node, op_context);
-        break;
-      case kTfLiteUInt8:
-        TFLiteOperation<kernel_type, uint8_t, OpType>(context, node,
-                                                      op_context);
-        break;
-      case kTfLiteInt8:
-        TFLiteOperation<kernel_type, int8_t, OpType>(context, node, op_context);
-        break;
-      case kTfLiteInt32:
-        TFLiteOperation<kernel_type, int32_t, OpType>(context, node,
-                                                      op_context);
-        break;
-      case kTfLiteInt64:
-        TFLiteOperation<kernel_type, int64_t, OpType>(context, node,
-                                                      op_context);
-        break;
-      case kTfLiteInt16:
-        TFLiteOperation<kernel_type, int16_t, OpType>(context, node,
-                                                      op_context);
-        break;
-      default:
-        context->ReportError(context,
-                             "Type %d is currently not supported by Maximum.",
-                             op_context.output->type);
-        return kTfLiteError;
+  // If inputs have no element, shortcircuit.
+  if (NumElements(op_context.input1) == 0 ||
+      NumElements(op_context.input2) == 0) {
+    return kTfLiteOk;
+  }
+
+  switch (op_context.output->type) {
+    case kTfLiteFloat32: {
+      TFLiteOperation<kernel_type, float, OpType>(context, node, op_context);
+      break;
     }
+    case kTfLiteUInt8:
+      TFLiteOperation<kernel_type, uint8_t, OpType>(context, node, op_context);
+      break;
+    case kTfLiteInt8:
+      TFLiteOperation<kernel_type, int8_t, OpType>(context, node, op_context);
+      break;
+    case kTfLiteInt32:
+      TFLiteOperation<kernel_type, int32_t, OpType>(context, node, op_context);
+      break;
+    case kTfLiteInt64:
+      TFLiteOperation<kernel_type, int64_t, OpType>(context, node, op_context);
+      break;
+    case kTfLiteInt16:
+      TFLiteOperation<kernel_type, int16_t, OpType>(context, node, op_context);
+      break;
+    case kTfLiteFloat16:
+      TFLiteOperation<kernel_type, Eigen::half, OpType>(context, node,
+                                                        op_context);
+      break;
+    case kTfLiteBFloat16:
+      TFLiteOperation<kernel_type, Eigen::bfloat16, OpType>(context, node,
+                                                            op_context);
+      break;
+    default:
+      TF_LITE_KERNEL_LOG(context,
+                         "Type %d is currently not supported by Maximum.",
+                         op_context.output->type);
+      return kTfLiteError;
+  }
   return kTfLiteOk;
 }
 

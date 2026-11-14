@@ -16,8 +16,11 @@ limitations under the License.
 #include "tensorflow/lite/type_to_tflitetype.h"
 
 #include <string>
+#include <type_traits>
 
 #include <gtest/gtest.h>
+#include "tensorflow/lite/core/c/c_api_types.h"
+#include "tensorflow/lite/portable_type_to_tflitetype.h"
 
 namespace tflite {
 namespace {
@@ -25,8 +28,12 @@ namespace {
 TEST(TypeToTfLiteType, TypeMapsAreInverseOfEachOther) {
   EXPECT_EQ(kTfLiteInt16,
             typeToTfLiteType<TfLiteTypeToType<kTfLiteInt16>::Type>());
+  EXPECT_EQ(kTfLiteUInt16,
+            typeToTfLiteType<TfLiteTypeToType<kTfLiteUInt16>::Type>());
   EXPECT_EQ(kTfLiteInt32,
             typeToTfLiteType<TfLiteTypeToType<kTfLiteInt32>::Type>());
+  EXPECT_EQ(kTfLiteUInt32,
+            typeToTfLiteType<TfLiteTypeToType<kTfLiteUInt32>::Type>());
   EXPECT_EQ(kTfLiteFloat32,
             typeToTfLiteType<TfLiteTypeToType<kTfLiteFloat32>::Type>());
   EXPECT_EQ(kTfLiteUInt8,
@@ -51,13 +58,12 @@ TEST(TypeToTfLiteType, Sanity) {
   EXPECT_EQ(kTfLiteFloat32, typeToTfLiteType<float>());
   EXPECT_EQ(kTfLiteBool, typeToTfLiteType<bool>());
   EXPECT_EQ(kTfLiteString, typeToTfLiteType<std::string>());
-  static_assert(
-      std::is_same<float, TfLiteTypeToType<kTfLiteFloat32>::Type>::value,
-      "TfLiteTypeToType test failure");
-  static_assert(std::is_same<bool, TfLiteTypeToType<kTfLiteBool>::Type>::value,
+  static_assert(std::is_same_v<float, TfLiteTypeToType<kTfLiteFloat32>::Type>,
+                "TfLiteTypeToType test failure");
+  static_assert(std::is_same_v<bool, TfLiteTypeToType<kTfLiteBool>::Type>,
                 "TfLiteTypeToType test failure");
   static_assert(
-      std::is_same<std::string, TfLiteTypeToType<kTfLiteString>::Type>::value,
+      std::is_same_v<std::string, TfLiteTypeToType<kTfLiteString>::Type>,
       "TfLiteTypeToType test failure");
 }
 

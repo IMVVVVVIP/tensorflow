@@ -1,6 +1,23 @@
+# Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 # Description:
 # Tools for testing
 
+load("@xla//third_party/rules_python/python:py_binary.bzl", "py_binary")
+load("@xla//third_party/rules_python/python:py_library.bzl", "py_library")
 load(
     "//tensorflow/tools/test:performance.bzl",
     "tf_cc_logged_benchmark",
@@ -8,28 +25,40 @@ load(
 )
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//tensorflow:internal"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 exports_files([
-    "LICENSE",
     "run_and_gather_logs_lib.py",
+    "run_and_gather_logs.py",
 ])
 
 py_library(
     name = "system_info_lib",
-    srcs = [
-        "gpu_info_lib.py",
-        "system_info_lib.py",
+    srcs = ["system_info_lib.py"],
+    strict_deps = True,
+    deps = [
+        ":gpu_info_lib",
+        "//tensorflow:tensorflow_py",
+        "//tensorflow/core:protos_all_py",
+        "//tensorflow/python/client:device_lib",
+        "//tensorflow/python/framework:errors",
+        "//tensorflow/python/platform:gfile",
+        "@six_archive//:six",
     ],
-    srcs_version = "PY2AND3",
+)
+
+py_library(
+    name = "gpu_info_lib",
+    srcs = ["gpu_info_lib.py"],
+    strict_deps = True,
     deps = [
         "//tensorflow:tensorflow_py",
         "//tensorflow/core:protos_all_py",
-        "//tensorflow/python:client",
-        "//tensorflow/python:errors",
-        "//tensorflow/python:platform",
+        "//tensorflow/python/framework:errors",
+        "//tensorflow/python/platform:gfile",
         "@six_archive//:six",
     ],
 )
@@ -37,11 +66,10 @@ py_library(
 py_binary(
     name = "system_info",
     srcs = ["system_info.py"],
-    python_version = "PY3",
-    srcs_version = "PY2AND3",
+    strict_deps = True,
     deps = [
         ":system_info_lib",
-        "//tensorflow/python:platform",
+        "@absl_py//absl:app",
     ],
 )
 
@@ -50,11 +78,13 @@ py_library(
     srcs = [
         "run_and_gather_logs_lib.py",
     ],
-    srcs_version = "PY2AND3",
+    strict_deps = True,
     deps = [
+        ":gpu_info_lib",
         ":system_info_lib",
         "//tensorflow/core:protos_all_py",
-        "//tensorflow/python:platform",
+        "//tensorflow/python/platform:gfile",
+        "@absl_py//absl/logging",
         "@six_archive//:six",
     ],
 )
@@ -62,8 +92,7 @@ py_library(
 py_binary(
     name = "run_and_gather_logs",
     srcs = ["run_and_gather_logs.py"],
-    python_version = "PY3",
-    srcs_version = "PY2AND3",
+    strict_deps = True,
     visibility = ["//visibility:public"],
     deps = [
         ":run_and_gather_logs_main_lib",
@@ -74,13 +103,16 @@ py_binary(
 py_library(
     name = "run_and_gather_logs_main_lib",
     srcs = ["run_and_gather_logs.py"],
-    srcs_version = "PY2AND3",
+    strict_deps = True,
     visibility = ["//visibility:public"],
     deps = [
         ":run_and_gather_logs_lib",
         "//tensorflow/core:protos_all_py",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:platform",
+        "//tensorflow/python/platform:client_testlib",
+        "//tensorflow/python/platform:gfile",
+        "//tensorflow/python/platform:tf_logging",
+        "@absl_py//absl:app",
+        "@absl_py//absl/flags",
         "@six_archive//:six",
     ],
 )
@@ -95,7 +127,7 @@ py_library(
 #    ],
 #    args = [
 #        "--test_name=" + "//tensorflow/core/kernels:cast_op_test",
-#        "--test_args=" + "'--benchmarks=BM_cpu_float'",
+#        "--test_args=" + "'--benchmark_filter=BM_cpu_float'",
 #    ],
 #    data = [
 #        "//tensorflow/core/kernels:cast_op_test",
@@ -110,7 +142,7 @@ tf_cc_logged_benchmark(
 
 tf_py_logged_benchmark(
     name = "rnn_op_benchmark",
-    target = "//tensorflow/python/kernel_tests:rnn_test",
+    target = "//tensorflow/python/kernel_tests/nn_ops:rnn_test",
 )
 
 tf_py_logged_benchmark(

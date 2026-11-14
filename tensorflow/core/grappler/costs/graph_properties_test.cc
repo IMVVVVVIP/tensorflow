@@ -34,6 +34,9 @@ limitations under the License.
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/protobuf.h"
 #include "tensorflow/core/platform/test.h"
+#ifdef INTEL_MKL
+#include "tensorflow/core/graph/mkl_graph_util.h"
+#endif
 
 namespace tensorflow {
 namespace grappler {
@@ -94,24 +97,24 @@ class GraphPropertiesTest : public ::testing::Test {
  protected:
   // Returns a string form of <p>, suitable for comparing type and shape.
   // Example output for 4-d float tensor: "float: [10,2,30,4]"
-  string PropToString(const OpInfo::TensorProperties& p) {
-    string s = strings::StrCat(DataTypeString(p.dtype()), ": ");
+  std::string PropToString(const OpInfo::TensorProperties& p) {
+    std::string s = absl::StrCat(DataTypeString(p.dtype()), ": ");
     if (p.shape().unknown_rank()) {
-      strings::StrAppend(&s, "?");
+      absl::StrAppend(&s, "?");
     } else {
-      strings::StrAppend(&s, "[");
+      absl::StrAppend(&s, "[");
       for (int i = 0; i < p.shape().dim_size(); ++i) {
-        strings::StrAppend(&s, i == 0 ? "" : ",",
-                           std::max<int64>(p.shape().dim(i).size(), -1));
+        absl::StrAppend(&s, i == 0 ? "" : ",",
+                        std::max<int64_t>(p.shape().dim(i).size(), -1));
       }
-      strings::StrAppend(&s, "]");
+      absl::StrAppend(&s, "]");
     }
     return s;
   }
 
   // Compare values of integer (DT_INT32 or DT_INT64) tensor against expected
   // ones.
-  void ExpectTensorValues(const std::vector<int64>& expected,
+  void ExpectTensorValues(const std::vector<int64_t>& expected,
                           const TensorProto& tensor_proto_to_compare) {
     Tensor tensor;
     ASSERT_TRUE(tensor.FromProto(tensor_proto_to_compare));
@@ -121,11 +124,11 @@ class GraphPropertiesTest : public ::testing::Test {
     ASSERT_TRUE(tensor.dtype() == DT_INT32 || tensor.dtype() == DT_INT64);
     if (tensor.dtype() == DT_INT32) {
       for (int i = 0; i < tensor.NumElements(); i++) {
-        EXPECT_EQ(expected[i], tensor.flat<int32>()(i));
+        EXPECT_EQ(expected[i], tensor.flat<int32_t>()(i));
       }
     } else {
       for (int i = 0; i < tensor.NumElements(); i++) {
-        EXPECT_EQ(expected[i], tensor.flat<int64>()(i));
+        EXPECT_EQ(expected[i], tensor.flat<int64_t>()(i));
       }
     }
   }
@@ -154,7 +157,7 @@ TEST_F(GraphPropertiesTest, StaticProperties) {
   CHECK(fake_input.NextItem(&item));
 
   GraphProperties properties(item);
-  Status s = properties.InferStatically(true);
+  absl::Status s = properties.InferStatically(true);
   TF_ASSERT_OK(s);
 
   for (const auto& node : item.graph.node()) {
@@ -195,7 +198,7 @@ TEST_F(GraphPropertiesTest, ClearProperties) {
   CHECK(fake_input.NextItem(&item));
 
   GraphProperties properties(item);
-  Status s = properties.InferStatically(true);
+  absl::Status s = properties.InferStatically(true);
   TF_ASSERT_OK(s);
 
   for (const auto& node : item.graph.node()) {
@@ -215,6 +218,21 @@ TEST_F(GraphPropertiesTest, ClearProperties) {
   }
 }
 
+TEST_F(GraphPropertiesTest, Clear) {
+  TrivialTestGraphInputYielder fake_input(4, 1, 10, false,
+                                          cluster_->GetDeviceNames());
+  GrapplerItem item;
+  CHECK(fake_input.NextItem(&item));
+
+  GraphProperties properties(item);
+  absl::Status s = properties.InferStatically(true);
+  TF_ASSERT_OK(s);
+
+  EXPECT_TRUE(properties.has_properties());
+  properties.Clear();
+  EXPECT_FALSE(properties.has_properties());
+}
+
 TEST_F(GraphPropertiesTest, DynamicProperties) {
   TrivialTestGraphInputYielder fake_input(4, 1, 10, false,
                                           cluster_->GetDeviceNames());
@@ -223,7 +241,7 @@ TEST_F(GraphPropertiesTest, DynamicProperties) {
 
   GraphProperties properties(item);
   TF_ASSERT_OK(cluster_->Initialize(item));
-  Status s = properties.InferDynamically(cluster_.get());
+  absl::Status s = properties.InferDynamically(cluster_.get());
   TF_ASSERT_OK(s);
 
   for (const auto& node : item.graph.node()) {
@@ -250,21 +268,169 @@ TEST_F(GraphPropertiesTest, DynamicProperties) {
         EXPECT_EQ(10, prop.shape().dim(0).size());
         EXPECT_EQ(1, prop.shape().dim(1).size());
         const auto out_props = properties.GetOutputProperties(node.name());
-#ifdef INTEL_MKL
-        // Intel MKL AddN OP would have two output.
-        // One is the real output, another one for MKL metadata
-        EXPECT_EQ(2, out_props.size());
-#else
         EXPECT_EQ(1, out_props.size());
-#endif  // INTEL_MKL
-        string prop_str;
+        std::string prop_str;
         ::tensorflow::protobuf::TextFormat::PrintToString(prop, &prop_str);
-        string out_prop_str;
+        std::string out_prop_str;
         ::tensorflow::protobuf::TextFormat::PrintToString(out_props[0],
                                                           &out_prop_str);
         EXPECT_EQ(prop_str, out_prop_str);
       }
     }
+  }
+}
+
+// A test op that outputs different shape based on input_tensor in the shape
+// inference context.
+REGISTER_OP("DetectInputValueInShapeInferenceOp")
+    .Input("a: T")
+    .Output("o: T")
+    .Attr("T: {numbertype, bool}")
+    .SetShapeFn([](shape_inference::InferenceContext* c) {
+      if (c->input_tensor(0)) {
+        // 10x10 if input_tensor is given to the inference context.
+        c->set_output(0, c->Matrix(10, 10));
+        return absl::OkStatus();
+      }
+      // unknown rank if input_tensor is not provided.
+      return shape_inference::UnknownShape(c);
+    });
+
+// Helper class for testing Const tensor skip.
+class ConstTensorSkipTestCase {
+ public:
+  ConstTensorSkipTestCase(const DataType data_type,
+                          const std::vector<int64_t> shape, const double value,
+                          const bool expected)
+      : data_type_(data_type),
+        shape_(shape),
+        value_(value),
+        expected_(expected) {}
+
+  void RunTestAndValidate() const {
+    LOG(INFO) << "Run Const tensor skip test: "
+              << "data_type: " << data_type_ << ", shape: {"
+              << absl::StrJoin(shape_, ",") << "}, value: " << value_
+              << ", expected: " << expected_;
+    // Build a graph with Const --> Identity --> Detect.
+    GrapplerItem item;
+    const absl::Span<const int64_t> shape_array_slice(shape_);
+    Tensor const_tensor_value(data_type_, TensorShape(shape_array_slice));
+    // Fill the const tensor value based on data type.
+    switch (data_type_) {
+      case DT_INT32:
+        test::FillIota<int32_t>(&const_tensor_value,
+                                static_cast<int32_t>(value_));
+        break;
+      case DT_INT64:
+        test::FillIota<int64_t>(&const_tensor_value,
+                                static_cast<int64_t>(value_));
+        break;
+      case DT_FLOAT:
+        test::FillIota<float>(&const_tensor_value, static_cast<float>(value_));
+        break;
+      case DT_DOUBLE:
+        test::FillIota<double>(&const_tensor_value,
+                               static_cast<double>(value_));
+        break;
+      case DT_BFLOAT16:
+        test::FillIota<Eigen::bfloat16>(&const_tensor_value,
+                                        static_cast<Eigen::bfloat16>(value_));
+        break;
+      default:
+        CHECK(false) << "Unsupported data type (" << data_type_
+                     << ") in this test.";
+        break;
+    }
+    TF_ASSERT_OK(NodeDefBuilder("const", "Const")
+                     .Attr("dtype", data_type_)
+                     .Attr("value", const_tensor_value)
+                     .Finalize(item.graph.add_node()));
+    TF_ASSERT_OK(NodeDefBuilder("const_identity", "Identity")
+                     .Attr("dtype", data_type_)
+                     .Input("const", 0, data_type_)
+                     .Finalize(item.graph.add_node()));
+    TF_ASSERT_OK(NodeDefBuilder("detect", "DetectInputValueInShapeInferenceOp")
+                     .Attr("T", data_type_)
+                     .Input("const_identity", 0, data_type_)
+                     .Finalize(item.graph.add_node()));
+    item.fetch.push_back("const");
+    item.fetch.push_back("const_identity");
+    item.fetch.push_back("detect");
+
+    // Run static shape inference.
+    GraphProperties graph_properties(item);
+    TF_ASSERT_OK(graph_properties.InferStatically(false));
+
+    // Extract input / output properties of interest.
+    const auto& const_output = graph_properties.GetOutputProperties("const");
+    EXPECT_EQ(1, const_output.size());
+    const OpInfo::TensorProperties& const_output0 = const_output[0];
+    const auto& const_identity_input =
+        graph_properties.GetInputProperties("const_identity");
+    EXPECT_EQ(1, const_identity_input.size());
+    const OpInfo::TensorProperties& const_identity_input0 =
+        const_identity_input[0];
+    const auto& const_identity_output =
+        graph_properties.GetOutputProperties("const_identity");
+    EXPECT_EQ(1, const_identity_output.size());
+    const OpInfo::TensorProperties& const_identity_output0 =
+        const_identity_output[0];
+    EXPECT_TRUE(const_output0.has_value());
+    EXPECT_TRUE(const_identity_input0.has_value());
+    EXPECT_TRUE(const_identity_output0.has_value());
+    const auto& detect_input = graph_properties.GetInputProperties("detect");
+    EXPECT_EQ(1, detect_input.size());
+    const OpInfo::TensorProperties& detect_input0 = detect_input[0];
+    const auto& detect_output = graph_properties.GetOutputProperties("detect");
+    EXPECT_EQ(1, detect_output.size());
+    const OpInfo::TensorProperties& detect_output0 = detect_output[0];
+
+    // Tensor protos are propagated, regardless of types and sizes.
+    EXPECT_TRUE(const_output0.has_value());
+    EXPECT_TRUE(const_identity_input0.has_value());
+    EXPECT_TRUE(const_identity_output0.has_value());
+    EXPECT_TRUE(detect_input0.has_value());
+
+    // Detect op outputs 10x10 matrix if it has input_tensor in the shape
+    // inference context. Otherwise, unknown rank.
+    if (expected_) {
+      EXPECT_EQ(detect_output0.shape().dim_size(), 2);
+      EXPECT_EQ(detect_output0.shape().dim(0).size(), 10);
+      EXPECT_EQ(detect_output0.shape().dim(1).size(), 10);
+    } else {
+      EXPECT_TRUE(detect_output0.shape().unknown_rank());
+    }
+  }
+
+ private:
+  DataType data_type_;
+  std::vector<int64_t> shape_;
+  double value_;
+  bool expected_;
+};
+
+TEST_F(GraphPropertiesTest, SkipInstantiatingConstTensor) {
+  // We skip const tensor value propagation in shape inference, if a const
+  // tensor is too large.
+  std::vector<ConstTensorSkipTestCase> test_cases = {
+      // data_type, shape, value, bool: propagate const?
+      {DT_INT32, {16, 8}, 1, true},      // 128 elements; smaller than threshold
+      {DT_INT32, {1, 129}, 2, false},    // 129 elements; larger than threshold
+      {DT_INT64, {8, 8}, 3, true},       // 64 elements; smaller than threshold
+      {DT_INT64, {128, 2}, 0, false},    // 256 elements; larger than threshold
+      {DT_FLOAT, {16, 8}, 1.0, true},    // integer value for float tensor
+      {DT_FLOAT, {16, 8}, 1.3, true},    // fractional value (1.3)
+      {DT_FLOAT, {1, 129}, 0.7, false},  // fractional value (0.7)
+      {DT_DOUBLE, {16, 8}, 1.0, true},   // integer value for float tensor
+      {DT_DOUBLE, {16, 8}, 1.3, true},   // fractional value (1.3)
+      {DT_DOUBLE, {1, 129}, 0.7, false},    // fractional value (0.7)
+      {DT_BFLOAT16, {16, 8}, 1.0, true},    // integer value for float tensor
+      {DT_BFLOAT16, {16, 8}, 1.3, true},    // fractional value (1.3)
+      {DT_BFLOAT16, {1, 129}, 0.7, false},  // fractional value (0.7)
+  };
+  for (const auto& test_case : test_cases) {
+    test_case.RunTestAndValidate();
   }
 }
 
@@ -389,16 +555,17 @@ TEST_F(GraphPropertiesTest, WhileLoopWithVarHandleOpInput) {
   // -> Enter -> Switch -> ReadVariableOp -> other parts of loop body. Note
   // DT_RESOURCE is passed all the way until ReadVariableOp.
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "while_loop_var_handle_op.pbtxt");
+  std::string filename =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
+                   "while_loop_var_handle_op.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
 
-  std::vector<string> resource_nodes{
+  std::vector<std::string> resource_nodes{
       "loop_var",       "while/Enter",         "while/Merge", "while/Switch",
       "while/Identity", "while/NextIteration", "while/Exit"};
-  for (const string& node : resource_nodes) {
+  for (const std::string& node : resource_nodes) {
     const auto props = properties.GetOutputProperties(node);
     EXPECT_GE(props.size(), 1);  // Merge has 2 outputs.
     EXPECT_EQ("resource: []", PropToString(props[0]));
@@ -550,15 +717,15 @@ TEST_F(GraphPropertiesTest, MergeWithoutLoops) {
    */
 
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "merge_without_loops.pbtxt");
+  std::string filename = io::JoinPath(
+      testing::TensorFlowSrcRoot(), kTestDataPath, "merge_without_loops.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
 
-  std::vector<string> nodes{"cond/Merge", "cond/concat", "cond/concat_1"};
-  std::vector<string> expected_outputs{"float: [-1,-1,1]", "float: [2,1,1]",
-                                       "float: [1,2,1]"};
+  std::vector<std::string> nodes{"cond/Merge", "cond/concat", "cond/concat_1"};
+  std::vector<std::string> expected_outputs{"float: [-1,-1,1]",
+                                            "float: [2,1,1]", "float: [1,2,1]"};
   for (int i = 0; i < nodes.size(); i++) {
     const auto props = properties.GetOutputProperties(nodes[i]);
     const OpInfo::TensorProperties& prop = props[0];
@@ -592,15 +759,15 @@ TEST_F(GraphPropertiesTest, WhileLoop) {
   */
 
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "while_loop.pbtxt");
+  std::string filename = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                      kTestDataPath, "while_loop.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
 
-  std::vector<string> nodes{"while/Merge_1", "while/NextIteration_1",
-                            "while/Exit_1"};
-  for (const string& node : nodes) {
+  std::vector<std::string> nodes{"while/Merge_1", "while/NextIteration_1",
+                                 "while/Exit_1"};
+  for (const std::string& node : nodes) {
     const auto props = properties.GetOutputProperties(node);
     const OpInfo::TensorProperties& prop = props[0];
     EXPECT_EQ(DT_FLOAT, prop.dtype());
@@ -650,24 +817,24 @@ TEST_F(GraphPropertiesTest, NestedLoop) {
   */
 
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "nested_loop.pbtxt");
+  std::string filename = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                      kTestDataPath, "nested_loop.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
 
-  std::vector<string> outer_nodes{"while/Merge_1", "while/NextIteration_1",
-                                  "while/Exit_1"};
-  std::vector<string> inner_nodes{"while/while/Merge_1",
-                                  "while/while/NextIteration_1",
-                                  "while/while/Exit_1"};
-  for (const string& node : outer_nodes) {
+  std::vector<std::string> outer_nodes{"while/Merge_1", "while/NextIteration_1",
+                                       "while/Exit_1"};
+  std::vector<std::string> inner_nodes{"while/while/Merge_1",
+                                       "while/while/NextIteration_1",
+                                       "while/while/Exit_1"};
+  for (const std::string& node : outer_nodes) {
     const auto props = properties.GetOutputProperties(node);
     const OpInfo::TensorProperties& prop = props[0];
     EXPECT_EQ(DT_FLOAT, prop.dtype());
     EXPECT_EQ("float: [-1,1,1]", PropToString(prop));
   }
-  for (const string& node : inner_nodes) {
+  for (const std::string& node : inner_nodes) {
     const auto props = properties.GetOutputProperties(node);
     const OpInfo::TensorProperties& prop = props[0];
     EXPECT_EQ(DT_FLOAT, prop.dtype());
@@ -713,24 +880,24 @@ TEST_F(GraphPropertiesTest, LoopsAndQueues) {
    */
 
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "loops_and_queues.pbtxt");
+  std::string filename = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                      kTestDataPath, "loops_and_queues.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
 
-  std::vector<string> outer_nodes{"while/Merge_1", "while/NextIteration_1",
-                                  "while/Exit_1"};
-  std::vector<string> inner_nodes{"while/while/Merge_1",
-                                  "while/while/NextIteration_1",
-                                  "while/while/Exit_1"};
-  for (const string& node : outer_nodes) {
+  std::vector<std::string> outer_nodes{"while/Merge_1", "while/NextIteration_1",
+                                       "while/Exit_1"};
+  std::vector<std::string> inner_nodes{"while/while/Merge_1",
+                                       "while/while/NextIteration_1",
+                                       "while/while/Exit_1"};
+  for (const std::string& node : outer_nodes) {
     const auto props = properties.GetOutputProperties(node);
     const OpInfo::TensorProperties& prop = props[0];
     EXPECT_EQ(DT_FLOAT, prop.dtype());
     EXPECT_EQ("float: [1,1,-1]", PropToString(prop));
   }
-  for (const string& node : inner_nodes) {
+  for (const std::string& node : inner_nodes) {
     const auto props = properties.GetOutputProperties(node);
     const OpInfo::TensorProperties& prop = props[0];
     EXPECT_EQ(DT_FLOAT, prop.dtype());
@@ -771,24 +938,25 @@ TEST_F(GraphPropertiesTest, LoopsAndResourceVars) {
   */
 
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "loops_and_resource_vars.pbtxt");
+  std::string filename =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
+                   "loops_and_resource_vars.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
 
-  std::vector<string> outer_nodes{"while/Merge_1", "while/NextIteration_1",
-                                  "while/Exit_1"};
-  std::vector<string> inner_nodes{"while/while/Merge_1",
-                                  "while/while/NextIteration_1",
-                                  "while/while/Exit_1"};
-  for (const string& node : outer_nodes) {
+  std::vector<std::string> outer_nodes{"while/Merge_1", "while/NextIteration_1",
+                                       "while/Exit_1"};
+  std::vector<std::string> inner_nodes{"while/while/Merge_1",
+                                       "while/while/NextIteration_1",
+                                       "while/while/Exit_1"};
+  for (const std::string& node : outer_nodes) {
     const auto props = properties.GetOutputProperties(node);
     const OpInfo::TensorProperties& prop = props[0];
     EXPECT_EQ(DT_INT32, prop.dtype());
     EXPECT_EQ("int32: []", PropToString(prop));
   }
-  for (const string& node : inner_nodes) {
+  for (const std::string& node : inner_nodes) {
     const auto props = properties.GetOutputProperties(node);
     const OpInfo::TensorProperties& prop = props[0];
     EXPECT_EQ(DT_INT32, prop.dtype());
@@ -823,16 +991,16 @@ TEST_F(GraphPropertiesTest, QueuesAndLoops) {
   */
 
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "queues_and_loops.pbtxt");
+  std::string filename = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                      kTestDataPath, "queues_and_loops.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
 
-  std::vector<string> nodes{"while/Merge_1", "while/NextIteration_1",
-                            "while/Exit_1"};
+  std::vector<std::string> nodes{"while/Merge_1", "while/NextIteration_1",
+                                 "while/Exit_1"};
 
-  for (const string& node : nodes) {
+  for (const std::string& node : nodes) {
     const auto props = properties.GetOutputProperties(node);
     const OpInfo::TensorProperties& prop = props[0];
     EXPECT_EQ(DT_FLOAT, prop.dtype());
@@ -850,15 +1018,16 @@ TEST_F(GraphPropertiesTest, InferRestoreOpShape) {
   Output var = ops::Variable(s.WithOpName("var"), TensorShape({128, 256}),
                              DataType::DT_FLOAT);
   Output filename =
-      ops::Const(s.WithOpName("filename"), string("model"), TensorShape());
+      ops::Const(s.WithOpName("filename"), std::string("model"), TensorShape());
   Output tensor_name =
-      ops::Const(s.WithOpName("tensorname"), string("a"), TensorShape());
+      ops::Const(s.WithOpName("tensorname"), std::string("a"), TensorShape());
   Output restore = ops::Restore(s.WithOpName("restore"), filename, tensor_name,
                                 DataType::DT_FLOAT);
   Output init_restore = ops::Assign(s.WithOpName("init_restore"), var, restore);
 
-  Output shape_and_slice = ops::Const(s.WithOpName("shape_and_slice"),
-                                      string("256 256 0,128:-"), TensorShape());
+  Output shape_and_slice =
+      ops::Const(s.WithOpName("shape_and_slice"),
+                 std::string("256 256 0,128:-"), TensorShape());
   Output restore_slice =
       ops::RestoreSlice(s.WithOpName("restore_slice"), filename, tensor_name,
                         shape_and_slice, DataType::DT_FLOAT);
@@ -909,9 +1078,9 @@ TEST_F(GraphPropertiesTest, InferRestoreOpShape_WithTwoNodesShareSameOutput) {
   Output var2 = ops::Variable(s.WithOpName("var2"), TensorShape({128, 256}),
                               DataType::DT_FLOAT);
   Output filename =
-      ops::Const(s.WithOpName("filename"), string("model"), TensorShape());
+      ops::Const(s.WithOpName("filename"), std::string("model"), TensorShape());
   Output tensor_name =
-      ops::Const(s.WithOpName("tensorname"), string("a"), TensorShape());
+      ops::Const(s.WithOpName("tensorname"), std::string("a"), TensorShape());
   Output restore = ops::Restore(s.WithOpName("restore"), filename, tensor_name,
                                 DataType::DT_FLOAT);
   Output init = ops::Assign(s.WithOpName("init"), var, restore);
@@ -975,7 +1144,7 @@ TEST_F(GraphPropertiesTest, TensorAsShapesPropagation) {
   ExpectTensorValues({99}, properties.GetOutputProperties("b")[0].value());
   ExpectTensorValues({99}, properties.GetInputProperties("b1")[0].value());
   ExpectTensorValues({99}, properties.GetOutputProperties("b1")[0].value());
-  std::vector<int64> c_values;
+  std::vector<int64_t> c_values;
   for (int i = 0; i < 4 * 4 * 4; i++) {
     c_values.push_back(1);
   }
@@ -1009,14 +1178,16 @@ TEST_F(GraphPropertiesTest, IdentityPassingShape) {
 TEST_F(GraphPropertiesTest, SkippingValueInferenceForLargeTensors) {
   // When using aggressive_shape_inference, we run EvaluateNode() for
   // allowlisted ops and small input / output tensors. For instance, Fill op is
-  // evaluated and produces output tensor value if output tensor size is smal
+  // evaluated and produces output tensor value if output tensor size is small
   // (currently, fewer than 17 elements); otherwise we don't run EvaluateNode().
   // This is to avoid wasting time and memory for producing huge tensors (e.g.,
   // initializing a large table using Fill.
+  // Note that we do not propagate float const tensors with fractional values
+  // (even if they're small); so this test should use integer values.
   {
     tensorflow::Scope s = tensorflow::Scope::NewRootScope();
     Output a = ops::Const(s.WithOpName("a"), 4, {2});  // 4x4
-    Output b = ops::Const(s.WithOpName("const"), 0.1f, {});
+    Output b = ops::Const(s.WithOpName("const"), 7, {});
     // Shape described by a is small; expect output values of Fill op.
     Output c = ops::Fill(s.WithOpName("fill"), a, b);
 
@@ -1029,13 +1200,13 @@ TEST_F(GraphPropertiesTest, SkippingValueInferenceForLargeTensors) {
         /*include_tensor_values=*/true));
     const auto out_props = properties.GetOutputProperties("fill");
     const OpInfo::TensorProperties out_prop0 = out_props[0];
-    EXPECT_EQ("float: [4,4]", PropToString(out_prop0));
+    EXPECT_EQ("int32: [4,4]", PropToString(out_prop0));
     EXPECT_TRUE(out_prop0.has_value());
   }
   {
     tensorflow::Scope s = tensorflow::Scope::NewRootScope();
     Output a = ops::Const(s.WithOpName("a"), 1000, {4});  // 1000x1000x1000x1000
-    Output b = ops::Const(s.WithOpName("const"), 0.1f, {});
+    Output b = ops::Const(s.WithOpName("const"), 7, {});
     // Shape described by a is huge; in that case we skip value inference.
     // Otherwise, it'd be too much overhead.
     Output c = ops::Fill(s.WithOpName("fill"), a, b);
@@ -1049,7 +1220,7 @@ TEST_F(GraphPropertiesTest, SkippingValueInferenceForLargeTensors) {
         /*include_tensor_values=*/true));
     const auto out_props = properties.GetOutputProperties("fill");
     const OpInfo::TensorProperties out_prop0 = out_props[0];
-    EXPECT_EQ("float: [1000,1000,1000,1000]", PropToString(out_prop0));
+    EXPECT_EQ("int32: [1000,1000,1000,1000]", PropToString(out_prop0));
     EXPECT_FALSE(out_prop0.has_value());
   }
 }
@@ -1121,11 +1292,93 @@ TEST_F(GraphPropertiesTest, SizeOp) {
   ExpectTensorValues({24}, identity_props0.value());
 }
 
+TEST_F(GraphPropertiesTest, PackWithConstMinus1AndReshapes) {
+  tensorflow::Scope s = tensorflow::Scope::NewRootScope();
+  Output shape0 = ops::Const(s.WithOpName("shape0"), 4, {});
+  Output shape1 = ops::Const(s.WithOpName("shape1"), -1, {});
+  Output pack = ops::Stack(s.WithOpName("pack"), {shape0, shape1});
+  // pack is [2], with values {4, -1}.
+
+  Output x0_ = ops::Placeholder(s.WithOpName("x0_"), DataType::DT_FLOAT);
+  Output x1_ = ops::Placeholder(s.WithOpName("x1_"), DataType::DT_FLOAT);
+
+  Output x0 = ops::Reshape(s.WithOpName("x0"), x0_, pack);
+  Output x1 = ops::Reshape(s.WithOpName("x1"), x1_, pack);
+  // Two unknown rank tensors (x0_ and x1_) are reshaped with pack {4, -1},
+  // their output shapes would be [4, -1]. However, though we use the same
+  // shape input to the Reshape ops, their output shapes can be different;
+  // i.e., unknown dim values (-1) of x0 and x1 shapes are not necessarily
+  // the same.
+
+  // if input to the Select ops. Note that s0 has a fully defined shape, while
+  // s1 has unknown shape.
+  Output s0 = ops::Const(s.WithOpName("s0"), true, {4, 16});
+  Output s1 = ops::Placeholder(s.WithOpName("s1"), DataType::DT_BOOL);
+
+  Output y0 = ops::Placeholder(s.WithOpName("y0"), DataType::DT_FLOAT);
+  Output y1 = ops::Placeholder(s.WithOpName("y1"), DataType::DT_FLOAT);
+
+  // We instantiate SelectV2, but will replace it with Select. The shape
+  // inference function for Select links all inputs and outputs as they should
+  // have the same shapes.
+  Output z0 = ops::SelectV2(s.WithOpName("z0"), s0, x0, y0);
+  Output z1 = ops::SelectV2(s.WithOpName("z1"), s1, x1, y1);
+
+  // For z0, as we know the shape of s0, symbolic shape manager in shape
+  // inference will make the shapes of x0, y0, and z0 equal to the shape of s0,
+  // which is [4, 16].
+  // For z1, s0 and y1 are all unknown shapes, so we can infer they're [4, -1]
+  // at best.
+  // Note that x0 and x1 share the same shape input to the Reshape op, but
+  // -1 in the shape input should not be treated as the same symoblic unknown
+  // dim; it is merely a constant value -1 for identitying unknown dim for
+  // Reshape operation.
+
+  GrapplerItem item;
+  TF_ASSERT_OK(s.ToGraphDef(&item.graph));
+
+  // Replace SelectV2 op with Select op.
+  for (int i = 0; i < item.graph.node_size(); ++i) {
+    auto* node = item.graph.mutable_node(i);
+    if (node->op() == "SelectV2") {
+      node->set_op("Select");
+    }
+  }
+
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(false));
+  for (const auto& node_name : {"x0", "y0", "z0"}) {
+    const auto out_props = properties.GetOutputProperties(node_name);
+    const OpInfo::TensorProperties out_prop0 = out_props[0];
+    EXPECT_EQ("float: [4,16]", PropToString(out_prop0));
+  }
+  {
+    const auto out_props = properties.GetOutputProperties("s0");
+    const OpInfo::TensorProperties out_prop0 = out_props[0];
+    EXPECT_EQ("bool: [4,16]", PropToString(out_prop0));
+  }
+
+  for (const auto& node_name : {"x1", "y1", "z1"}) {
+    const auto out_props = properties.GetOutputProperties(node_name);
+    const OpInfo::TensorProperties out_prop0 = out_props[0];
+    EXPECT_EQ("float: [4,-1]", PropToString(out_prop0));
+  }
+  // if input of Select can be either vector or the same shape to the
+  // input/output; in this case, even if we know input and output are
+  // [4, ?], we can't say it's [4, ?] or a vector; hence, it should be
+  // unknown.
+  {
+    const auto out_props = properties.GetOutputProperties("s1");
+    const OpInfo::TensorProperties out_prop0 = out_props[0];
+    EXPECT_EQ("bool: ?", PropToString(out_prop0));
+  }
+}
+
 TEST_F(GraphPropertiesTest, PackWithIdentityInput) {
   tensorflow::Scope s = tensorflow::Scope::NewRootScope();
   // Same to PackWithConstInput test case, but a, b, c, and d are Identity ops
   // from Const.
-  // If output_tensors_as_shape is not not set for those Shape ops or Pack op
+  // If output_tensors_as_shape is not set for those Shape ops or Pack op
   // doesn't take input_tensors_as_shape, Fill op's input doesn't have value;
   // hence, its output shape becomes unknown.
   Output a0 = ops::Const(s.WithOpName("a0"), 1, {});
@@ -1158,8 +1411,9 @@ TEST_F(GraphPropertiesTest, FunctionWithDtResourceInput) {
   // dtypes through the DT_RESOURCE _Arg, we cannot infer output shapes of such
   // function ops.
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "function_with_dt_resource_input.pbtxt");
+  std::string filename =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
+                   "function_with_dt_resource_input.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
 
   // This graph evaluates FunctionWithDtResourceInput with two inputs:
@@ -1190,7 +1444,7 @@ TEST_F(GraphPropertiesTest, FunctionWithDtResourceInput) {
         break;
       }
     }
-    // We cannot infer the function output shape correclty without those attr,
+    // We cannot infer the function output shape correctly without those attr,
     // but still it shouldn't fail; also, there can be some shapes we can
     // infer in such a case. In this test graph,
     // z2 of the function node just returns x input; hence, even if _Arg's shape
@@ -1466,8 +1720,8 @@ TEST_F(GraphPropertiesTest, SimpleFunctionStaticShapeInference) {
       z = MyAdd(x, z)
   */
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "simple_function.pbtxt");
+  std::string filename = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                      kTestDataPath, "simple_function.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
@@ -1491,8 +1745,9 @@ TEST_F(GraphPropertiesTest, SimpleFunctionStaticShapeInference) {
 
 TEST_F(GraphPropertiesTest, LargeFunctionStaticShapeInference) {
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "large_function_graph.pbtxt");
+  std::string filename =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
+                   "large_function_graph.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
@@ -1542,8 +1797,9 @@ TEST_F(GraphPropertiesTest, LargeFunctionWithMultipleOutputs) {
       z = MyFunc()
   */
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "function_functional_while.pbtxt");
+  std::string filename =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
+                   "function_functional_while.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
@@ -1562,8 +1818,8 @@ TEST_F(GraphPropertiesTest, LargeFunctionWithMultipleOutputs) {
 
 TEST_F(GraphPropertiesTest, FunctionWithErrorStaticShapeInference) {
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "function_error.pbtxt");
+  std::string filename = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                      kTestDataPath, "function_error.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
@@ -1599,8 +1855,8 @@ TEST_F(GraphPropertiesTest, FunctionSwitchStaticShapeInference) {
       z2 = MyAdd(tf.case([(tf.less(0, 1), x)], default=y), z)
   */
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "function_switch.pbtxt");
+  std::string filename = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                      kTestDataPath, "function_switch.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
@@ -1633,8 +1889,8 @@ TEST_F(GraphPropertiesTest, FunctionSwitch2StaticShapeInference) {
       z2 = MyAdd(tf.case([(tf.less(1, 0), x)], default=y), z)
   */
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "function_switch_2.pbtxt");
+  std::string filename = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                      kTestDataPath, "function_switch_2.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
@@ -1670,8 +1926,9 @@ TEST_F(GraphPropertiesTest, FunctionSwitchShapesStaticShapeInference) {
       z2 = MyAdd(tf.case([(tf.less(1, 0), x)], default=y), z)
   */
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "function_switch_shapes.pbtxt");
+  std::string filename =
+      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
+                   "function_switch_shapes.pbtxt");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   GraphProperties properties(item);
   TF_ASSERT_OK(properties.InferStatically(false));
@@ -1817,7 +2074,7 @@ TEST_F(GraphPropertiesTest, FedNodes) {
   {
     // Conservative shape analysis: the shape of fed ports should be unknown
     GraphProperties properties(item);
-    Status s = properties.InferStatically(false);
+    absl::Status s = properties.InferStatically(false);
     TF_ASSERT_OK(s);
     for (const auto& node : item.graph.node()) {
       if (node.op() == "Const") {
@@ -1848,7 +2105,7 @@ TEST_F(GraphPropertiesTest, FedNodes) {
     // Optimistic shape analysis: the shape of fed ports should be derived from
     // the shape of the fanin.
     GraphProperties properties(item);
-    Status s = properties.InferStatically(true);
+    absl::Status s = properties.InferStatically(true);
     TF_ASSERT_OK(s);
     for (const auto& node : item.graph.node()) {
       if (node.op() == "Square" || node.op() == "AddN") {
@@ -1873,8 +2130,8 @@ TEST_F(GraphPropertiesTest, Performance) {
   // Load a large graph with many nested loops to make sure we can infer shapes
   // quickly.
   GrapplerItem item;
-  string filename = io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPath,
-                                 "large_graph.pbtxt.html");
+  std::string filename = io::JoinPath(testing::TensorFlowSrcRoot(),
+                                      kTestDataPath, "large_graph.pbtxt.html");
   TF_ASSERT_OK(ReadGraphDefFromFile(filename, &item.graph));
   TF_ASSERT_OK(AddDefaultAttrsToGraphDef(
       &item.graph,
@@ -1960,6 +2217,54 @@ TEST_F(GraphPropertiesTest, StridedSliceOfShapeWithShrinkAxisMask) {
         properties.GetOutputProperties("slice").at(0).value();
     ExpectTensorValues({5}, slice_value);
   }
+}
+
+TEST_F(GraphPropertiesTest, SliceOfShapeWithOutOfBoundsSize) {
+  tensorflow::Scope scope = tensorflow::Scope::NewRootScope();
+  Output placeholder =
+      ops::Placeholder(scope.WithOpName("input_placeholder"), DT_FLOAT,
+                       ops::Placeholder::Shape(TensorShape({5, 480, 40, 1})));
+  auto input_shape = ops::Shape(scope.WithOpName("input_shape"), placeholder);
+
+  Output begin = ops::Const(scope.WithOpName("begin"), {1}, {1});
+  // Subshape() reads a negative start as an offset from the end, but Slice
+  // requires begin >= 0, so a negative begin must be declined as well.
+  Output neg_begin = ops::Const(scope.WithOpName("neg_begin"), {-1}, {1});
+  // begin + size is 5, one past the end of the rank-4 shape being sliced.
+  Output bad_size = ops::Const(scope.WithOpName("bad_size"), {4}, {1});
+  Output good_size = ops::Const(scope.WithOpName("good_size"), {3}, {1});
+
+  Output bad_slice =
+      ops::Slice(scope.WithOpName("bad_slice"), input_shape, begin, bad_size);
+  Output neg_slice = ops::Slice(scope.WithOpName("neg_slice"), input_shape,
+                                neg_begin, good_size);
+  Output good_slice =
+      ops::Slice(scope.WithOpName("good_slice"), input_shape, begin, good_size);
+
+  GrapplerItem item;
+  TF_ASSERT_OK(scope.ToGraphDef(&item.graph));
+
+  GraphProperties properties(item);
+  TF_ASSERT_OK(properties.InferStatically(
+      /*assume_valid_feeds=*/false,
+      /*aggressive_shape_inference=*/false,
+      /*include_tensor_values=*/true));
+
+  // No value may be propagated for the out-of-bounds Slice. Propagating one
+  // would fold the Slice into a constant that Subshape() had silently
+  // truncated to the available extent, and whose shape would contradict the
+  // shape Slice's own shape function inferred for it.
+  EXPECT_FALSE(properties.GetOutputProperties("bad_slice").at(0).has_value());
+
+  // Nor for a negative begin, which Slice rejects but Subshape() would read
+  // as an offset from the end.
+  EXPECT_FALSE(properties.GetOutputProperties("neg_slice").at(0).has_value());
+
+  // An in-bounds Slice must still have its value propagated.
+  EXPECT_TRUE(properties.GetOutputProperties("good_slice").at(0).has_value());
+  const auto good_value =
+      properties.GetOutputProperties("good_slice").at(0).value();
+  ExpectTensorValues({480, 40, 1}, good_value);
 }
 
 TEST_F(GraphPropertiesTest, ValuePropagationThroughArithmeticOps) {
@@ -2370,7 +2675,7 @@ TEST_F(GraphPropertiesTest,
   TF_ASSERT_OK(properties.InferStatically(true));
   const auto& y1_output_properties = properties.GetOutputProperties("y1");
   // y1=reshape(x1), but x1's shape in unknown, so y1 should be [-1, 10].
-  // The first dimensino should not be 10.
+  // The first dimension should not be 10.
   EXPECT_EQ(y1_output_properties.size(), 1);
   EXPECT_EQ(y1_output_properties[0].shape().dim_size(), 2);
   EXPECT_LT(y1_output_properties[0].shape().dim(0).size(), 0);

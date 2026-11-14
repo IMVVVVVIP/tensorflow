@@ -55,9 +55,9 @@ using ::tensorflow::testing::matchers::Op;
 using ::tensorflow::testing::matchers::Out;
 using ::testing::_;
 
-Status BuildXlaOps(const Scope& s, const FunctionDefLibrary& fdef_lib,
-                   std::unique_ptr<Graph>* result) {
-  auto graph = absl::make_unique<Graph>(OpRegistry::Global());
+absl::Status BuildXlaOps(const Scope& s, const FunctionDefLibrary& fdef_lib,
+                         std::unique_ptr<Graph>* result) {
+  auto graph = std::make_unique<Graph>(OpRegistry::Global());
   TF_RETURN_IF_ERROR(s.ToGraph(graph.get()));
   FunctionLibraryDefinition flib_def(graph->op_registry(), fdef_lib);
 
@@ -82,31 +82,33 @@ Status BuildXlaOps(const Scope& s, const FunctionDefLibrary& fdef_lib,
   TF_RETURN_IF_ERROR(pass.Run(opt_options));
   VLOG(3) << graph->ToGraphDefDebug().DebugString();
   *result = std::move(graph);
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-Status MakeXlaCompiledKernel(Graph* graph, const string& callee_name,
-                             const string& node_name, int num_constant_args,
-                             int num_resource_args, Node** result) {
+absl::Status MakeXlaCompiledKernel(Graph* graph, const std::string& callee_name,
+                                   const std::string& node_name,
+                                   int num_constant_args, int num_resource_args,
+                                   Node** result) {
   NodeDef call_node;
   call_node.set_name(node_name);
   call_node.set_op(callee_name);
   AddNodeAttr(kXlaCompiledKernelAttr, true, &call_node);
   AddNodeAttr(kXlaNumConstantArgsAttr, num_constant_args, &call_node);
   AddNodeAttr(kXlaNumResourceArgsAttr, num_resource_args, &call_node);
-  Status s;
-  *result = graph->AddNode(call_node, &s);
-  return s;
+  TF_ASSIGN_OR_RETURN(*result, graph->AddNode(call_node));
+  return absl::OkStatus();
 }
 
-Status MakeXlaCompiledKernel(Graph* graph, const string& callee_name,
-                             const string& node_name, Node** result) {
+absl::Status MakeXlaCompiledKernel(Graph* graph, const std::string& callee_name,
+                                   const std::string& node_name,
+                                   Node** result) {
   return MakeXlaCompiledKernel(graph, callee_name, node_name,
                                /*num_constant_args=*/0, /*num_resource_args=*/0,
                                result);
 }
 
-Node* MakeWrite(const Scope& scope, Output value_to_write, const string& id) {
+Node* MakeWrite(const Scope& scope, Output value_to_write,
+                const std::string& id) {
   Output var_handle = ops::VarHandleOp(scope.WithOpName("Var_" + id), DT_FLOAT,
                                        TensorShape({}));
   ops::AssignVariableOp assign_op(scope.WithOpName("Assignee_" + id),
@@ -114,28 +116,18 @@ Node* MakeWrite(const Scope& scope, Output value_to_write, const string& id) {
   return assign_op.operation.node();
 }
 
-Node* MakeWrite(const Scope& scope, const string& id) {
+Node* MakeWrite(const Scope& scope, const std::string& id) {
   return MakeWrite(
       scope, ops::Const(scope.WithOpName("ValueToAssign" + id), 1.0f), id);
 }
 
-FunctionDefLibrary CreateFunctionDefLibWithConstFunction(const string& name) {
+FunctionDefLibrary CreateFunctionDefLibWithConstFunction(
+    const std::string& name) {
   FunctionDefLibrary fdef_lib;
   FunctionDef func = FunctionDefHelper::Create(
       /*function_name=*/name, /*in_def=*/{}, /*out_def=*/{"out: float"},
       /*attr_def*/
       {}, /*node_def=*/{FunctionDefHelper::Const("one", 1.0f)},
-      /*ret_def=*/{{"out", "out:output:0"}});
-  *fdef_lib.add_function() = std::move(func);
-  return fdef_lib;
-}
-
-FunctionDefLibrary CreateFunctionDefLibWithInt32Input(const string& name) {
-  FunctionDefLibrary fdef_lib;
-  FunctionDef func = FunctionDefHelper::Create(
-      /*function_name=*/name, /*in_def=*/{"in: int32"},
-      /*out_def=*/{"out: int32"},
-      /*attr_def=*/{}, /*node_def=*/{{{"out"}, "Identity", {"in"}}},
       /*ret_def=*/{{"out", "out:output:0"}});
   *fdef_lib.add_function() = std::move(func);
   return fdef_lib;
@@ -179,7 +171,7 @@ TEST_F(BuildXlaOpsTest, CleanFailureOnBogusAttr) {
   root.graph()->AddControlEdge(call, write_op);
 
   std::unique_ptr<Graph> graph;
-  Status failure_status = BuildXlaOps(root, fdef_lib, &graph);
+  absl::Status failure_status = BuildXlaOps(root, fdef_lib, &graph);
   ASSERT_FALSE(failure_status.ok());
   EXPECT_EQ(failure_status.code(), error::INVALID_ARGUMENT);
 }
@@ -205,7 +197,7 @@ TEST_F(BuildXlaOpsTest, OnNonXlaDevice) {
   auto xla_run =
       NodeWith(Op("_XlaRun"), Inputs(Out(1, predicated_compilation_key)));
   auto tf_call =
-      NodeWith(Op("PartitionedCall"),
+      NodeWith(Op("StatefulPartitionedCall"),
                CtrlDeps(NodeWith(Op("Identity"),
                                  Inputs(Out(0, predicated_compilation_key)))));
   auto merge = NodeWith(Op("_XlaMerge"), Inputs(Out(tf_call), Out(xla_run)));
@@ -263,12 +255,24 @@ TEST_F(BuildXlaOpsTest, NoExtraMergeForEdgeToSink) {
   TF_ASSERT_OK(BuildXlaOps(root, fdef_lib, &graph));
 
   Node* sink_node = graph->sink_node();
-  EXPECT_THAT(sink_node, NodeWith(CtrlDeps(NodeWith(Op("_XlaRun")),
-                                           NodeWith(Op("PartitionedCall")),
-                                           NodeWith(Op("NoOp")))));
+  EXPECT_THAT(sink_node,
+              NodeWith(CtrlDeps(NodeWith(Op("_XlaRun")),
+                                NodeWith(Op("StatefulPartitionedCall")),
+                                NodeWith(Op("NoOp")))));
 }
 
 #ifdef GOOGLE_CUDA
+FunctionDefLibrary CreateFunctionDefLibWithInt32Input(const std::string& name) {
+  FunctionDefLibrary fdef_lib;
+  FunctionDef func = FunctionDefHelper::Create(
+      /*function_name=*/name, /*in_def=*/{"in: int32"},
+      /*out_def=*/{"out: int32"},
+      /*attr_def=*/{}, /*node_def=*/{{{"out"}, "Identity", {"in"}}},
+      /*ret_def=*/{{"out", "out:output:0"}});
+  *fdef_lib.add_function() = std::move(func);
+  return fdef_lib;
+}
+
 // This tests a rewrite that only makes sense and is active in a CUDA-enabled
 // build.  Specifically we check that we insert an IdentityN op to avoid extra
 // device-to-host copies.
@@ -298,15 +302,15 @@ TEST_F(BuildXlaOpsTest, NoDeviceToHostCopiesForClustersWithInt32Inputs) {
   std::unique_ptr<Graph> graph;
   TF_ASSERT_OK(BuildXlaOps(root, fdef_lib, &graph));
 
-  Node* partitioned_call_op = nullptr;
+  Node* stateful_partitioned_call_op = nullptr;
   for (Node* n : graph->op_nodes()) {
-    if (n->type_string() == "PartitionedCall") {
-      ASSERT_EQ(partitioned_call_op, nullptr);
-      partitioned_call_op = n;
+    if (n->type_string() == "StatefulPartitionedCall") {
+      ASSERT_EQ(stateful_partitioned_call_op, nullptr);
+      stateful_partitioned_call_op = n;
     }
   }
 
-  ASSERT_NE(partitioned_call_op, nullptr);
+  ASSERT_NE(stateful_partitioned_call_op, nullptr);
   auto xla_compile = NodeWith(Op("_XlaCompile"));
   auto switch_on_compilation_pred =
       NodeWith(Op("Switch"), Inputs(Out(0, xla_compile), Out(1, xla_compile)));
@@ -315,7 +319,7 @@ TEST_F(BuildXlaOpsTest, NoDeviceToHostCopiesForClustersWithInt32Inputs) {
   // Check that we pipe int32 inputs through an IdentityN to avoid extra D2H
   // copies.
   EXPECT_THAT(
-      partitioned_call_op,
+      stateful_partitioned_call_op,
       NodeWith(Inputs(Out(NodeWith(Op("IdentityN"), CtrlDeps(ctrl_dep))))));
 }
 #endif

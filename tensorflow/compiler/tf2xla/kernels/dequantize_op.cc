@@ -14,13 +14,18 @@ limitations under the License.
 ==============================================================================*/
 
 #include <array>
+#include <limits>
+#include <string>
 
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/lib/matrix.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/lib/matrix.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/numeric_types.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -40,21 +45,22 @@ float get_fullrange() {
 class DequantizeOp : public XlaOpKernel {
  public:
   explicit DequantizeOp(OpKernelConstruction* ctx) : XlaOpKernel(ctx) {
-    string mode_string;
+    std::string mode_string;
     int axis;
     bool narrow_range;
 
     OP_REQUIRES_OK(ctx, ctx->GetAttr("mode", &mode_string));
     OP_REQUIRES(
         ctx, (mode_string == "MIN_COMBINED"),
-        errors::InvalidArgument("Mode string must be 'MIN_COMBINED' is " +
-                                mode_string + "'"));
+        absl::InvalidArgumentError("Mode string must be 'MIN_COMBINED' is " +
+                                   mode_string + "'"));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("narrow_range", &narrow_range));
     OP_REQUIRES(ctx, narrow_range == false,
-                errors::InvalidArgument("narrow_range must be false"));
+                absl::InvalidArgumentError("narrow_range must be false"));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("axis", &axis));
-    OP_REQUIRES(ctx, axis == -1,
-                errors::InvalidArgument("axis must be -1' is ", axis));
+    OP_REQUIRES(
+        ctx, axis == -1,
+        absl::InvalidArgumentError(absl::StrCat("axis must be -1' is ", axis)));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("dtype", &dtype_));
   }
 
@@ -63,36 +69,27 @@ class DequantizeOp : public XlaOpKernel {
   void Compile(XlaOpKernelContext* ctx) override {
     DataType input_type = ctx->input_type(0);
 
-    double minrange, maxrange;
-
-    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsFloatScalar(1, &minrange));
-    OP_REQUIRES_OK(ctx, ctx->ConstantInputAsFloatScalar(2, &maxrange));
-
-    float min_range = static_cast<float>(minrange);
-    float max_range = static_cast<float>(maxrange);
-    float full_range, half_range;
+    xla::XlaOp input = ctx->Input(0);
+    xla::XlaOp output = xla::ConvertElementType(input, xla::F32);
+    xla::XlaOp min_range = xla::ConvertElementType(ctx->Input(1), xla::F32);
+    xla::XlaOp max_range = xla::ConvertElementType(ctx->Input(2), xla::F32);
+    xla::XlaOp full_range;
+    xla::XlaOp half_range;
     if (input_type == DT_QINT8) {
-      full_range = get_fullrange<qint8>();
-      half_range = (full_range + 1.0f) / 2.0f;
+      full_range = ScalarLike(output, get_fullrange<qint8>());
+      half_range =
+          (full_range + ScalarLike(output, 1.0f)) / ScalarLike(output, 2.0f);
     } else {
       OP_REQUIRES(ctx, input_type == DT_QUINT8,
-                  errors::InvalidArgument(
-                      "Only support DT_QINT8 or DT_QUINT8, got ", input_type));
-      full_range = get_fullrange<quint8>();
-      half_range = 0.0f;
+                  absl::InvalidArgumentError(absl::StrCat(
+                      "Only support DT_QINT8 or DT_QUINT8, got ", input_type)));
+      full_range = ScalarLike(output, get_fullrange<quint8>());
+      half_range = ScalarLike(output, 0.0f);
     }
 
-    float scale_factor = (max_range - min_range) / full_range;
+    xla::XlaOp scale = (max_range - min_range) / full_range;
 
-    xla::XlaOp input = ctx->Input(0);
-    xla::XlaOp output;
-
-    output = xla::ConvertElementType(input, xla::F32);
-
-    auto scale = ScalarLike(output, scale_factor);
-    auto halfrange = ScalarLike(output, half_range);
-    output = xla::Add(xla::Mul(xla::Add(output, halfrange), scale),
-                      ScalarLike(output, min_range));
+    output = xla::Add(xla::Mul(xla::Add(output, half_range), scale), min_range);
 
     if (dtype_ == DT_BFLOAT16) {
       output = xla::ConvertElementType(output, xla::BF16);

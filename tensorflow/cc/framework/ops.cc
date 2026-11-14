@@ -20,7 +20,7 @@ namespace tensorflow {
 
 Operation::Operation(Node* n) : inputs_(GetInputs(n)), node_(n) {}
 
-Output Operation::input(int32 i) const {
+Output Operation::input(int32_t i) const {
   CHECK_NOTNULL(node_);
   CHECK_GE(i, 0);
   CHECK_LT(i, node_->num_inputs());
@@ -37,14 +37,14 @@ Output Operation::input(int32 i) const {
   return Output(inputs_[i].first, inputs_[i].second);
 }
 
-Output Operation::output(int32 i) const {
+Output Operation::output(int32_t i) const {
   CHECK_NOTNULL(node_);
   CHECK_GE(i, 0);
   CHECK_LT(i, node_->num_outputs());
   return Output(node_, i);
 }
 
-uint64 Operation::hash(int32 index) const {
+uint64_t Operation::hash(int32_t index) const {
   return ::tensorflow::Hash64(reinterpret_cast<const char*>(&node_),
                               sizeof(Node*), index);
 }
@@ -73,20 +73,20 @@ Input::Initializer::Initializer(
   // type and same shape.
   for (auto const& e : v) {
     if (e.tensor.dtype() != first.tensor.dtype()) {
-      status = errors::InvalidArgument(
+      status = absl::InvalidArgumentError(
           "Initializer list components should all have the same type");
       return;
     }
     if (!TensorShape{e.tensor.shape()}.IsSameSize(
             TensorShape{first.tensor.shape()})) {
-      status = errors::InvalidArgument(
+      status = absl::InvalidArgumentError(
           "Initializer list components should all have the same shape");
       return;
     }
   }
 
   // Form the new shape.
-  TensorShape shape{static_cast<int64>(v.size())};
+  TensorShape shape{static_cast<int64_t>(v.size())};
   shape.AppendShape(TensorShape{first.tensor.shape()});
 
   Tensor t(first.tensor.dtype(), shape);

@@ -25,16 +25,26 @@ limitations under the License.
 #include "tensorflow/core/kernels/parameterized_truncated_normal_op.h"
 
 #include <algorithm>
-#include <cmath>
-#include <memory>
+#include <limits>
 
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
+#include "Eigen/Core"  // from @eigen_archive  // IWYU pragma: keep
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive  // IWYU pragma: keep
+#include "xla/tsl/lib/random/philox_random.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/op_requires.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/tensor_types.h"
+#include "tensorflow/core/framework/tensor_util.h"
+#include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/kernels/stateless_random_ops.h"
+#include "tensorflow/core/lib/random/philox_random.h"  // IWYU pragma: keep
 #include "tensorflow/core/lib/random/random_distributions.h"
-#include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/util/bcast.h"
 #include "tensorflow/core/util/guarded_philox_random.h"
 #include "tensorflow/core/util/work_sharder.h"
 
@@ -50,8 +60,8 @@ static constexpr int kMaxIterations = 1000;
 
 template <typename T>
 struct TruncatedNormalFunctor<CPUDevice, T> {
-  void operator()(OpKernelContext* ctx, const CPUDevice& d, int64 num_batches,
-                  int64 samples_per_batch, int64 num_elements,
+  void operator()(OpKernelContext* ctx, const CPUDevice& d, int64_t num_batches,
+                  int64_t samples_per_batch, int64_t num_elements,
                   typename TTypes<T>::ConstFlat means,
                   typename TTypes<T>::ConstFlat stddevs,
                   typename TTypes<T>::ConstFlat minvals,
@@ -70,8 +80,8 @@ struct TruncatedNormalFunctor<CPUDevice, T> {
 
     auto do_work = [samples_per_batch, num_elements, &ctx, &means, &stddevs,
                     &minvals, &maxvals, &gen, &output,
-                    kStdDevsInsideBoundsToUseRandnSampler](int start_batch,
-                                                           int limit_batch) {
+                    kStdDevsInsideBoundsToUseRandnSampler](
+                       int64_t start_batch, int64_t limit_batch) {
       // Capturing "gen" by-value would only make a copy for the _shared_
       // lambda.  Since we want to let each worker have its own copy, we pass
       // "gen" by reference and explicitly do a copy assignment here.
@@ -91,7 +101,7 @@ struct TruncatedNormalFunctor<CPUDevice, T> {
       Eigen::array<T, 4> z;
       Eigen::array<T, 4> g;
 
-      for (int64 b = start_batch; b < limit_batch; ++b) {
+      for (int64_t b = start_batch; b < limit_batch; ++b) {
         // We are passed a flat array for each of the parameter tensors.
         // The input is either a scalar broadcasted to all batches or a vector
         // with length num_batches, but the scalar becomes an array of length 1.
@@ -102,16 +112,16 @@ struct TruncatedNormalFunctor<CPUDevice, T> {
 
         // The last batch can be short, if we adjusted num_batches and
         // samples_per_batch.
-        const int64 limit_sample =
+        const int64_t limit_sample =
             std::min((b + 1) * samples_per_batch, num_elements);
-        int64 sample = b * samples_per_batch;
+        int64_t sample = b * samples_per_batch;
 
         // On GPU, this check will just fill samples with NAN if it fails.
         OP_REQUIRES(ctx,
                     stddev > T(0) && minval < maxval &&
                         (Eigen::numext::isfinite(minval) ||
                          Eigen::numext::isfinite(maxval)),
-                    errors::InvalidArgument("Invalid parameters"));
+                    absl::InvalidArgumentError("Invalid parameters"));
 
         int num_iterations = 0;
 
@@ -174,7 +184,7 @@ struct TruncatedNormalFunctor<CPUDevice, T> {
                              << "exceeded maximum iterations for "
                              << "normMin=" << normMin << " normMax=" << normMax
                              << " kMaxIterations=" << kMaxIterations;
-                  ctx->SetStatus(errors::Internal(
+                  ctx->SetStatus(absl::InternalError(
                       "TruncatedNormal randn rejection sampler failed to accept"
                       " a sample."));
                   return;
@@ -214,7 +224,7 @@ struct TruncatedNormalFunctor<CPUDevice, T> {
                   LOG(ERROR) << "TruncatedNormal uniform rejection sampler "
                              << "exceeded max iterations. Sample may contain "
                              << "outliers.";
-                  ctx->SetStatus(errors::Internal(
+                  ctx->SetStatus(absl::InternalError(
                       "TruncatedNormal uniform rejection sampler failed to "
                       " accept a sample."));
                   return;
@@ -254,7 +264,7 @@ struct TruncatedNormalFunctor<CPUDevice, T> {
                   LOG(ERROR) << "TruncatedNormal exponential distribution "
                              << "rejection sampler exceeds max iterations. "
                              << "Sample may contain outliers.";
-                  ctx->SetStatus(errors::Internal(
+                  ctx->SetStatus(absl::InternalError(
                       "TruncatedNormal exponential distribution rejection"
                       " sampler failed to accept a sample."));
                   return;
@@ -274,26 +284,27 @@ struct TruncatedNormalFunctor<CPUDevice, T> {
       }
     };
     // The cost of the initial calculations for the batch.
-    const int64 batchInitCost =
+    const int64_t batchInitCost =
         // normMin, normMax
         (Eigen::TensorOpCost::AddCost<T>() +
          Eigen::TensorOpCost::MulCost<T>()) *
-            2
+            2 +
         // sqrtFactor
-        + Eigen::TensorOpCost::AddCost<T>() +
-        Eigen::TensorOpCost::MulCost<T>() +
+        Eigen::TensorOpCost::AddCost<T>() + Eigen::TensorOpCost::MulCost<T>() +
         Eigen::internal::functor_traits<
-            Eigen::internal::scalar_sqrt_op<T>>::Cost
+            Eigen::internal::scalar_sqrt_op<T>>::Cost +
         // cutoff
-        + Eigen::TensorOpCost::MulCost<T>() * 4 +
-        Eigen::internal::functor_traits<Eigen::internal::scalar_exp_op<T>>::Cost
+        Eigen::TensorOpCost::MulCost<T>() * 4 +
+        Eigen::internal::functor_traits<
+            Eigen::internal::scalar_exp_op<T>>::Cost +
         // diff
-        + Eigen::TensorOpCost::AddCost<T>();
-    const int64 uniformSampleCost =
+        Eigen::TensorOpCost::AddCost<T>();
+
+    const int64_t uniformSampleCost =
         random::PhiloxRandom::kElementCost +
         random::UniformDistribution<random::PhiloxRandom, T>::kElementCost;
     // The cost of a single uniform sampling round.
-    const int64 uniformRejectionSamplingCost =
+    const int64_t uniformRejectionSamplingCost =
         uniformSampleCost + Eigen::TensorOpCost::MulCost<T>() +
         Eigen::TensorOpCost::AddCost<T>() +
         Eigen::TensorOpCost::MulCost<T>() * 2 +
@@ -301,9 +312,10 @@ struct TruncatedNormalFunctor<CPUDevice, T> {
         Eigen::internal::functor_traits<
             Eigen::internal::scalar_exp_op<T>>::Cost +
         Eigen::TensorOpCost::MulCost<T>() + Eigen::TensorOpCost::AddCost<T>();
+
     // Estimate the cost for an entire batch.
     // Assume we use uniform sampling, and accept the 2nd sample on average.
-    const int64 batchCost =
+    const int64_t batchCost =
         batchInitCost + uniformRejectionSamplingCost * 2 * samples_per_batch;
     Shard(worker_threads.num_threads, worker_threads.workers, num_batches,
           batchCost, do_work);
@@ -312,8 +324,8 @@ struct TruncatedNormalFunctor<CPUDevice, T> {
 
 template <typename T>
 struct TruncatedNormalFunctorV2<CPUDevice, T> {
-  void operator()(OpKernelContext* ctx, const CPUDevice& d, int64 num_batches,
-                  int64 samples_per_batch, int64 num_elements,
+  void operator()(OpKernelContext* ctx, const CPUDevice& d, int64_t num_batches,
+                  int64_t samples_per_batch, int64_t num_elements,
                   const BCastList<4>& bcast,
                   typename TTypes<T>::ConstFlat means,
                   typename TTypes<T>::ConstFlat stddevs,
@@ -333,8 +345,8 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
 
     auto do_work = [num_batches, samples_per_batch, &ctx, &bcast, &means,
                     &stddevs, &minvals, &maxvals, &gen, &output,
-                    kStdDevsInsideBoundsToUseRandnSampler](int start_output,
-                                                           int limit_output) {
+                    kStdDevsInsideBoundsToUseRandnSampler](
+                       int64_t start_output, int64_t limit_output) {
       // Capturing "gen" by-value would only make a copy for the _shared_
       // lambda.  Since we want to let each worker have its own copy, we pass
       // "gen" by reference and explicitly do a copy assignment here.
@@ -365,10 +377,10 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
 
       // We partition work across batches and then across samples
       // per batch member, to avoid extra work.
-      for (int64 output_idx = start_output; output_idx < limit_output;
+      for (int64_t output_idx = start_output; output_idx < limit_output;
            // output_idx is incremented with the inner loops below.
       ) {
-        int64 batch_idx = output_idx / samples_per_batch;
+        int64_t batch_idx = output_idx / samples_per_batch;
         // The output layout is [samples_per_batch, num_batches]. Thus
         // the output address is sample_idx * num_batches + batch_idx.
         // Below, code will index at output_batch_offset[sample_idx *
@@ -394,7 +406,7 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
                     stddev > T(0) && minval < maxval &&
                         (Eigen::numext::isfinite(minval) ||
                          Eigen::numext::isfinite(maxval)),
-                    errors::InvalidArgument("Invalid parameters"));
+                    absl::InvalidArgumentError("Invalid parameters"));
 
         int num_iterations = 0;
 
@@ -431,7 +443,7 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
           // Under this condition the acceptance rate per iteration should
           // always be ~ 50%. This sampler is more efficient (and more
           // numerically stable when one or both bounds is far from the mean).
-          for (int64 sample_idx = output_idx % samples_per_batch;
+          for (int64_t sample_idx = output_idx % samples_per_batch;
                sample_idx < samples_per_batch && output_idx < limit_output;) {
             const auto randn_sample = normal_dist(&gen_copy);
             const int size = randn_sample.size();
@@ -459,7 +471,7 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
                              << "exceeded maximum iterations for "
                              << "normMin=" << normMin << " normMax=" << normMax
                              << " kMaxIterations=" << kMaxIterations;
-                  ctx->SetStatus(errors::Internal(
+                  ctx->SetStatus(absl::InternalError(
                       "TruncatedNormal randn rejection sampler failed to accept"
                       " a sample."));
                   return;
@@ -472,7 +484,7 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
 
           const T plusFactor = (normMin < T(0)) ? T(0) : normMin * normMin;
 
-          for (int64 sample_idx = output_idx % samples_per_batch;
+          for (int64_t sample_idx = output_idx % samples_per_batch;
                sample_idx < samples_per_batch && output_idx < limit_output;) {
             const auto rand = dist(&gen_copy);
             const int size = rand.size();
@@ -498,7 +510,7 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
                   LOG(ERROR) << "TruncatedNormal uniform rejection sampler "
                              << "exceeded max iterations. Sample may contain "
                              << "outliers.";
-                  ctx->SetStatus(errors::Internal(
+                  ctx->SetStatus(absl::InternalError(
                       "TruncatedNormal uniform rejection sampler failed to "
                       " accept a sample."));
                   return;
@@ -524,7 +536,7 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
           const T alpha =
               (normMin + Eigen::numext::sqrt((normMin * normMin) + T(4))) /
               T(2);
-          for (int64 sample_idx = output_idx % samples_per_batch;
+          for (int64_t sample_idx = output_idx % samples_per_batch;
                sample_idx < samples_per_batch && output_idx < limit_output;) {
             auto rand = dist(&gen_copy);
             const int size = rand.size();
@@ -542,7 +554,7 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
                   LOG(ERROR) << "TruncatedNormal exponential distribution "
                              << "rejection sampler exceeds max iterations. "
                              << "Sample may contain outliers.";
-                  ctx->SetStatus(errors::Internal(
+                  ctx->SetStatus(absl::InternalError(
                       "TruncatedNormal exponential distribution rejection"
                       " sampler failed to accept a sample."));
                   return;
@@ -565,26 +577,27 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
       }
     };
     // The cost of the initial calculations for the batch.
-    const int64 batchInitCost =
+    const int64_t batchInitCost =
         // normMin, normMax
         (Eigen::TensorOpCost::AddCost<T>() +
          Eigen::TensorOpCost::MulCost<T>()) *
-            2
+            2 +
         // sqrtFactor
-        + Eigen::TensorOpCost::AddCost<T>() +
-        Eigen::TensorOpCost::MulCost<T>() +
+        Eigen::TensorOpCost::AddCost<T>() + Eigen::TensorOpCost::MulCost<T>() +
         Eigen::internal::functor_traits<
-            Eigen::internal::scalar_sqrt_op<T>>::Cost
+            Eigen::internal::scalar_sqrt_op<T>>::Cost +
         // cutoff
-        + Eigen::TensorOpCost::MulCost<T>() * 4 +
-        Eigen::internal::functor_traits<Eigen::internal::scalar_exp_op<T>>::Cost
+        Eigen::TensorOpCost::MulCost<T>() * 4 +
+        Eigen::internal::functor_traits<
+            Eigen::internal::scalar_exp_op<T>>::Cost +
         // diff
-        + Eigen::TensorOpCost::AddCost<T>();
-    const int64 uniformSampleCost =
+        Eigen::TensorOpCost::AddCost<T>();
+
+    const int64_t uniformSampleCost =
         random::PhiloxRandom::kElementCost +
         random::UniformDistribution<random::PhiloxRandom, T>::kElementCost;
     // The cost of a single uniform sampling round.
-    const int64 uniformRejectionSamplingCost =
+    const int64_t uniformRejectionSamplingCost =
         uniformSampleCost + Eigen::TensorOpCost::MulCost<T>() +
         Eigen::TensorOpCost::AddCost<T>() +
         Eigen::TensorOpCost::MulCost<T>() * 2 +
@@ -592,9 +605,10 @@ struct TruncatedNormalFunctorV2<CPUDevice, T> {
         Eigen::internal::functor_traits<
             Eigen::internal::scalar_exp_op<T>>::Cost +
         Eigen::TensorOpCost::MulCost<T>() + Eigen::TensorOpCost::AddCost<T>();
+
     // Estimate the cost for an entire batch.
     // Assume we use uniform sampling, and accept the 2nd sample on average.
-    const int64 batchCost = batchInitCost + uniformRejectionSamplingCost * 2;
+    const int64_t batchCost = batchInitCost + uniformRejectionSamplingCost * 2;
     Shard(worker_threads.num_threads, worker_threads.workers, num_elements,
           batchCost, do_work);
   }
@@ -608,7 +622,7 @@ namespace {
 template <typename Device, typename T>
 class ParameterizedTruncatedNormalOp : public OpKernel {
   // Reshape batches so each batch is this size if possible.
-  static constexpr int32 kDesiredBatchSize = 100;
+  static constexpr int32_t kDesiredBatchSize = 100;
 
  public:
   explicit ParameterizedTruncatedNormalOp(OpKernelConstruction* context)
@@ -623,44 +637,54 @@ class ParameterizedTruncatedNormalOp : public OpKernel {
     const Tensor& minvals_tensor = ctx->input(3);
     const Tensor& maxvals_tensor = ctx->input(4);
 
-    OP_REQUIRES(
-        ctx, TensorShapeUtils::IsVector(shape_tensor.shape()),
-        errors::InvalidArgument("Input shape should be a vector, got shape: ",
-                                shape_tensor.shape().DebugString()));
-    int32 num_batches = shape_tensor.flat<int32>()(0);
+    OP_REQUIRES(ctx, TensorShapeUtils::IsVector(shape_tensor.shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("Input shape should be a vector, got shape: ",
+                                 shape_tensor.shape().DebugString())));
+    OP_REQUIRES(ctx, shape_tensor.NumElements() > 0,
+                absl::InvalidArgumentError(
+                    absl::StrCat("Shape tensor must not be empty, got ",
+                                 shape_tensor.DebugString())));
+    TensorShape tensor_shape;
+    OP_REQUIRES_OK(ctx, tensor::MakeShape(shape_tensor, &tensor_shape));
 
-    int32 samples_per_batch = 1;
-    const int32 num_dims = shape_tensor.dim_size(0);
-    for (int32 i = 1; i < num_dims; i++) {
-      samples_per_batch *= shape_tensor.flat<int32>()(i);
+    int64_t num_batches = tensor_shape.dim_size(0);
+    int64_t samples_per_batch = 1;
+    const int32_t num_dims = tensor_shape.dims();
+    for (int32_t i = 1; i < num_dims; i++) {
+      samples_per_batch *= tensor_shape.dim_size(i);
     }
-    const int32 num_elements = num_batches * samples_per_batch;
+    const int64_t num_elements = tensor_shape.num_elements();
+
+    OP_REQUIRES(
+        ctx,
+        num_elements >= 0 &&
+            num_elements <= std::numeric_limits<int32_t>::max(),
+        absl::InvalidArgumentError(
+            "ParameterizedTruncatedNormal does not support output shapes with "
+            "more than 2**31 - 1 elements."));
 
     // Allocate the output before fudging num_batches and samples_per_batch.
-    auto shape_vec = shape_tensor.flat<int32>();
-    TensorShape tensor_shape;
-    OP_REQUIRES_OK(ctx, TensorShapeUtils::MakeShape(
-                            shape_vec.data(), shape_vec.size(), &tensor_shape));
     Tensor* samples_tensor;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, tensor_shape, &samples_tensor));
 
     // Parameters must be 0-d or 1-d.
     OP_REQUIRES(ctx, means_tensor.dims() <= 1,
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "Input means should be a scalar or vector, got shape: ",
-                    means_tensor.shape().DebugString()));
+                    means_tensor.shape().DebugString())));
     OP_REQUIRES(ctx, stddevs_tensor.dims() <= 1,
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "Input stddevs should be a scalar or vector, got shape: ",
-                    stddevs_tensor.shape().DebugString()));
+                    stddevs_tensor.shape().DebugString())));
     OP_REQUIRES(ctx, minvals_tensor.dims() <= 1,
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "Input minvals should be a scalar or vector, got shape: ",
-                    minvals_tensor.shape().DebugString()));
+                    minvals_tensor.shape().DebugString())));
     OP_REQUIRES(ctx, maxvals_tensor.dims() <= 1,
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "Input maxvals should be a scalar or vector, got shape: ",
-                    maxvals_tensor.shape().DebugString()));
+                    maxvals_tensor.shape().DebugString())));
 
     if ((means_tensor.dims() == 0 || means_tensor.dim_size(0) == 1) &&
         (stddevs_tensor.dims() == 0 || stddevs_tensor.dim_size(0) == 1) &&
@@ -668,10 +692,11 @@ class ParameterizedTruncatedNormalOp : public OpKernel {
       // All batches have the same parameters, so we can update the batch size
       // to a reasonable value to improve parallelism (ensure enough batches,
       // and no very small batches which have high overhead).
-      int32 size = num_batches * samples_per_batch;
-      int32 adjusted_samples = kDesiredBatchSize;
+      int64_t size = num_batches * samples_per_batch;
+      int64_t adjusted_samples = kDesiredBatchSize;
       // Ensure adjusted_batches * adjusted_samples >= size.
-      int32 adjusted_batches = Eigen::divup(size, adjusted_samples);
+      int64_t adjusted_batches =
+          (size + adjusted_samples - 1) / adjusted_samples;
       num_batches = adjusted_batches;
       samples_per_batch = adjusted_samples;
     } else {
@@ -681,33 +706,33 @@ class ParameterizedTruncatedNormalOp : public OpKernel {
           TensorShapeUtils::IsScalar(means_tensor.shape()) ||
               means_tensor.dim_size(0) == 1 ||
               means_tensor.dim_size(0) == num_batches,
-          errors::InvalidArgument(
+          absl::InvalidArgumentError(absl::StrCat(
               "Input means should have length 1 or shape[0], got shape: ",
-              means_tensor.shape().DebugString()));
+              means_tensor.shape().DebugString())));
       OP_REQUIRES(
           ctx,
           TensorShapeUtils::IsScalar(stddevs_tensor.shape()) ||
               stddevs_tensor.dim_size(0) == 1 ||
               stddevs_tensor.dim_size(0) == num_batches,
-          errors::InvalidArgument(
+          absl::InvalidArgumentError(absl::StrCat(
               "Input stddevs should have length 1 or shape[0], got shape: ",
-              stddevs_tensor.shape().DebugString()));
+              stddevs_tensor.shape().DebugString())));
       OP_REQUIRES(
           ctx,
           TensorShapeUtils::IsScalar(minvals_tensor.shape()) ||
               minvals_tensor.dim_size(0) == 1 ||
               minvals_tensor.dim_size(0) == num_batches,
-          errors::InvalidArgument(
+          absl::InvalidArgumentError(absl::StrCat(
               "Input minvals should have length 1 or shape[0], got shape: ",
-              minvals_tensor.shape().DebugString()));
+              minvals_tensor.shape().DebugString())));
       OP_REQUIRES(
           ctx,
           TensorShapeUtils::IsScalar(maxvals_tensor.shape()) ||
               maxvals_tensor.dim_size(0) == 1 ||
               maxvals_tensor.dim_size(0) == num_batches,
-          errors::InvalidArgument(
+          absl::InvalidArgumentError(absl::StrCat(
               "Input maxvals should have length 1 or shape[0], got shape: ",
-              maxvals_tensor.shape().DebugString()));
+              maxvals_tensor.shape().DebugString())));
     }
 
     auto truncFunctor = functor::TruncatedNormalFunctor<Device, T>();
@@ -724,14 +749,16 @@ class ParameterizedTruncatedNormalOp : public OpKernel {
  private:
   GuardedPhiloxRandom generator_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(ParameterizedTruncatedNormalOp);
+  ParameterizedTruncatedNormalOp(const ParameterizedTruncatedNormalOp&) =
+      delete;
+  void operator=(const ParameterizedTruncatedNormalOp&) = delete;
 };
 
 // Samples from a truncated normal distribution, using the given parameters.
 template <typename Device, typename T>
 class StatelessParameterizedTruncatedNormal : public OpKernel {
   // Reshape batches so each batch is this size if possible.
-  static const int32 kDesiredBatchSize = 100;
+  static const int32_t kDesiredBatchSize = 100;
 
  public:
   explicit StatelessParameterizedTruncatedNormal(OpKernelConstruction* context)
@@ -746,8 +773,9 @@ class StatelessParameterizedTruncatedNormal : public OpKernel {
     const Tensor& maxvals_tensor = ctx->input(5);
 
     OP_REQUIRES(ctx, seed_tensor.dims() == 1 && seed_tensor.dim_size(0) == 2,
-                errors::InvalidArgument("seed must have shape [2], not ",
-                                        seed_tensor.shape().DebugString()));
+                absl::InvalidArgumentError(
+                    absl::StrCat("seed must have shape [2], not ",
+                                 seed_tensor.shape().DebugString())));
 
     tensorflow::BCastList<4> bcast(
         {means_tensor.shape().dim_sizes(), stddevs_tensor.shape().dim_sizes(),
@@ -757,43 +785,51 @@ class StatelessParameterizedTruncatedNormal : public OpKernel {
         /*return_flattened_batch_indices=*/true);
 
     OP_REQUIRES(ctx, bcast.IsValid(),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "means, stddevs, minvals, maxvals must have compatible "
                     "batch dimensions: ",
                     means_tensor.shape().DebugString(), " vs. ",
                     stddevs_tensor.shape().DebugString(), " vs. ",
                     minvals_tensor.shape().DebugString(), " vs. ",
-                    maxvals_tensor.shape().DebugString()));
+                    maxvals_tensor.shape().DebugString())));
 
     // Let's check that the shape tensor dominates the broadcasted tensor.
     TensorShape bcast_shape = BCast::ToShape(bcast.output_shape());
-    OP_REQUIRES(
-        ctx, TensorShapeUtils::IsVector(shape_tensor.shape()),
-        errors::InvalidArgument("Input shape should be a vector, got shape: ",
-                                shape_tensor.shape().DebugString()));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsVector(shape_tensor.shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("Input shape should be a vector, got shape: ",
+                                 shape_tensor.shape().DebugString())));
     TensorShape output_shape;
     if (shape_tensor.dtype() == DataType::DT_INT32) {
-      OP_REQUIRES_OK(ctx, TensorShapeUtils::MakeShape(shape_tensor.vec<int32>(),
-                                                      &output_shape));
+      OP_REQUIRES_OK(ctx, TensorShapeUtils::MakeShape(
+                              shape_tensor.vec<int32_t>(), &output_shape));
     } else {
-      OP_REQUIRES_OK(ctx, TensorShapeUtils::MakeShape(shape_tensor.vec<int64>(),
-                                                      &output_shape));
+      OP_REQUIRES_OK(ctx, TensorShapeUtils::MakeShape(
+                              shape_tensor.vec<int64_t>(), &output_shape));
     }
     OP_REQUIRES(ctx, TensorShapeUtils::EndsWith(output_shape, bcast_shape),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(
                     "Shape passed in must end with broadcasted shape."));
 
-    int64 samples_per_batch = 1;
-    const int64 num_sample_dims =
+    int64_t samples_per_batch = 1;
+    const int64_t num_sample_dims =
         (shape_tensor.dim_size(0) - bcast.output_shape().size());
-    for (int64 i = 0; i < num_sample_dims; ++i) {
+    for (int64_t i = 0; i < num_sample_dims; ++i) {
       samples_per_batch *= output_shape.dim_size(i);
     }
-    int64 num_batches = 1;
-    for (int64 i = num_sample_dims; i < shape_tensor.dim_size(0); ++i) {
+    int64_t num_batches = 1;
+    for (int64_t i = num_sample_dims; i < shape_tensor.dim_size(0); ++i) {
       num_batches *= output_shape.dim_size(i);
     }
-    const int64 num_elements = num_batches * samples_per_batch;
+    const int64_t num_elements = output_shape.num_elements();
+
+    OP_REQUIRES(
+        ctx,
+        num_elements >= 0 &&
+            num_elements <= std::numeric_limits<int32_t>::max(),
+        absl::InvalidArgumentError(
+            "ParameterizedTruncatedNormal does not support output shapes with "
+            "more than 2**31 - 1 elements."));
 
     Tensor* samples_tensor;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, output_shape, &samples_tensor));
@@ -813,7 +849,9 @@ class StatelessParameterizedTruncatedNormal : public OpKernel {
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(StatelessParameterizedTruncatedNormal);
+  StatelessParameterizedTruncatedNormal(
+      const StatelessParameterizedTruncatedNormal&) = delete;
+  void operator=(const StatelessParameterizedTruncatedNormal&) = delete;
 };
 
 }  // namespace

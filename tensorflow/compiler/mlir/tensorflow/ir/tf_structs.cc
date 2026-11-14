@@ -15,11 +15,9 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tensorflow/ir/tf_structs.h"
 
+#include <optional>
+
 namespace mlir {
-
-// NOLINTNEXTLINE
-#include "tensorflow/compiler/mlir/tensorflow/ir/tf_structs.cc.inc"
-
 namespace TF {
 
 void RuntimeDevices::AddDevice(const ParsedName& device) {
@@ -32,13 +30,13 @@ void RuntimeDevices::AddGpuDevice(const ParsedName& device,
   gpu_metadata_.insert({DeviceNameUtils::ParsedNameToString(device), metadata});
 }
 
-llvm::Optional<GpuDeviceMetadata> RuntimeDevices::GetGpuDeviceMetadata(
+std::optional<GpuDeviceMetadata> RuntimeDevices::GetGpuDeviceMetadata(
     const ParsedName& device) const {
   auto it = gpu_metadata_.find(DeviceNameUtils::ParsedNameToString(device));
   if (it != gpu_metadata_.end()) {
     return it->second;
   } else {
-    return llvm::None;
+    return std::nullopt;
   }
 }
 

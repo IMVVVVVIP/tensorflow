@@ -16,26 +16,16 @@ limitations under the License.
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER5(BinaryOp, CPU, "Xlog1py", functor::xlog1py, float, Eigen::half,
-          double, complex64, complex128);
 
-#if TENSORFLOW_USE_SYCL
-#define REGISTER_SYCL_KERNEL(TYPE)                                   \
-  REGISTER_KERNEL_BUILDER(                                           \
-      Name("Xlog1py").Device(DEVICE_SYCL).TypeConstraint<TYPE>("T"), \
-      BinaryOp<SYCLDevice, functor::xlog1py<TYPE>>);
-REGISTER_SYCL_KERNEL(Eigen::half);
-REGISTER_SYCL_KERNEL(float);
-REGISTER_SYCL_KERNEL(double);
-REGISTER_SYCL_KERNEL(complex64);
-REGISTER_SYCL_KERNEL(complex128);
-#undef REGISTER_SYCL_KERNEL
+REGISTER6(BinaryOp, CPU, "Xlog1py", functor::xlog1py, Eigen::half, bfloat16,
+          float, double, complex64, complex128);
 
-#endif  // TENSORFLOW_USE_SYCL
-
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 REGISTER5(BinaryOp, GPU, "Xlog1py", functor::xlog1py, float, Eigen::half,
           double, complex64, complex128);
-#endif  // GOOGLE_CUDA
+#endif
+REGISTER(BinaryOp, GPU, "Xlog1py", functor::xlog1py, bfloat16);
+#endif
 
 }  // namespace tensorflow

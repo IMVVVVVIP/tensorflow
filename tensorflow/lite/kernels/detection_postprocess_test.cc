@@ -20,7 +20,7 @@ limitations under the License.
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "flatbuffers/flexbuffers.h"  // from @flatbuffers
-#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/kernels/test_util.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 
@@ -38,13 +38,11 @@ using ::testing::ElementsAreArray;
 // Tests for scenarios where we DO NOT set use_regular_nms flag
 class BaseDetectionPostprocessOpModel : public SingleOpModel {
  public:
-  BaseDetectionPostprocessOpModel(const TensorData& input1,
-                            const TensorData& input2,
-                            const TensorData& input3,
-                            const TensorData& output1,
-                            const TensorData& output2,
-                            const TensorData& output3,
-                            const TensorData& output4) {
+  BaseDetectionPostprocessOpModel(
+      const TensorData& input1, const TensorData& input2,
+      const TensorData& input3, const TensorData& output1,
+      const TensorData& output2, const TensorData& output3,
+      const TensorData& output4, int max_classes_per_detection = 1) {
     input1_ = AddInput(input1);
     input2_ = AddInput(input2);
     input3_ = AddInput(input3);
@@ -56,7 +54,7 @@ class BaseDetectionPostprocessOpModel : public SingleOpModel {
     flexbuffers::Builder fbb;
     fbb.Map([&]() {
       fbb.Int("max_detections", 3);
-      fbb.Int("max_classes_per_detection", 1);
+      fbb.Int("max_classes_per_detection", max_classes_per_detection);
       fbb.Float("nms_score_threshold", 0.0);
       fbb.Float("nms_iou_threshold", 0.5);
       fbb.Int("num_classes", 2);
@@ -160,7 +158,7 @@ TEST(DetectionPostprocessOpTest, FloatTest) {
   //   0.0, 10.0, 1.0, 11.0,
   //   0.0, 10.1, 1.0, 11.1,
   //   0.0, 100.0, 1.0, 101.0}
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
@@ -185,6 +183,70 @@ TEST(DetectionPostprocessOpTest, FloatTest) {
   EXPECT_THAT(output_shape4, ElementsAre(1));
   EXPECT_THAT(m.GetOutput4<float>(),
               ElementsAreArray(ArrayFloatNear({3.0}, 1e-4)));
+}
+
+// Tests the case when a box degenerates to a point (xmin==xmax, ymin==ymax).
+TEST(DetectionPostprocessOpTest, FloatTestWithDegeneratedBox) {
+  BaseDetectionPostprocessOpModel m(
+      {TensorType_FLOAT32, {1, 2, 4}}, {TensorType_FLOAT32, {1, 2, 3}},
+      {TensorType_FLOAT32, {2, 4}}, {TensorType_FLOAT32, {}},
+      {TensorType_FLOAT32, {}}, {TensorType_FLOAT32, {}},
+      {TensorType_FLOAT32, {}});
+
+  // two boxes in center-size encoding
+  m.SetInput1<float>({
+      0.0, 0.0, 0.0, 0.0,  // box #1
+      0.0, 0.0, 0.0, 0.0,  // box #2
+  });
+  // class scores - two classes with background
+  m.SetInput2<float>({
+      /*background*/ 0., /*class 0*/ .9, /*class 1*/ .8,  // box #1
+      /*background*/ 0., /*class 0*/ .2, /*class 1*/ .7   // box #2
+  });
+  // two anchors in center-size encoding
+  m.SetInput3<float>({
+      0.5, 0.5, 1.0, 1.0,  // anchor #1
+      0.5, 0.5, 0.0, 0.0   // anchor #2 - DEGENERATED!
+  });
+  // Same boxes in box-corner encoding:
+  // { 0.0, 0.0, 1.0, 1.0,
+  //   0.5, 0.5, 0.5, 0.5} // DEGENERATED!
+  // NOTE: this is used instead of `m.Invoke()` to make sure the entire test
+  // gets aborted if an error occurs (which does not happen when e.g. ASSERT_EQ
+  // is used in such a helper function).
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  // num_detections
+  std::vector<int> output_shape4 = m.GetOutputShape4();
+  EXPECT_THAT(output_shape4, ElementsAre(1));
+  const int num_detections = static_cast<int>(m.GetOutput4<float>()[0]);
+  EXPECT_EQ(num_detections, 2);
+  // detection_boxes
+  std::vector<int> output_shape1 = m.GetOutputShape1();
+  // NOTE: there are up to 3 detected boxes as per `max_detections` and
+  // `max_classes_per_detection` parameters. But since the actual number of
+  // detections is 2 (see above) only the top-2 results are tested
+  // here and below.
+  EXPECT_THAT(output_shape1, ElementsAre(1, 3, 4));
+  std::vector<float> detection_boxes = m.GetOutput1<float>();
+  detection_boxes.resize(num_detections * 4);
+  EXPECT_THAT(detection_boxes,
+              ElementsAreArray(ArrayFloatNear({0.0, 0.0, 1.0, 1.0,   // box #1
+                                               0.5, 0.5, 0.5, 0.5},  // box #2
+                                              1e-1)));
+  // detection_classes
+  std::vector<int> output_shape2 = m.GetOutputShape2();
+  EXPECT_THAT(output_shape2, ElementsAre(1, 3));
+  std::vector<float> detection_classes = m.GetOutput2<float>();
+  detection_classes.resize(num_detections);
+  EXPECT_THAT(detection_classes,
+              ElementsAreArray(ArrayFloatNear({0, 1}, 1e-4)));
+  // detection_scores
+  std::vector<int> output_shape3 = m.GetOutputShape3();
+  EXPECT_THAT(output_shape3, ElementsAre(1, 3));
+  std::vector<float> detection_scores = m.GetOutput3<float>();
+  detection_scores.resize(num_detections);
+  EXPECT_THAT(detection_scores,
+              ElementsAreArray(ArrayFloatNear({0.9, 0.7}, 1e-4)));
 }
 
 TEST(DetectionPostprocessOpTest, QuantizedTest) {
@@ -219,7 +281,7 @@ TEST(DetectionPostprocessOpTest, QuantizedTest) {
       0.5, 100.5, 1.0, 1.0   // anchor #6
   }};
   m.QuantizeAndPopulate<uint8_t>(m.input3(), inputs3[0]);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
@@ -246,6 +308,70 @@ TEST(DetectionPostprocessOpTest, QuantizedTest) {
               ElementsAreArray(ArrayFloatNear({3.0}, 1e-1)));
 }
 
+TEST(DetectionPostprocessOpTest, MaxClass2Test) {
+  BaseDetectionPostprocessOpModel m(
+      {TensorType_FLOAT32, {1, 6, 4}}, {TensorType_FLOAT32, {1, 6, 3}},
+      {TensorType_FLOAT32, {6, 4}}, {TensorType_FLOAT32, {}},
+      {TensorType_FLOAT32, {}}, {TensorType_FLOAT32, {}},
+      {TensorType_FLOAT32, {}}, /*max_classes_per_detection=*/2);
+
+  // six boxes in center-size encoding
+  m.SetInput1<float>({
+      0.0, 0.0,  0.0, 0.0,  // box #1
+      0.0, 1.0,  0.0, 0.0,  // box #2
+      0.0, -1.0, 0.0, 0.0,  // box #3
+      0.0, 0.0,  0.0, 0.0,  // box #4
+      0.0, 1.0,  0.0, 0.0,  // box #5
+      0.0, 0.0,  0.0, 0.0   // box #6
+  });
+  // class scores - two classes with background
+  m.SetInput2<float>({0., .9, .8, 0., .75, .72, 0., .6, .5, 0., .93, .95, 0.,
+                      .5, .4, 0., .3, .2});
+  // six anchors in center-size encoding
+  m.SetInput3<float>({
+      0.5, 0.5,   1.0, 1.0,  // anchor #1
+      0.5, 0.5,   1.0, 1.0,  // anchor #2
+      0.5, 0.5,   1.0, 1.0,  // anchor #3
+      0.5, 10.5,  1.0, 1.0,  // anchor #4
+      0.5, 10.5,  1.0, 1.0,  //  anchor #5
+      0.5, 100.5, 1.0, 1.0   // anchor #6
+  });
+  // Same boxes in box-corner encoding:
+  // { 0.0, 0.0, 1.0, 1.0,
+  //   0.0, 0.1, 1.0, 1.1,
+  //   0.0, -0.1, 1.0, 0.9,
+  //   0.0, 10.0, 1.0, 11.0,
+  //   0.0, 10.1, 1.0, 11.1,
+  //   0.0, 100.0, 1.0, 101.0}
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  // detection_boxes
+  // in center-size
+  std::vector<int> output_shape1 = m.GetOutputShape1();
+  EXPECT_THAT(output_shape1, ElementsAre(1, 6, 4));
+  EXPECT_THAT(m.GetOutput1<float>(),
+              ElementsAreArray(ArrayFloatNear(
+                  {0.0, 10.0,  1.0, 11.0,  0.0, 10.0,  1.0, 11.0,
+                   0.0, 0.0,   1.0, 1.0,   0.0, 0.0,   1.0, 1.0,
+                   0.0, 100.0, 1.0, 101.0, 0.0, 100.0, 1.0, 101.0},
+                  1e-1)));
+  // detection_classes
+  std::vector<int> output_shape2 = m.GetOutputShape2();
+  EXPECT_THAT(output_shape2, ElementsAre(1, 6));
+  EXPECT_THAT(m.GetOutput2<float>(),
+              ElementsAreArray(ArrayFloatNear({1, 0, 0, 1, 0, 1}, 1e-4)));
+  // detection_scores
+  std::vector<int> output_shape3 = m.GetOutputShape3();
+  EXPECT_THAT(output_shape3, ElementsAre(1, 6));
+  EXPECT_THAT(
+      m.GetOutput3<float>(),
+      ElementsAreArray(ArrayFloatNear({0.95, .93, 0.9, 0.8, 0.3, 0.2}, 1e-4)));
+  // num_detections
+  std::vector<int> output_shape4 = m.GetOutputShape4();
+  EXPECT_THAT(output_shape4, ElementsAre(1));
+  EXPECT_THAT(m.GetOutput4<float>(),
+              ElementsAreArray(ArrayFloatNear({3.0}, 1e-4)));
+}
+
 // Tests for scenarios where we set use_regular_nms flag
 class DetectionPostprocessOpModelwithRegularNMS : public SingleOpModel {
  public:
@@ -253,7 +379,9 @@ class DetectionPostprocessOpModelwithRegularNMS : public SingleOpModel {
       const TensorData& input1, const TensorData& input2,
       const TensorData& input3, const TensorData& output1,
       const TensorData& output2, const TensorData& output3,
-      const TensorData& output4, bool use_regular_nms) {
+      const TensorData& output4, bool use_regular_nms, int num_threads = 1,
+      int max_detections = 3, int detection_per_class = 1,
+      int num_classes = 2) {
     input1_ = AddInput(input1);
     input2_ = AddInput(input2);
     input3_ = AddInput(input3);
@@ -264,13 +392,13 @@ class DetectionPostprocessOpModelwithRegularNMS : public SingleOpModel {
 
     flexbuffers::Builder fbb;
     fbb.Map([&]() {
-      fbb.Int("max_detections", 3);
+      fbb.Int("max_detections", max_detections);
       fbb.Int("max_classes_per_detection", 1);
-      fbb.Int("detections_per_class", 1);
+      fbb.Int("detections_per_class", detection_per_class);
       fbb.Bool("use_regular_nms", use_regular_nms);
       fbb.Float("nms_score_threshold", 0.0);
       fbb.Float("nms_iou_threshold", 0.5);
-      fbb.Int("num_classes", 2);
+      fbb.Int("num_classes", num_classes);
       fbb.Float("y_scale", 10.0);
       fbb.Float("x_scale", 10.0);
       fbb.Float("h_scale", 5.0);
@@ -279,7 +407,10 @@ class DetectionPostprocessOpModelwithRegularNMS : public SingleOpModel {
     fbb.Finish();
     SetCustomOp("TFLite_Detection_PostProcess", fbb.GetBuffer(),
                 Register_DETECTION_POSTPROCESS);
-    BuildInterpreter({GetShape(input1_), GetShape(input2_), GetShape(input3_)});
+    BuildInterpreter({GetShape(input1_), GetShape(input2_), GetShape(input3_)},
+                     num_threads,
+                     /*allow_fp32_relax_to_fp16=*/false,
+                     /*apply_delegate=*/true);
   }
 
   int input1() { return input1_; }
@@ -292,12 +423,27 @@ class DetectionPostprocessOpModelwithRegularNMS : public SingleOpModel {
   }
 
   template <class T>
+  void SetInput1(const std::vector<T>& data) {
+    PopulateTensor<T>(input1_, data);
+  }
+
+  template <class T>
   void SetInput2(std::initializer_list<T> data) {
     PopulateTensor<T>(input2_, data);
   }
 
   template <class T>
+  void SetInput2(const std::vector<T>& data) {
+    PopulateTensor<T>(input2_, data);
+  }
+
+  template <class T>
   void SetInput3(std::initializer_list<T> data) {
+    PopulateTensor<T>(input3_, data);
+  }
+
+  template <class T>
+  void SetInput3(const std::vector<T>& data) {
     PopulateTensor<T>(input3_, data);
   }
 
@@ -371,7 +517,7 @@ TEST(DetectionPostprocessOpTest, FloatTestFastNMS) {
   //   0.0, 10.0, 1.0, 11.0,
   //   0.0, 10.1, 1.0, 11.1,
   //   0.0, 100.0, 1.0, 101.0}
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
@@ -430,7 +576,7 @@ TEST(DetectionPostprocessOpTest, QuantizedTestFastNMS) {
       0.5, 100.5, 1.0, 1.0   // anchor #6
   }};
   m.QuantizeAndPopulate<uint8_t>(m.input3(), inputs3[0]);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
@@ -457,115 +603,348 @@ TEST(DetectionPostprocessOpTest, QuantizedTestFastNMS) {
               ElementsAreArray(ArrayFloatNear({3.0}, 1e-1)));
 }
 
-TEST(DetectionPostprocessOpTest, FloatTestRegularNMS) {
+class DetectionPostprocessOpRegularTest
+    : public ::testing::TestWithParam<::testing::tuple<TensorType, int>> {
+ protected:
+  DetectionPostprocessOpRegularTest()
+      : tensor_type_(::testing::get<0>(GetParam())),
+        num_threads_(::testing::get<1>(GetParam())) {}
+
+  TensorType tensor_type_;
+  int num_threads_;
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    DetectionPostprocessOpRegularTest, DetectionPostprocessOpRegularTest,
+    ::testing::Combine(::testing::Values(TensorType_FLOAT32, TensorType_UINT8),
+                       ::testing::Values(1, 2)));
+
+TEST_P(DetectionPostprocessOpRegularTest, RegularNMS) {
+  TensorData input1, input2, input3;
+  if (tensor_type_ == TensorType_UINT8) {
+    input1 = {tensor_type_, {1, 6, 4}, -1.0, 1.0};
+    input2 = {tensor_type_, {1, 6, 3}, 0.0, 1.0};
+    input3 = {tensor_type_, {6, 4}, 0.0, 100.5};
+  } else {
+    input1 = {tensor_type_, {1, 6, 4}};
+    input2 = {tensor_type_, {1, 6, 3}};
+    input3 = {tensor_type_, {6, 4}};
+  }
   DetectionPostprocessOpModelwithRegularNMS m(
-      {TensorType_FLOAT32, {1, 6, 4}}, {TensorType_FLOAT32, {1, 6, 3}},
-      {TensorType_FLOAT32, {6, 4}}, {TensorType_FLOAT32, {}},
+      input1, input2, input3, {TensorType_FLOAT32, {}},
       {TensorType_FLOAT32, {}}, {TensorType_FLOAT32, {}},
-      {TensorType_FLOAT32, {}}, true);
-  // six boxes in center-size encoding
-  m.SetInput1<float>({
-      0.0, 0.0,  0.0, 0.0,  // box #1
-      0.0, 1.0,  0.0, 0.0,  // box #2
-      0.0, -1.0, 0.0, 0.0,  // box #3
-      0.0, 0.0,  0.0, 0.0,  // box #4
-      0.0, 1.0,  0.0, 0.0,  // box #5
-      0.0, 0.0,  0.0, 0.0   // box #6
-  });
+      {TensorType_FLOAT32, {}}, true, num_threads_);
+  auto inputs1 = {
+      0.0f, 0.0f,  0.0f, 0.0f,  // box #1
+      0.0f, 1.0f,  0.0f, 0.0f,  // box #2
+      0.0f, -1.0f, 0.0f, 0.0f,  // box #3
+      0.0f, 0.0f,  0.0f, 0.0f,  // box #4
+      0.0f, 1.0f,  0.0f, 0.0f,  // box #5
+      0.0f, 0.0f,  0.0f, 0.0f   // box #6
+  };
+  if (tensor_type_ == TensorType_UINT8) {
+    m.QuantizeAndPopulate<uint8_t>(m.input1(), std::vector<float>{inputs1});
+  } else {
+    m.SetInput1<float>(inputs1);
+  }
   // class scores - two classes with background
-  m.SetInput2<float>({0., .9, .8, 0., .75, .72, 0., .6, .5, 0., .93, .95, 0.,
-                      .5, .4, 0., .3, .2});
+  auto inputs2 = {0.f, .9f,  .8f,  0.f, .75f, .72f, 0.f, .6f, .5f,
+                  0.f, .93f, .95f, 0.f, .5f,  .4f,  0.f, .3f, .2f};
+  if (tensor_type_ == TensorType_UINT8) {
+    m.QuantizeAndPopulate<uint8_t>(m.input2(), std::vector<float>{inputs2});
+  } else {
+    m.SetInput2<float>(inputs2);
+  }
   // six anchors in center-size encoding
-  m.SetInput3<float>({
-      0.5, 0.5,   1.0, 1.0,  // anchor #1
-      0.5, 0.5,   1.0, 1.0,  // anchor #2
-      0.5, 0.5,   1.0, 1.0,  // anchor #3
-      0.5, 10.5,  1.0, 1.0,  // anchor #4
-      0.5, 10.5,  1.0, 1.0,  //  anchor #5
-      0.5, 100.5, 1.0, 1.0   // anchor #6
-  });
-  m.Invoke();
+  auto inputs3 = {
+      0.5f, 0.5f,   1.0f, 1.0f,  // anchor #1
+      0.5f, 0.5f,   1.0f, 1.0f,  // anchor #2
+      0.5f, 0.5f,   1.0f, 1.0f,  // anchor #3
+      0.5f, 10.5f,  1.0f, 1.0f,  // anchor #4
+      0.5f, 10.5f,  1.0f, 1.0f,  // anchor #5
+      0.5f, 100.5f, 1.0f, 1.0f   // anchor #6
+  };
+  if (tensor_type_ == TensorType_UINT8) {
+    m.QuantizeAndPopulate<uint8_t>(m.input3(), std::vector<float>{inputs3});
+  } else {
+    m.SetInput3<float>(inputs3);
+  }
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
   EXPECT_THAT(output_shape1, ElementsAre(1, 3, 4));
-  EXPECT_THAT(m.GetOutput1<float>(),
-              ElementsAreArray(ArrayFloatNear({0.0, 10.0, 1.0, 11.0, 0.0, 10.0,
-                                               1.0, 11.0, 0.0, 0.0, 0.0, 0.0},
-                                              3e-4)));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(
+        m.GetOutput1<float>(),
+        ElementsAreArray(ArrayFloatNear(
+            {0.0, 10.0, 1.0, 11.0, 0.0, 10.0, 1.0, 11.0, 0.0, 0.0, 0.0, 0.0},
+            3e-1)));
+  } else {
+    EXPECT_THAT(
+        m.GetOutput1<float>(),
+        ElementsAreArray(ArrayFloatNear(
+            {0.0, 10.0, 1.0, 11.0, 0.0, 10.0, 1.0, 11.0, 0.0, 0.0, 0.0, 0.0},
+            3e-4)));
+  }
   // detection_classes
   std::vector<int> output_shape2 = m.GetOutputShape2();
   EXPECT_THAT(output_shape2, ElementsAre(1, 3));
-  EXPECT_THAT(m.GetOutput2<float>(),
-              ElementsAreArray(ArrayFloatNear({1, 0, 0}, 1e-4)));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput2<float>(),
+                ElementsAreArray(ArrayFloatNear({1, 0, 0}, 1e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput2<float>(),
+                ElementsAreArray(ArrayFloatNear({1, 0, 0}, 1e-4)));
+  }
   // detection_scores
   std::vector<int> output_shape3 = m.GetOutputShape3();
   EXPECT_THAT(output_shape3, ElementsAre(1, 3));
-  EXPECT_THAT(m.GetOutput3<float>(),
-              ElementsAreArray(ArrayFloatNear({0.95, 0.93, 0.0}, 1e-4)));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput3<float>(),
+                ElementsAreArray(ArrayFloatNear({0.95, 0.9, 0.0}, 1e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput3<float>(),
+                ElementsAreArray(ArrayFloatNear({0.95, 0.93, 0.0}, 1e-4)));
+  }
   // num_detections
   std::vector<int> output_shape4 = m.GetOutputShape4();
   EXPECT_THAT(output_shape4, ElementsAre(1));
-  EXPECT_THAT(m.GetOutput4<float>(),
-              ElementsAreArray(ArrayFloatNear({2.0}, 1e-4)));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput4<float>(),
+                ElementsAreArray(ArrayFloatNear({2.0}, 1e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput4<float>(),
+                ElementsAreArray(ArrayFloatNear({2.0}, 1e-4)));
+  }
 }
 
-TEST(DetectionPostprocessOpTest, QuantizedTestRegularNMS) {
+TEST_P(DetectionPostprocessOpRegularTest, RegularNMSWithEqualScores) {
+  TensorData input1, input2, input3;
+  if (tensor_type_ == TensorType_UINT8) {
+    input1 = {tensor_type_, {1, 6, 4}, -1.0, 1.0};
+    input2 = {tensor_type_, {1, 6, 3}, 0.0, 1.0};
+    input3 = {tensor_type_, {6, 4}, 0.0, 100.5};
+  } else {
+    input1 = {tensor_type_, {1, 6, 4}};
+    input2 = {tensor_type_, {1, 6, 3}};
+    input3 = {tensor_type_, {6, 4}};
+  }
   DetectionPostprocessOpModelwithRegularNMS m(
-      {TensorType_UINT8, {1, 6, 4}, -1.0, 1.0},
-      {TensorType_UINT8, {1, 6, 3}, 0.0, 1.0},
-      {TensorType_UINT8, {6, 4}, 0.0, 100.5}, {TensorType_FLOAT32, {}},
+      input1, input2, input3, {TensorType_FLOAT32, {}},
       {TensorType_FLOAT32, {}}, {TensorType_FLOAT32, {}},
-      {TensorType_FLOAT32, {}}, true);
-  // six boxes in center-size encoding
-  std::vector<std::vector<float>> inputs1 = {{
-      0.0, 0.0,  0.0, 0.0,  // box #1
-      0.0, 1.0,  0.0, 0.0,  // box #2
-      0.0, -1.0, 0.0, 0.0,  // box #3
-      0.0, 0.0,  0.0, 0.0,  // box #4
-      0.0, 1.0,  0.0, 0.0,  // box #5
-      0.0, 0.0,  0.0, 0.0   // box #6
-  }};
-  m.QuantizeAndPopulate<uint8_t>(m.input1(), inputs1[0]);
+      {TensorType_FLOAT32, {}}, true, num_threads_, /*max_detections=*/4,
+      /*detection_per_class=*/2);
+  auto inputs1 = {
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #1 (0, 0, 1, 1)
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #2 (0, 1, 1, 2)
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #3 (0, 5, 1, 6)
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #4 (0, 10, 1, 11)
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #5 (0, 20, 1, 21)
+      0.0f, 0.0f, 0.0f, 0.0f   // box #6 (0, 100, 1, 101)
+  };
+
+  if (tensor_type_ == TensorType_UINT8) {
+    m.QuantizeAndPopulate<uint8_t>(m.input1(), std::vector<float>{inputs1});
+  } else {
+    m.SetInput1<float>(inputs1);
+  }
   // class scores - two classes with background
-  std::vector<std::vector<float>> inputs2 = {{0., .9, .8, 0., .75, .72, 0., .6,
-                                              .5, 0., .93, .95, 0., .5, .4, 0.,
-                                              .3, .2}};
-  m.QuantizeAndPopulate<uint8_t>(m.input2(), inputs2[0]);
+  auto inputs2 = {
+      0.f, .1f,  0.1f,   // box #1
+      0.f, .1f,  0.96f,  // box #2
+      0.f, .1f,  0.9f,   // box #3
+      0.f, .95f, 0.1f,   // box #4
+      0.f, .9f,  0.1f,   // box #5
+      0.f, .1f,  0.1f    // box #6
+  };
+  if (tensor_type_ == TensorType_UINT8) {
+    m.QuantizeAndPopulate<uint8_t>(m.input2(), std::vector<float>{inputs2});
+  } else {
+    m.SetInput2<float>(inputs2);
+  }
   // six anchors in center-size encoding
-  std::vector<std::vector<float>> inputs3 = {{
-      0.5, 0.5,   1.0, 1.0,  // anchor #1
-      0.5, 0.5,   1.0, 1.0,  // anchor #2
-      0.5, 0.5,   1.0, 1.0,  // anchor #3
-      0.5, 10.5,  1.0, 1.0,  // anchor #4
-      0.5, 10.5,  1.0, 1.0,  // anchor #5
-      0.5, 100.5, 1.0, 1.0   // anchor #6
-  }};
-  m.QuantizeAndPopulate<uint8_t>(m.input3(), inputs3[0]);
-  m.Invoke();
+  auto inputs3 = {
+      0.5f, 0.5f,   1.0f, 1.0f,  // box #1
+      0.5f, 1.5f,   1.0f, 1.0f,  // box #2
+      0.5f, 5.5f,   1.0f, 1.0f,  // box #3
+      0.5f, 10.5f,  1.0f, 1.0f,  // box #4
+      0.5f, 20.5f,  1.0f, 1.0f,  // box #5
+      0.5f, 100.5f, 1.0f, 1.0f   // box #6
+  };
+  if (tensor_type_ == TensorType_UINT8) {
+    m.QuantizeAndPopulate<uint8_t>(m.input3(), std::vector<float>{inputs3});
+  } else {
+    m.SetInput3<float>(inputs3);
+  }
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
-  EXPECT_THAT(output_shape1, ElementsAre(1, 3, 4));
-  EXPECT_THAT(m.GetOutput1<float>(),
-              ElementsAreArray(ArrayFloatNear({0.0, 10.0, 1.0, 11.0, 0.0, 10.0,
-                                               1.0, 11.0, 0.0, 0.0, 0.0, 0.0},
-                                              3e-1)));
+  EXPECT_THAT(output_shape1, ElementsAre(1, 4, 4));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput1<float>(), ElementsAreArray(ArrayFloatNear(
+                                           {
+                                               0, 1, 1, 2,    // box #2
+                                               0, 10, 1, 11,  // box #4
+                                               0, 20, 1, 21,  // box #5
+                                               0, 5, 1, 6     // box #3
+                                           },
+                                           3e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput1<float>(), ElementsAreArray(ArrayFloatNear(
+                                           {
+                                               0, 1, 1, 2,    // box #2
+                                               0, 10, 1, 11,  // box #4
+                                               0, 20, 1, 21,  // box #5
+                                               0, 5, 1, 6     // box #3
+                                           },
+                                           3e-4)));
+  }
   // detection_classes
   std::vector<int> output_shape2 = m.GetOutputShape2();
-  EXPECT_THAT(output_shape2, ElementsAre(1, 3));
-  EXPECT_THAT(m.GetOutput2<float>(),
-              ElementsAreArray(ArrayFloatNear({1, 0, 0}, 1e-1)));
+  EXPECT_THAT(output_shape2, ElementsAre(1, 4));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput2<float>(),
+                ElementsAreArray(ArrayFloatNear({1, 0, 0, 1}, 1e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput2<float>(),
+                ElementsAreArray(ArrayFloatNear({1, 0, 0, 1}, 1e-4)));
+  }
   // detection_scores
   std::vector<int> output_shape3 = m.GetOutputShape3();
-  EXPECT_THAT(output_shape3, ElementsAre(1, 3));
-  EXPECT_THAT(m.GetOutput3<float>(),
-              ElementsAreArray(ArrayFloatNear({0.95, 0.9, 0.0}, 1e-1)));
+  EXPECT_THAT(output_shape3, ElementsAre(1, 4));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput3<float>(),
+                ElementsAreArray(ArrayFloatNear({0.96, 0.95, 0.9, 0.9}, 1e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput3<float>(),
+                ElementsAreArray(ArrayFloatNear({0.96, 0.95, 0.9, 0.9}, 1e-4)));
+  }
   // num_detections
   std::vector<int> output_shape4 = m.GetOutputShape4();
   EXPECT_THAT(output_shape4, ElementsAre(1));
-  EXPECT_THAT(m.GetOutput4<float>(),
-              ElementsAreArray(ArrayFloatNear({2.0}, 1e-1)));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput4<float>(),
+                ElementsAreArray(ArrayFloatNear({4.0}, 1e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput4<float>(),
+                ElementsAreArray(ArrayFloatNear({4.0}, 1e-4)));
+  }
+}
+
+TEST_P(DetectionPostprocessOpRegularTest, FastNMSWithEqualScores) {
+  TensorData input1, input2, input3;
+  if (tensor_type_ == TensorType_UINT8) {
+    input1 = {tensor_type_, {1, 6, 4}, -1.0, 1.0};
+    input2 = {tensor_type_, {1, 6, 3}, 0.0, 1.0};
+    input3 = {tensor_type_, {6, 4}, 0.0, 100.5};
+  } else {
+    input1 = {tensor_type_, {1, 6, 4}};
+    input2 = {tensor_type_, {1, 6, 3}};
+    input3 = {tensor_type_, {6, 4}};
+  }
+  DetectionPostprocessOpModelwithRegularNMS m(
+      input1, input2, input3, {TensorType_FLOAT32, {}},
+      {TensorType_FLOAT32, {}}, {TensorType_FLOAT32, {}},
+      {TensorType_FLOAT32, {}}, false, num_threads_, /*max_detections=*/4,
+      /*detection_per_class=*/2);
+  auto inputs1 = {
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #1 (0, 0, 1, 1)
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #2 (0, 1, 1, 2)
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #3 (0, 5, 1, 6)
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #4 (0, 10, 1, 11)
+      0.0f, 0.0f, 0.0f, 0.0f,  // box #5 (0, 20, 1, 21)
+      0.0f, 0.0f, 0.0f, 0.0f   // box #6 (0, 100, 1, 101)
+  };
+
+  if (tensor_type_ == TensorType_UINT8) {
+    m.QuantizeAndPopulate<uint8_t>(m.input1(), std::vector<float>{inputs1});
+  } else {
+    m.SetInput1<float>(inputs1);
+  }
+  // class scores - two classes with background
+  auto inputs2 = {
+      0.f, .1f,  0.1f,   // box #1
+      0.f, .1f,  0.96f,  // box #2
+      0.f, .1f,  0.9f,   // box #3
+      0.f, .95f, 0.1f,   // box #4
+      0.f, .9f,  0.1f,   // box #5
+      0.f, .1f,  0.1f    // box #6
+  };
+  if (tensor_type_ == TensorType_UINT8) {
+    m.QuantizeAndPopulate<uint8_t>(m.input2(), std::vector<float>{inputs2});
+  } else {
+    m.SetInput2<float>(inputs2);
+  }
+  // six anchors in center-size encoding
+  auto inputs3 = {
+      0.5f, 0.5f,   1.0f, 1.0f,  // box #1
+      0.5f, 1.5f,   1.0f, 1.0f,  // box #2
+      0.5f, 5.5f,   1.0f, 1.0f,  // box #3
+      0.5f, 10.5f,  1.0f, 1.0f,  // box #4
+      0.5f, 20.5f,  1.0f, 1.0f,  // box #5
+      0.5f, 100.5f, 1.0f, 1.0f   // box #6
+  };
+  if (tensor_type_ == TensorType_UINT8) {
+    m.QuantizeAndPopulate<uint8_t>(m.input3(), std::vector<float>{inputs3});
+  } else {
+    m.SetInput3<float>(inputs3);
+  }
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  // detection_boxes
+  // in center-size
+  std::vector<int> output_shape1 = m.GetOutputShape1();
+  EXPECT_THAT(output_shape1, ElementsAre(1, 4, 4));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput1<float>(), ElementsAreArray(ArrayFloatNear(
+                                           {
+                                               0, 1, 1, 2,    // box #2
+                                               0, 10, 1, 11,  // box #4
+                                               0, 5, 1, 6,    // box #3
+                                               0, 20, 1, 21   // box #5
+                                           },
+                                           3e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput1<float>(), ElementsAreArray(ArrayFloatNear(
+                                           {
+                                               0, 1, 1, 2,    // box #2
+                                               0, 10, 1, 11,  // box #4
+                                               0, 5, 1, 6,    // box #3
+                                               0, 20, 1, 21   // box #5
+                                           },
+                                           3e-4)));
+  }
+  // detection_classes
+  std::vector<int> output_shape2 = m.GetOutputShape2();
+  EXPECT_THAT(output_shape2, ElementsAre(1, 4));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput2<float>(),
+                ElementsAreArray(ArrayFloatNear({1, 0, 1, 0}, 1e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput2<float>(),
+                ElementsAreArray(ArrayFloatNear({1, 0, 1, 0}, 1e-4)));
+  }
+  // detection_scores
+  std::vector<int> output_shape3 = m.GetOutputShape3();
+  EXPECT_THAT(output_shape3, ElementsAre(1, 4));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput3<float>(),
+                ElementsAreArray(ArrayFloatNear({0.96, 0.95, 0.9, 0.9}, 1e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput3<float>(),
+                ElementsAreArray(ArrayFloatNear({0.96, 0.95, 0.9, 0.9}, 1e-4)));
+  }
+  // num_detections
+  std::vector<int> output_shape4 = m.GetOutputShape4();
+  EXPECT_THAT(output_shape4, ElementsAre(1));
+  if (tensor_type_ == TensorType_UINT8) {
+    EXPECT_THAT(m.GetOutput4<float>(),
+                ElementsAreArray(ArrayFloatNear({4.0}, 1e-1)));
+  } else {
+    EXPECT_THAT(m.GetOutput4<float>(),
+                ElementsAreArray(ArrayFloatNear({4.0}, 1e-4)));
+  }
 }
 
 TEST(DetectionPostprocessOpTest, FloatTestwithNoBackgroundClassAndNoKeypoints) {
@@ -596,7 +975,7 @@ TEST(DetectionPostprocessOpTest, FloatTestwithNoBackgroundClassAndNoKeypoints) {
       0.5, 100.5, 1.0, 1.0   // anchor #6
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
@@ -652,7 +1031,7 @@ TEST(DetectionPostprocessOpTest, FloatTestwithBackgroundClassAndKeypoints) {
       0.5, 100.5, 1.0, 1.0   // anchor #6
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
@@ -711,7 +1090,7 @@ TEST(DetectionPostprocessOpTest,
       0.5, 100.5, 1.0, 1.0   // anchor #6
   }};
   m.QuantizeAndPopulate<uint8_t>(m.input3(), inputs3[0]);
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
@@ -766,7 +1145,7 @@ TEST(DetectionPostprocessOpTest, FloatTestwithNoBackgroundClassAndKeypoints) {
       0.5, 100.5, 1.0, 1.0   // anchor #6
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
   // detection_boxes
   // in center-size
   std::vector<int> output_shape1 = m.GetOutputShape1();
@@ -792,6 +1171,124 @@ TEST(DetectionPostprocessOpTest, FloatTestwithNoBackgroundClassAndKeypoints) {
   EXPECT_THAT(m.GetOutput4<float>(),
               ElementsAreArray(ArrayFloatNear({3.0}, 1e-4)));
 }
+
+TEST(DetectionPostprocessOpTest,
+     QuantizedTestwithNoBackgroundClassAndKeypointsStableSort) {
+  DetectionPostprocessOpModelwithRegularNMS m(
+      {TensorType_UINT8, {1, 6, 5}, -1.0, 1.0},
+      {TensorType_UINT8, {1, 6, 2}, 0.0, 1.0},
+      {TensorType_UINT8, {6, 4}, 0.0, 100.5}, {TensorType_FLOAT32, {}},
+      {TensorType_FLOAT32, {}}, {TensorType_FLOAT32, {}},
+      {TensorType_FLOAT32, {}}, false);
+  // six boxes in center-size encoding
+  std::vector<std::vector<float>> inputs1 = {{
+      0.0, 0.0,  0.0, 0.0, 1.0,  // box #1
+      0.0, 1.0,  0.0, 0.0, 1.0,  // box #2
+      0.0, -1.0, 0.0, 0.0, 1.0,  // box #3
+      0.0, 0.0,  0.0, 0.0, 1.0,  // box #4
+      0.0, 1.0,  0.0, 0.0, 1.0,  // box #5
+      0.0, 0.0,  0.0, 0.0, 1.0   // box #6
+  }};
+  m.QuantizeAndPopulate<uint8_t>(m.input1(), inputs1[0]);
+  // class scores - two classes with background
+  // inputs2 values taken from ssd mobilenet v1 - a stable sort is required to
+  // retain order of equal elements
+  std::vector<std::vector<float>> inputs2 = {
+      {0.015625, 0.007812, 0.003906, 0.015625, 0.015625, 0.007812, 0.019531,
+       0.019531, 0.007812, 0.003906, 0.003906, 0.003906}};
+  m.QuantizeAndPopulate<uint8_t>(m.input2(), inputs2[0]);
+  // six anchors in center-size encoding
+  std::vector<std::vector<float>> inputs3 = {{
+      0.5, 0.5,   1.0, 1.0,  // anchor #1
+      0.5, 0.5,   1.0, 1.0,  // anchor #2
+      0.5, 0.5,   1.0, 1.0,  // anchor #3
+      0.5, 10.5,  1.0, 1.0,  // anchor #4
+      0.5, 10.5,  1.0, 1.0,  // anchor #5
+      0.5, 100.5, 1.0, 1.0   // anchor #6
+  }};
+  m.QuantizeAndPopulate<uint8_t>(m.input3(), inputs3[0]);
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+  // detection_boxes
+  // in center-size
+  std::vector<int> output_shape1 = m.GetOutputShape1();
+  EXPECT_THAT(output_shape1, ElementsAre(1, 3, 4));
+  EXPECT_THAT(
+      m.GetOutput1<float>(),
+      ElementsAreArray(ArrayFloatNear(
+          {0.0, 10.0, 1.0, 11.0, 0.0, 0.0, 1.0, 1.0, 0.0, 100.0, 1.0, 101.0},
+          3e-1)));
+  // detection_classes
+  std::vector<int> output_shape2 = m.GetOutputShape2();
+  EXPECT_THAT(output_shape2, ElementsAre(1, 3));
+  EXPECT_THAT(m.GetOutput2<float>(),
+              ElementsAreArray(ArrayFloatNear({0, 0, 0}, 1e-1)));
+  // detection_scores
+  std::vector<int> output_shape3 = m.GetOutputShape3();
+  EXPECT_THAT(output_shape3, ElementsAre(1, 3));
+  EXPECT_THAT(m.GetOutput3<float>(),
+              ElementsAreArray(
+                  ArrayFloatNear({0.0196078, 0.0156863, 0.00392157}, 1e-7)));
+  // num_detections
+  std::vector<int> output_shape4 = m.GetOutputShape4();
+  EXPECT_THAT(output_shape4, ElementsAre(1));
+  EXPECT_THAT(m.GetOutput4<float>(),
+              ElementsAreArray(ArrayFloatNear({3.0}, 1e-1)));
+}
+
+TEST(DetectionPostprocessOpTest,
+     MultiThreadedRegularNMSHeapCorruptionRegressionTest) {
+  constexpr int kNumBoxes = 8;
+  constexpr int kNumClasses = 8;
+  constexpr int kNumClassesWithBackground = 9;
+  constexpr int kMaxDetections = 4;
+  constexpr int kDetectionsPerClass = 1;
+  constexpr int kNumThreads = 4;
+
+  DetectionPostprocessOpModelwithRegularNMS m(
+      /*input1=*/{TensorType_FLOAT32, {1, kNumBoxes, 4}},
+      /*input2=*/
+      {TensorType_FLOAT32, {1, kNumBoxes, kNumClassesWithBackground}},
+      /*input3=*/{TensorType_FLOAT32, {kNumBoxes, 4}},
+      /*output1=*/{TensorType_FLOAT32, {}},
+      /*output2=*/{TensorType_FLOAT32, {}},
+      /*output3=*/{TensorType_FLOAT32, {}},
+      /*output4=*/{TensorType_FLOAT32, {}},
+      /*use_regular_nms=*/true,
+      /*num_threads=*/kNumThreads,
+      /*max_detections=*/kMaxDetections,
+      /*detection_per_class=*/kDetectionsPerClass,
+      /*num_classes=*/kNumClasses);
+
+  std::vector<float> box_encodings(kNumBoxes * 4, 0.0f);
+  m.SetInput1<float>(box_encodings);
+
+  std::vector<float> class_scores(kNumBoxes * kNumClassesWithBackground, 0.0f);
+  for (int b = 0; b < kNumBoxes; ++b) {
+    // Class 0 is background; classes 1..8 correspond to valid classes.
+    class_scores[b * kNumClassesWithBackground + (b + 1)] = 0.9f;
+  }
+  m.SetInput2<float>(class_scores);
+
+  std::vector<float> anchors(kNumBoxes * 4, 0.0f);
+  for (int b = 0; b < kNumBoxes; ++b) {
+    anchors[b * 4 + 0] = 0.5f;
+    anchors[b * 4 + 1] = b * 10.0f + 0.5f;
+    anchors[b * 4 + 2] = 1.0f;
+    anchors[b * 4 + 3] = 1.0f;
+  }
+  m.SetInput3<float>(anchors);
+
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+
+  EXPECT_THAT(m.GetOutputShape1(), ElementsAre(1, kMaxDetections, 4));
+  EXPECT_THAT(m.GetOutputShape2(), ElementsAre(1, kMaxDetections));
+  EXPECT_THAT(m.GetOutputShape3(), ElementsAre(1, kMaxDetections));
+  EXPECT_THAT(m.GetOutputShape4(), ElementsAre(1));
+  EXPECT_THAT(m.GetOutput4<float>(),
+              ElementsAreArray(
+                  ArrayFloatNear({static_cast<float>(kMaxDetections)}, 1e-4)));
+}
+
 }  // namespace
 }  // namespace custom
 }  // namespace ops

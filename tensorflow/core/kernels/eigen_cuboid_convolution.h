@@ -16,19 +16,19 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_EIGEN_CUBOID_CONVOLUTION_H_
 #define TENSORFLOW_CORE_KERNELS_EIGEN_CUBOID_CONVOLUTION_H_
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-#include "tensorflow/core/kernels/eigen_volume_patch.h"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 
 #if defined(TENSORFLOW_USE_CUSTOM_CONTRACTION_KERNEL)
-#include "tensorflow/core/kernels/eigen_contraction_kernel.h"
+#include "xla/tsl/framework/contraction/eigen_contraction_kernel.h"
 #endif
 
-#include "tensorflow/core/kernels/eigen_convolution_helpers.h"
+#include "xla/tsl/framework/convolution/eigen_convolution_helpers.h"
 
 namespace Eigen {
 
 namespace internal {
 
+#if !EIGEN_ALTIVEC_USE_CUSTOM_PACK
 // WARNING: Most of the code here implicitly assumes that the matrix is in
 // ColMajor layout. This is guaranteed by the tensor contraction (see
 // TensorContraction.h).
@@ -495,7 +495,7 @@ class TensorContractionInputMapper<
       // span[1]+1 : packetSize-1 - Zeross will be loaded for these indices
       const Index packetSize = internal::unpacket_traits<Packet>::size;
       EIGEN_ALIGN_MAX
-      typename internal::remove_const<Scalar>::type values[packetSize];
+      std::remove_const_t<Scalar> values[packetSize];
       for (int i = 0; i < span[0]; ++i) values[i] = Scalar(0);
       for (int i = span[0]; i < span[1] + 1; ++i)
         values[i] = loadCoeff(patchId - span[0] + i, planeIndex, rowIndex,
@@ -758,7 +758,7 @@ class TensorContractionInputMapper<
                          Index colIndex, Index otherIndex) const {
     const int packetSize = internal::unpacket_traits<Packet>::size;
     EIGEN_ALIGN_MAX
-    typename internal::remove_const<Scalar>::type values[packetSize];
+    std::remove_const_t<Scalar> values[packetSize];
     for (int i = 0; i < packetSize; ++i) {
       values[i] =
           loadCoeff(patchId + i, planeIndex, rowIndex, colIndex, otherIndex);
@@ -931,12 +931,14 @@ class TensorContractionSubMapper<
     return m_base_mapper(i + m_depth_offset, j + m_col_offset);
   }
 
-  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Packet loadPacket(Index i) const {
+  template <typename PacketT = Packet>
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE PacketT loadPacket(Index i) const {
     return m_base_mapper.loadPacket(i + m_depth_offset, m_planeIndex,
                                     m_rowIndex, m_colIndex, m_otherIndex);
   }
-  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE Packet loadPacket(Index i,
-                                                          Index j) const {
+  template <typename PacketT = Packet>
+  EIGEN_DEVICE_FUNC EIGEN_ALWAYS_INLINE PacketT loadPacket(Index i,
+                                                           Index j) const {
     return m_base_mapper.template loadPacket<Alignment>(i + m_depth_offset,
                                                         j + m_col_offset);
   }
@@ -1194,8 +1196,7 @@ class TensorContractionSubMapper<
 template <typename NewDimension, Index Planes, Index Rows, Index Cols,
           typename ArgType, typename Device, typename Scalar, typename Index,
           typename nocontract_t, typename contract_t, int packet_size,
-          bool inner_dim_contiguous, bool inner_dim_reordered, int Alignment,
-          int nr>
+          bool inner_dim_contiguous, bool inner_dim_reordered, int Alignment>
 struct gemm_pack_rhs<
     Scalar, Index,
     TensorContractionSubMapper<
@@ -1206,7 +1207,7 @@ struct gemm_pack_rhs<
                         Device>,
         nocontract_t, contract_t, packet_size, inner_dim_contiguous,
         inner_dim_reordered, Alignment>,
-    nr, ColMajor, false, false> {
+    /*nr=*/4, ColMajor, false, false> {
   typedef TensorContractionSubMapper<
       Scalar, Index, Rhs,
       TensorEvaluator<const TensorReshapingOp<
@@ -1219,8 +1220,6 @@ struct gemm_pack_rhs<
 
   typedef SubMapper DataMapper;
   typedef typename packet_traits<Scalar>::type Packet;
-
-  EIGEN_STATIC_ASSERT((nr == 4), YOU_MADE_A_PROGRAMMING_MISTAKE);
 
   EIGEN_DEVICE_FUNC
   EIGEN_DONT_INLINE void operator()(Scalar* block, const DataMapper& rhs,
@@ -1376,7 +1375,7 @@ struct gemm_pack_rhs<
 template <typename NewDimension, Index Planes, Index Rows, Index Cols,
           typename ArgType, typename Device, typename Scalar, typename Index,
           typename nocontract_t, typename contract_t, bool inner_dim_contiguous,
-          bool inner_dim_reordered, int Alignment, int nr>
+          bool inner_dim_reordered, int Alignment>
 struct gemm_pack_rhs<
     Scalar, Index,
     TensorContractionSubMapper<
@@ -1387,7 +1386,7 @@ struct gemm_pack_rhs<
                         Device>,
         nocontract_t, contract_t, /*packet_size*/ 2, inner_dim_contiguous,
         inner_dim_reordered, Alignment>,
-    nr, ColMajor, false, false> {
+    /*nr=*/4, ColMajor, false, false> {
   typedef TensorContractionSubMapper<
       Scalar, Index, Rhs,
       TensorEvaluator<const TensorReshapingOp<
@@ -1399,8 +1398,6 @@ struct gemm_pack_rhs<
       SubMapper;
   typedef SubMapper DataMapper;
   typedef typename packet_traits<Scalar>::type Packet;
-
-  EIGEN_STATIC_ASSERT((nr == 4), YOU_MADE_A_PROGRAMMING_MISTAKE);
 
   EIGEN_DEVICE_FUNC
   EIGEN_DONT_INLINE void operator()(Scalar* block, const DataMapper& rhs,
@@ -1556,7 +1553,7 @@ struct gemm_pack_rhs<
 template <typename NewDimension, Index Planes, Index Rows, Index Cols,
           typename ArgType, typename Device, typename Scalar, typename Index,
           typename nocontract_t, typename contract_t, bool inner_dim_contiguous,
-          bool inner_dim_reordered, int Alignment, int nr>
+          bool inner_dim_reordered, int Alignment>
 struct gemm_pack_rhs<
     Scalar, Index,
     TensorContractionSubMapper<
@@ -1567,7 +1564,7 @@ struct gemm_pack_rhs<
                         Device>,
         nocontract_t, contract_t, /*packet_size*/ 1, inner_dim_contiguous,
         inner_dim_reordered, Alignment>,
-    nr, ColMajor, false, false> {
+    /*nr=*/4, ColMajor, false, false> {
   typedef TensorContractionSubMapper<
       Scalar, Index, Rhs,
       TensorEvaluator<const TensorReshapingOp<
@@ -1578,8 +1575,6 @@ struct gemm_pack_rhs<
       Alignment>
       SubMapper;
   typedef SubMapper DataMapper;
-
-  EIGEN_STATIC_ASSERT((nr == 4), YOU_MADE_A_PROGRAMMING_MISTAKE);
 
   EIGEN_DEVICE_FUNC
   EIGEN_DONT_INLINE void operator()(Scalar* block, const DataMapper& rhs,
@@ -1625,6 +1620,7 @@ struct gemm_pack_rhs<
     }
   }
 };
+#endif
 
 #if defined(TENSORFLOW_USE_CUSTOM_CONTRACTION_KERNEL)
 // Pack a block of the right input matrix (in our case it's always a "virtual
@@ -1811,7 +1807,7 @@ struct gemm_pack_colmajor_block<
  * output.
  */
 template <typename Input, typename Kernel>
-EIGEN_ALWAYS_INLINE static const typename internal::conditional<
+EIGEN_ALWAYS_INLINE static const std::conditional_t<
     internal::traits<Input>::Layout == ColMajor,
     TensorReshapingOp<
         const DSizes<typename internal::traits<Input>::Index,
@@ -1836,19 +1832,19 @@ EIGEN_ALWAYS_INLINE static const typename internal::conditional<
                                           const Input> >,
             const TensorReshapingOp<
                 const DSizes<typename internal::traits<Input>::Index, 2>,
-                const Kernel> > > >::type
+                const Kernel> > > >
 CuboidConvolution(const Input& input, const Kernel& kernel,
                   const Index stridePlanes = 1, const Index strideRows = 1,
                   const Index strideCols = 1,
                   const PaddingType padding_type = PADDING_SAME) {
   typedef typename internal::traits<Input>::Index TensorIndex;
-  TensorRef<Tensor<typename internal::traits<Input>::Scalar,
-                   internal::traits<Input>::NumDimensions,
-                   internal::traits<Input>::Layout, TensorIndex> >
+  TensorRef<const Tensor<typename internal::traits<Input>::Scalar,
+                         internal::traits<Input>::NumDimensions,
+                         internal::traits<Input>::Layout, TensorIndex> >
       in(input);
-  TensorRef<Tensor<typename internal::traits<Kernel>::Scalar,
-                   internal::traits<Kernel>::NumDimensions,
-                   internal::traits<Kernel>::Layout, TensorIndex> >
+  TensorRef<const Tensor<typename internal::traits<Kernel>::Scalar,
+                         internal::traits<Kernel>::NumDimensions,
+                         internal::traits<Kernel>::Layout, TensorIndex> >
       kern(kernel);
 
   EIGEN_STATIC_ASSERT(

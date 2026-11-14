@@ -19,18 +19,23 @@ limitations under the License.
 
 #define EIGEN_USE_GPU
 
+#include <cstddef>
+#include <memory>
+#include <vector>
+
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/kernels/linalg/linalg_ops_common.h"
 #include "tensorflow/core/kernels/transpose_functor.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/util/cuda_solvers.h"
 #include "tensorflow/core/util/cuda_sparse.h"
-#include "tensorflow/core/util/gpu_device_functions.h"
 #include "tensorflow/core/util/gpu_kernel_helper.h"
-#include "tensorflow/core/util/gpu_launch_config.h"
+#include "tensorflow/core/util/gpu_solvers.h"
 
 namespace tensorflow {
 
@@ -44,32 +49,29 @@ __global__ void SolveForSizeOneOrTwoKernel(const int m,
                                            const Scalar* __restrict__ diags,
                                            const Scalar* __restrict__ rhs,
                                            const int num_rhs,
-                                           Scalar* __restrict__ x,
-                                           bool* __restrict__ not_invertible) {
+                                           Scalar* __restrict__ x) {
+  const Scalar nan = Eigen::NumTraits<Scalar>::quiet_NaN();
   if (m == 1) {
-    if (diags[1] == Scalar(0)) {
-      *not_invertible = true;
-      return;
-    }
+    bool singular = diags[1] == Scalar(0);
     for (int i : GpuGridRangeX(num_rhs)) {
-      x[i] = rhs[i] / diags[1];
+      x[i] = singular ? nan : rhs[i] / diags[1];
     }
   } else {
-    Scalar det = diags[2] * diags[3] - diags[0] * diags[5];
-    if (det == Scalar(0)) {
-      *not_invertible = true;
-      return;
-    }
+    const Scalar det = diags[2] * diags[3] - diags[0] * diags[5];
+    bool singular = det == Scalar(0);
     for (int i : GpuGridRangeX(num_rhs)) {
-      x[i] = (diags[3] * rhs[i] - diags[0] * rhs[i + num_rhs]) / det;
-      x[i + num_rhs] = (diags[2] * rhs[i + num_rhs] - diags[5] * rhs[i]) / det;
+      x[i] = singular ? nan
+                      : (diags[3] * rhs[i] - diags[0] * rhs[i + num_rhs]) / det;
+      x[i + num_rhs] =
+          singular ? nan
+                   : (diags[2] * rhs[i + num_rhs] - diags[5] * rhs[i]) / det;
     }
   }
 }
 
 template <typename Scalar>
 se::DeviceMemory<Scalar> AsDeviceMemory(const Scalar* cuda_memory) {
-  se::DeviceMemoryBase wrapped(const_cast<Scalar*>(cuda_memory));
+  stream_executor::DeviceAddressBase wrapped(const_cast<Scalar*>(cuda_memory));
   se::DeviceMemory<Scalar> typed(wrapped);
   return typed;
 }
@@ -81,12 +83,12 @@ void CopyDeviceToDevice(OpKernelContext* context, const Scalar* src,
   auto dst_device_mem = AsDeviceMemory(dst);
   auto* stream = context->op_device_context()->stream();
   bool copy_status = stream
-                         ->ThenMemcpyD2D(&dst_device_mem, src_device_mem,
-                                         sizeof(Scalar) * num_elements)
+                         ->MemcpyD2D(&dst_device_mem, src_device_mem,
+                                     sizeof(Scalar) * num_elements)
                          .ok();
 
   if (!copy_status) {
-    context->SetStatus(errors::Internal("Copying device-to-device failed."));
+    context->SetStatus(absl::InternalError("Copying device-to-device failed."));
   }
 }
 
@@ -100,6 +102,15 @@ class TridiagonalSolveOpGpuLinalg : public LinearAlgebraOp<Scalar> {
   explicit TridiagonalSolveOpGpuLinalg(OpKernelConstruction* context)
       : Base(context) {
     OP_REQUIRES_OK(context, context->GetAttr("partial_pivoting", &pivoting_));
+    perturb_singular_ = false;
+    if (context->HasAttr("perturb_singular")) {
+      OP_REQUIRES_OK(context,
+                     context->GetAttr("perturb_singular", &perturb_singular_));
+    }
+    OP_REQUIRES(
+        context, perturb_singular_ == false,
+        absl::UnimplementedError("The solver to support perturb_singular is"
+                                 " not implemented on GPU."));
   }
 
   void ValidateInputMatrixShapes(
@@ -107,22 +118,22 @@ class TridiagonalSolveOpGpuLinalg : public LinearAlgebraOp<Scalar> {
       const TensorShapes& input_matrix_shapes) const final {
     auto num_inputs = input_matrix_shapes.size();
     OP_REQUIRES(context, num_inputs == 2,
-                errors::InvalidArgument("Expected two input matrices, got ",
-                                        num_inputs, "."));
+                absl::InvalidArgumentError(absl::StrCat(
+                    "Expected two input matrices, got ", num_inputs, ".")));
 
     auto num_diags = input_matrix_shapes[0].dim_size(0);
     OP_REQUIRES(
         context, num_diags == 3,
-        errors::InvalidArgument("Expected diagonals to be provided as a "
-                                "matrix with 3 columns, got ",
-                                num_diags, " columns."));
+        absl::InvalidArgumentError(absl::StrCat(
+            "Expected diagonals to be provided as a matrix with 3 rows, got ",
+            num_diags, " rows.")));
 
     auto num_rows1 = input_matrix_shapes[0].dim_size(1);
     auto num_rows2 = input_matrix_shapes[1].dim_size(0);
     OP_REQUIRES(context, num_rows1 == num_rows2,
-                errors::InvalidArgument("Expected same number of rows in both "
-                                        "arguments, got ",
-                                        num_rows1, " and ", num_rows2, "."));
+                absl::InvalidArgumentError(absl::StrCat(
+                    "Expected same matrix size in both arguments, got ",
+                    num_rows1, " and ", num_rows2, ".")));
   }
 
   bool EnableInputForwarding() const final { return false; }
@@ -167,7 +178,7 @@ class TridiagonalSolveOpGpuLinalg : public LinearAlgebraOp<Scalar> {
       // Gtsv expects rhs in column-major form, so we have to transpose.
       // rhs is transposed into temp, gtsv replaces temp with solution, then
       // temp is transposed into x.
-      std::unique_ptr<CudaSolver> cublas_solver(new CudaSolver(context));
+      std::unique_ptr<GpuSolver> cublas_solver(new GpuSolver(context));
       Tensor temp;
       TensorShape temp_shape({k, m});
       OP_REQUIRES_OK(context,
@@ -184,7 +195,7 @@ class TridiagonalSolveOpGpuLinalg : public LinearAlgebraOp<Scalar> {
 
  private:
   void TransposeWithGeam(OpKernelContext* context,
-                         const std::unique_ptr<CudaSolver>& cublas_solver,
+                         const std::unique_ptr<GpuSolver>& cublas_solver,
                          const Scalar* src, Scalar* dst, const int src_rows,
                          const int src_cols) const {
     const Scalar zero(0), one(1);
@@ -208,7 +219,7 @@ class TridiagonalSolveOpGpuLinalg : public LinearAlgebraOp<Scalar> {
                                 num_eqs, num_rhs, subdiag, diag, superdiag, rhs,
                                 num_eqs, &buffer_size));
     Tensor temp_tensor;
-    TensorShape temp_shape({static_cast<int64>(buffer_size)});
+    TensorShape temp_shape({static_cast<int64_t>(buffer_size)});
     OP_REQUIRES_OK(context,
                    context->allocate_temp(DT_UINT8, temp_shape, &temp_tensor));
     void* buffer = temp_tensor.flat<std::uint8_t>().data();
@@ -223,23 +234,18 @@ class TridiagonalSolveOpGpuLinalg : public LinearAlgebraOp<Scalar> {
   void SolveForSizeOneOrTwo(OpKernelContext* context, const Scalar* diagonals,
                             const Scalar* rhs, Scalar* output, int m, int k) {
     const Eigen::GpuDevice& device = context->eigen_device<Eigen::GpuDevice>();
-    GpuLaunchConfig cfg = GetGpuLaunchConfig(1, device);
-    bool* not_invertible_dev;
-    cudaMalloc(&not_invertible_dev, sizeof(bool));
+    GpuLaunchConfig cfg = GetGpuLaunchConfig(
+        /*work_element_count=*/1, device, &SolveForSizeOneOrTwoKernel<Scalar>,
+        /*dynamic_shared_memory_size=*/0,
+        /*block_size_limit=*/0);
     TF_CHECK_OK(GpuLaunchKernel(SolveForSizeOneOrTwoKernel<Scalar>,
-                                cfg.block_count, cfg.thread_per_block, 0,
-                                device.stream(), m, diagonals, rhs, k, output,
-                                not_invertible_dev));
-    bool not_invertible_host;
-    cudaMemcpy(&not_invertible_host, not_invertible_dev, sizeof(bool),
-               cudaMemcpyDeviceToHost);
-    cudaFree(not_invertible_dev);
-    OP_REQUIRES(context, !not_invertible_host,
-                errors::InvalidArgument(m == 1 ? kNotInvertibleScalarMsg
-                                               : kNotInvertibleMsg));
+                                cfg.block_count, cfg.thread_per_block,
+                                /*shared_memory_size_bytes=*/0, device.stream(),
+                                m, diagonals, rhs, k, output));
   }
 
   bool pivoting_;
+  bool perturb_singular_;
 };
 
 template <class Scalar>
@@ -253,19 +259,52 @@ class TridiagonalSolveOpGpu : public OpKernel {
   void Compute(OpKernelContext* context) final {
     const Tensor& lhs = context->input(0);
     const Tensor& rhs = context->input(1);
+
+    OP_REQUIRES(context, lhs.dims() >= 2,
+                absl::InvalidArgumentError(absl::StrCat(
+                    "LHS tensor must have rank >= 2, got ", lhs.dims())));
+    OP_REQUIRES(context, lhs.dims() == rhs.dims(),
+                absl::InvalidArgumentError(
+                    "LHS and RHS tensors must have the same rank."));
+
+    for (int dim = 0; dim < lhs.dims() - 2; ++dim) {
+      OP_REQUIRES(
+          context, lhs.dim_size(dim) == rhs.dim_size(dim),
+          absl::InvalidArgumentError(
+              "LHS and RHS tensors must have the same batch dimensions."));
+    }
+
     const int ndims = lhs.dims();
-    const int64 num_rhs = rhs.dim_size(rhs.dims() - 1);
-    const int64 matrix_size = lhs.dim_size(ndims - 1);
-    int64 batch_size = 1;
+    OP_REQUIRES(context, lhs.dim_size(ndims - 2) == 3,
+                absl::InvalidArgumentError(
+                    absl::StrCat("Expected diagonals to be provided as a "
+                                 "matrix with 3 rows, got ",
+                                 lhs.dim_size(ndims - 2), " rows.")));
+
+    const int64_t num_rhs = rhs.dim_size(rhs.dims() - 1);
+    const int64_t matrix_size = lhs.dim_size(ndims - 1);
+
+    OP_REQUIRES(context, matrix_size == rhs.dim_size(rhs.dims() - 2),
+                absl::InvalidArgumentError(absl::StrCat(
+                    "Expected same matrix size in both arguments, got ",
+                    matrix_size, " and ", rhs.dim_size(rhs.dims() - 2), ".")));
+    int64_t batch_size = 1;
     for (int i = 0; i < ndims - 2; i++) {
       batch_size *= lhs.dim_size(i);
+    }
+
+    if (rhs.NumElements() == 0) {
+      Tensor* output = nullptr;
+      OP_REQUIRES_OK(context,
+                     context->allocate_output(0, rhs.shape(), &output));
+      return;
     }
 
     // The batching mechanism of LinearAlgebraOp is used when it's not
     // possible or desirable to use GtsvBatched.
     const bool use_linalg_op =
         pivoting_            // GtsvBatched doesn't do pivoting
-        || num_rhs > 1       // GtsvBatched doesn't support multiple rhs
+        || num_rhs != 1      // GtsvBatched needs exactly one rhs
         || matrix_size < 3   // Not supported in cuSparse, use the custom kernel
         || batch_size == 1;  // No point to use GtsvBatched
 
@@ -277,7 +316,8 @@ class TridiagonalSolveOpGpu : public OpKernel {
   }
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(TridiagonalSolveOpGpu);
+  TridiagonalSolveOpGpu(const TridiagonalSolveOpGpu&) = delete;
+  void operator=(const TridiagonalSolveOpGpu&) = delete;
 
   void ComputeWithGtsvBatched(OpKernelContext* context, const Tensor& lhs,
                               const Tensor& rhs, const int batch_size) {
@@ -316,7 +356,7 @@ class TridiagonalSolveOpGpu : public OpKernel {
                                 matrix_size, subdiag, diag, superdiag, x,
                                 batch_size, matrix_size, &buffer_size));
     Tensor temp_tensor;
-    TensorShape temp_shape({static_cast<int64>(buffer_size)});
+    TensorShape temp_shape({static_cast<int64_t>(buffer_size)});
     OP_REQUIRES_OK(context,
                    context->allocate_temp(DT_UINT8, temp_shape, &temp_tensor));
     void* buffer = temp_tensor.flat<std::uint8_t>().data();
@@ -338,22 +378,20 @@ class TridiagonalSolveOpGpu : public OpKernel {
     }
     perm[ndims - 1] = ndims - 1;
 
-    std::vector<int64> dims;
+    std::vector<int64_t> dims;
     for (int index : perm) {
       dims.push_back(lhs.dim_size(index));
     }
-    TensorShape lhs_transposed_shape(
-        gtl::ArraySlice<int64>(dims.data(), ndims));
+    TensorShape lhs_transposed_shape(absl::MakeConstSpan(dims).first(ndims));
 
-    std::unique_ptr<CudaSolver> cublas_solver(new CudaSolver(context));
+    std::unique_ptr<GpuSolver> cublas_solver(new GpuSolver(context));
     OP_REQUIRES_OK(context, cublas_solver->allocate_scoped_tensor(
                                 DataTypeToEnum<Scalar>::value,
                                 lhs_transposed_shape, &lhs_transposed));
     auto device = context->eigen_device<Eigen::GpuDevice>();
-    OP_REQUIRES_OK(
-        context,
-        DoTranspose(device, lhs, gtl::ArraySlice<int>(perm.data(), ndims),
-                    &lhs_transposed));
+    OP_REQUIRES_OK(context, DoTranspose(device, lhs,
+                                        absl::MakeConstSpan(perm).first(ndims),
+                                        &lhs_transposed));
   }
 
   TridiagonalSolveOpGpuLinalg<Scalar> linalgOp_;

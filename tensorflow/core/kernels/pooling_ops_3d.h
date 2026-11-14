@@ -39,13 +39,13 @@ struct LaunchMaxPooling3dGradGradOp;
 // A helper class to manage sizes and shapes for 3d pooling operations.
 struct Pool3dParameters {
   // Updates context->status if there is an invalid input.
-  Pool3dParameters(OpKernelContext* context, const std::vector<int32>& ksize,
-                   const std::vector<int32>& stride, Padding padding,
+  Pool3dParameters(OpKernelContext* context, const std::vector<int32_t>& ksize,
+                   const std::vector<int32_t>& stride, Padding padding,
                    TensorFormat data_format,
                    const TensorShape& tensor_in_shape);
 
   // Returns the shape of the output for "forward" pooling operations.
-  TensorShape forward_output_shape();
+  absl::Status forward_output_shape(TensorShape* shape);
 
   int depth;
 
@@ -64,13 +64,13 @@ struct Pool3dParameters {
   int row_stride;
   int depth_stride;
 
-  int64 out_plane;
-  int64 out_height;
-  int64 out_width;
+  int64_t out_plane;
+  int64_t out_height;
+  int64_t out_width;
 
-  int64 pad_planes;
-  int64 pad_cols;
-  int64 pad_rows;
+  int64_t pad_planes;
+  int64_t pad_cols;
+  int64_t pad_rows;
 
   TensorFormat data_format;
 };

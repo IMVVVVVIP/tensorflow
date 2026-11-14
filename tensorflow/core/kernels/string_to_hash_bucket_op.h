@@ -26,52 +26,17 @@ limitations under the License.
 
 namespace tensorflow {
 
-template <uint64 hash(StringPiece)>
-class StringToHashBucketOp : public OpKernel {
- public:
-  explicit StringToHashBucketOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
-    OP_REQUIRES_OK(ctx, ctx->GetAttr("num_buckets", &num_buckets_));
-  }
-
-  void Compute(OpKernelContext* context) override {
-    const Tensor* input_tensor;
-    OP_REQUIRES_OK(context, context->input("input", &input_tensor));
-    const auto& input_flat = input_tensor->flat<tstring>();
-
-    Tensor* output_tensor = nullptr;
-    OP_REQUIRES_OK(context,
-                   context->allocate_output("output", input_tensor->shape(),
-                                            &output_tensor));
-    auto output_flat = output_tensor->flat<int64>();
-
-    typedef decltype(input_flat.size()) Index;
-    for (Index i = 0; i < input_flat.size(); ++i) {
-      const uint64 input_hash = hash(input_flat(i));
-      const uint64 bucket_id = input_hash % num_buckets_;
-      // The number of buckets is always in the positive range of int64 so is
-      // the resulting bucket_id. Casting the bucket_id from uint64 to int64 is
-      // safe.
-      output_flat(i) = static_cast<int64>(bucket_id);
-    }
-  }
-
- private:
-  int64 num_buckets_;
-
-  TF_DISALLOW_COPY_AND_ASSIGN(StringToHashBucketOp);
-};
-
-template <uint64 hash(const uint64 (&)[2], const string&)>
+template <uint64_t hash(const uint64_t (&)[2], const std::string&)>
 class StringToKeyedHashBucketOp : public OpKernel {
  public:
   explicit StringToKeyedHashBucketOp(OpKernelConstruction* ctx)
       : OpKernel(ctx) {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("num_buckets", &num_buckets_));
 
-    std::vector<int64> key;
+    std::vector<int64_t> key;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("key", &key));
     OP_REQUIRES(ctx, key.size() == 2,
-                errors::InvalidArgument("Key must have 2 elements"));
+                absl::InvalidArgumentError("Key must have 2 elements"));
     std::memcpy(key_, key.data(), sizeof(key_));
   }
 
@@ -84,24 +49,25 @@ class StringToKeyedHashBucketOp : public OpKernel {
     OP_REQUIRES_OK(context,
                    context->allocate_output("output", input_tensor->shape(),
                                             &output_tensor));
-    auto output_flat = output_tensor->flat<int64>();
+    auto output_flat = output_tensor->flat<int64_t>();
 
     typedef decltype(input_flat.size()) Index;
     for (Index i = 0; i < input_flat.size(); ++i) {
-      const uint64 input_hash = hash(key_, input_flat(i));
-      const uint64 bucket_id = input_hash % num_buckets_;
+      const uint64_t input_hash = hash(key_, input_flat(i));
+      const uint64_t bucket_id = input_hash % num_buckets_;
       // The number of buckets is always in the positive range of int64 so is
       // the resulting bucket_id. Casting the bucket_id from uint64 to int64 is
       // safe.
-      output_flat(i) = static_cast<int64>(bucket_id);
+      output_flat(i) = static_cast<int64_t>(bucket_id);
     }
   }
 
  private:
-  int64 num_buckets_;
-  uint64 key_[2];
+  int64_t num_buckets_;
+  uint64_t key_[2];
 
-  TF_DISALLOW_COPY_AND_ASSIGN(StringToKeyedHashBucketOp);
+  StringToKeyedHashBucketOp(const StringToKeyedHashBucketOp&) = delete;
+  void operator=(const StringToKeyedHashBucketOp&) = delete;
 };
 
 }  // namespace tensorflow

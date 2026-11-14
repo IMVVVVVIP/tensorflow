@@ -15,8 +15,13 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_COMMON_RUNTIME_PROPAGATOR_STATE_H_
 #define TENSORFLOW_CORE_COMMON_RUNTIME_PROPAGATOR_STATE_H_
 
+#include <queue>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/types/span.h"
 #include "tensorflow/core/common_runtime/entry.h"
 #include "tensorflow/core/common_runtime/immutable_executor_state.h"
 #include "tensorflow/core/common_runtime/pending_counts.h"
@@ -33,7 +38,7 @@ limitations under the License.
 
 namespace tensorflow {
 
-typedef gtl::InlinedVector<AllocatorAttributes, 4> AllocatorAttributeVec;
+typedef absl::InlinedVector<AllocatorAttributes, 4UL> AllocatorAttributeVec;
 
 // Represents the ephemeral "edge state" associated with one invocation of
 // `Executor::Run()`.
@@ -45,8 +50,8 @@ typedef gtl::InlinedVector<AllocatorAttributes, 4> AllocatorAttributeVec;
 // adding them to a `TaggedNodeSeq`.
 class PropagatorState {
  public:
-  PropagatorState(const ImmutableExecutorState& immutable_state, int64 step_id,
-                  bool vlog);
+  PropagatorState(const ImmutableExecutorState& immutable_state,
+                  int64_t step_id, bool vlog);
   ~PropagatorState();
 
  private:
@@ -76,7 +81,7 @@ class PropagatorState {
     const NodeItem& get_node_item() const { return *node_item; }
 
     bool get_is_dead() const { return is_dead; }
-    int64 get_iter_num() const;
+    int64_t get_iter_num() const;
   };
 
   // A drop-in replacement for std::deque<TaggedNode>.  We typically don't
@@ -87,10 +92,12 @@ class PropagatorState {
     TaggedNodeReadyQueue() : front_index_(0) {}
 
     void push_back(const TaggedNode& node) { ready_.push_back(node); }
+
     TaggedNode front() const {
       DCHECK_LT(front_index_, ready_.size());
       return ready_[front_index_];
     }
+
     void pop_front() {
       DCHECK_LT(front_index_, ready_.size());
       front_index_++;
@@ -106,22 +113,24 @@ class PropagatorState {
       }
     }
     bool empty() const { return ready_.empty(); }
+    int size() const { return ready_.size() - front_index_; }
 
    private:
     // TODO(b/152925936): Re-evaluate these constants with current usage
     // patterns.
     static constexpr int kSpillThreshold = 16384;
-    gtl::InlinedVector<TaggedNode, 16> ready_;
+    absl::InlinedVector<TaggedNode, 16UL> ready_;
     int front_index_;
   };
 
   // TODO(b/152925936): Re-evaluate this constant with current usage patterns.
-  typedef gtl::InlinedVector<TaggedNode, 8> TaggedNodeSeq;
+  typedef absl::InlinedVector<TaggedNode, 8UL> TaggedNodeSeq;
 
  private:
   // The state of an iteration in a particular frame.
   struct IterationState {
-    explicit IterationState(int64 iter_num, const PendingCounts* pending_counts,
+    explicit IterationState(int64_t iter_num,
+                            const PendingCounts* pending_counts,
                             int total_input_tensors)
         : iter_num(iter_num),
           input_tensors(new Entry[total_input_tensors]),
@@ -130,7 +139,8 @@ class PropagatorState {
           counts(*pending_counts) {  // Initialize with copy of *pending_counts
     }
 
-    const int64 iter_num;  // The index of this iteration in the enclosing loop.
+    const int64_t
+        iter_num;  // The index of this iteration in the enclosing loop.
 
     // One copy per iteration. For iteration k, i-th node's j-th input is in
     // input_tensors[k][immutable_state_.nodes[i].input_start + j]. An entry is
@@ -143,7 +153,7 @@ class PropagatorState {
     Entry* input_tensors;
 
     // The number of outstanding ops for each iteration.
-    size_t outstanding_ops;
+    std::atomic<size_t> outstanding_ops;
 
     // The number of outstanding frames for each iteration.
     int outstanding_frame_count;
@@ -166,9 +176,38 @@ class PropagatorState {
     void increment_dead_count(PendingCounts::Handle h) {
       counts.increment_dead_count(h);
     }
+    // REQUIRES: Node corresponding to "h" is a merge node
+    PendingCounts::AdjustResult adjust_for_mark_live(PendingCounts::Handle h) {
+      return counts.adjust_for_mark_live(h);
+    }
+    // REQUIRES: Node corresponding to "h" is a merge node
+    PendingCounts::AdjustResult adjust_for_mark_live_atomic(
+        PendingCounts::Handle h) {
+      return counts.adjust_for_mark_live_atomic(h);
+    }
+    PendingCounts::AdjustResult adjust_for_decrement_pending(
+        PendingCounts::Handle h, int decrement_pending) {
+      return counts.adjust_for_decrement_pending(h, decrement_pending);
+    }
+    PendingCounts::AdjustResult adjust_for_decrement_pending_atomic(
+        PendingCounts::Handle h, int decrement_pending) {
+      return counts.adjust_for_decrement_pending_atomic(h, decrement_pending);
+    }
+    PendingCounts::AdjustResult adjust_for_increment_dead(
+        PendingCounts::Handle h) {
+      return counts.adjust_for_increment_dead(h);
+    }
+    PendingCounts::AdjustResult adjust_for_increment_dead_atomic(
+        PendingCounts::Handle h) {
+      return counts.adjust_for_increment_dead_atomic(h);
+    }
     PendingCounts::AdjustResult adjust_for_activation(PendingCounts::Handle h,
                                                       bool increment_dead) {
       return counts.adjust_for_activation(h, increment_dead);
+    }
+    PendingCounts::AdjustResult adjust_for_activation_atomic(
+        PendingCounts::Handle h, bool increment_dead) {
+      return counts.adjust_for_activation_atomic(h, increment_dead);
     }
 
     ~IterationState() { delete[] input_tensors; }
@@ -220,11 +259,11 @@ class PropagatorState {
     // The name of this frame, which is the concatenation of its parent
     // frame name, the iteration of the parent frame when this frame was
     // created, and the value of the attr 'frame_name'.
-    string frame_name;
+    std::string frame_name;
 
     // The unique id for this frame. Generated by fingerprinting
     // frame_name.
-    uint64 frame_id;
+    uint64_t frame_id;
 
     // The iteration state of its parent frame when this frame is created.
     // nullptr if there is no parent frame. The frame_name/parent_iter pair
@@ -241,14 +280,14 @@ class PropagatorState {
     int num_pending_inputs = 0;
 
     // The highest iteration number we have reached so far in this frame.
-    int64 iteration_count TF_GUARDED_BY(mu) = 0;
+    int64_t iteration_count TF_GUARDED_BY(mu) = 0;
 
     // The number of outstanding iterations.
     int num_outstanding_iterations TF_GUARDED_BY(mu) = 1;
 
    private:
     // The active iteration states of this frame.
-    gtl::InlinedVector<IterationState*, 12> iterations;
+    absl::InlinedVector<IterationState*, 12UL> iterations;
     IterationState** const iterations_raw TF_GUARDED_BY(mu);
     IterationState* iterations_first TF_GUARDED_BY(mu);
 
@@ -265,25 +304,29 @@ class PropagatorState {
     // we make it available to all active iterations. When the frame starts
     // a new iteration, we make all the current loop invariants available
     // to the new iteration.
-    std::vector<std::pair<const NodeItem*, Entry>> inv_values TF_GUARDED_BY(mu);
+    std::vector<std::pair<const NodeItem*, Entry>> inv_values
+        TF_GUARDED_BY(iter_mu);
 
     // The list of dead exit node items for the current highest iteration. We
     // will only "execute" the dead exits of the final iteration.
-    std::vector<const NodeItem*> dead_exits TF_GUARDED_BY(mu);
+    std::vector<const NodeItem*> dead_exits TF_GUARDED_BY(iter_mu);
 
     // Static information specific to this frame.
     PendingCounts* pending_counts = nullptr;
     int total_input_tensors = 0;
     std::vector<const NodeItem*>* nodes = nullptr;
 
-    // Lock ordering: ExecutorState.mu_ < mu;
+    // Lock ordering: ExecutorState.mu_ < mu < iter_mu;
     // during structured traversal: parent_frame->mu < mu.
     mutex mu;
 
+    // This mutex lock should only be held when entering next iteration.
+    mutex iter_mu;
+
     void InitializeFrameInfo(const ImmutableExecutorState::FrameInfo& finfo);
 
-    inline IterationState* GetIteration(int64 iter)
-        TF_EXCLUSIVE_LOCKS_REQUIRED(mu) {
+    inline IterationState* GetIteration(int64_t iter)
+        TF_SHARED_LOCKS_REQUIRED(mu) {
       if (TF_PREDICT_TRUE(iter == 0)) {
         return iterations_first;
       } else {
@@ -292,15 +335,28 @@ class PropagatorState {
       }
     }
 
-    void SetIteration(int64 iter, IterationState* state);
+    void SetIteration(int64_t iter, IterationState* state);
 
-    // Decrement the outstanding op count and clean up the iterations in the
-    // frame. Return true iff the execution of the frame is done.
+    // Adjust the outstanding op count by 'delta' and clean up the iterations in
+    // the frame if no more ops are oustanding. Return true iff the execution of
+    // the frame is done.
+    //
+    // Avoids acquiring the lock in the common case that the frame is not done.
+    bool AdjustOutstandingOps(IterationState* iter_state, int delta,
+                              TaggedNodeSeq* ready);
+
+    bool AdjustOutstandingOpsLocked(IterationState* iter_state, int delta,
+                                    TaggedNodeSeq* ready)
+        TF_EXCLUSIVE_LOCKS_REQUIRED(mu);
+
+    bool AdjustOutstandingOpsFastPath(IterationState* iter_state, int delta)
+        TF_SHARED_LOCKS_REQUIRED(mu);
+
+    // Convenience methods for the above 'Adjust' calls where delta takes the
+    // common value of -1.
     bool DecrementOutstandingOps(IterationState* iter_state,
                                  TaggedNodeSeq* ready);
 
-    // Decrement the outstanding op count and clean up the iterations in the
-    // frame. Return true iff the execution of the frame is done.
     bool DecrementOutstandingOpsLocked(IterationState* iter_state,
                                        TaggedNodeSeq* ready);
 
@@ -309,7 +365,7 @@ class PropagatorState {
 
     // Returns true if the iteration of the frame is completed.
     bool IsIterationDone(IterationState* iter_state)
-        TF_EXCLUSIVE_LOCKS_REQUIRED(mu);
+        TF_SHARED_LOCKS_REQUIRED(mu);
 
     // Increments the iteration id. If this is a new iteration, initialize it.
     //
@@ -332,9 +388,21 @@ class PropagatorState {
 
     // Activate the successors of a node. Contents of *outputs are left in an
     // indeterminate state after returning from this method.
-    void ActivateNodes(const NodeItem* item, const bool is_dead,
-                       IterationState* iter_state, EntryVector* outputs,
-                       TaggedNodeSeq* ready) TF_EXCLUSIVE_LOCKS_REQUIRED(mu);
+    //
+    // In the case that 'item' is a simple node (no merge/control outputs) this
+    // will acquire a shared lock and can run concurrently with other
+    // invocations.
+    //
+    // Return true if the frame is done after activation.
+    bool ActivateNodesAndAdjustOutstanding(
+        const NodeItem* item, const bool is_dead, IterationState* iter_state,
+        EntryVector* outputs, TaggedNodeSeq* ready, int decrement_activation);
+
+    // Same as the above, but requires 'mu' already held in exclusive mode.
+    int ActivateNodesLocked(const NodeItem* item, const bool is_dead,
+                            IterationState* iter_state, EntryVector* outputs,
+                            TaggedNodeSeq* ready)
+        TF_EXCLUSIVE_LOCKS_REQUIRED(mu);
 
     // Cleanup iterations of this frame starting from the given iteration.
     bool CleanupIterations(IterationState* iter_state, TaggedNodeSeq* ready)
@@ -359,20 +427,46 @@ class PropagatorState {
 
    private:
     // REQUIRES: `!item->is_any_consumer_merge_or_control_trigger`.
-    void ActivateNodesFastPath(const NodeItem* item, const bool is_dead,
-                               IterationState* iter_state, EntryVector* outputs,
-                               TaggedNodeSeq* ready)
+    // This variant does not use atomic operations to modify the pending counts
+    // and thus must hold the exclusive lock.
+    int ActivateNodesFastPathLocked(const NodeItem* item, bool is_dead,
+                                    IterationState* iter_state,
+                                    EntryVector* outputs, TaggedNodeSeq* ready)
         TF_EXCLUSIVE_LOCKS_REQUIRED(mu);
 
-    void ActivateNodesSlowPath(const NodeItem* item, const bool is_dead,
-                               IterationState* iter_state, EntryVector* outputs,
-                               TaggedNodeSeq* ready)
+    // REQUIRES: `!item->is_any_consumer_merge_or_control_trigger`.
+    // This variant uses atomic operations to modify the pending counts.
+    int ActivateNodesFastPathShared(const NodeItem* item, bool is_dead,
+                                    IterationState* iter_state,
+                                    EntryVector* outputs, TaggedNodeSeq* ready)
+        TF_SHARED_LOCKS_REQUIRED(mu);
+
+    int ActivateNodesSlowPathLocked(const NodeItem* item, bool is_dead,
+                                    IterationState* iter_state,
+                                    EntryVector* outputs, TaggedNodeSeq* ready)
         TF_EXCLUSIVE_LOCKS_REQUIRED(mu);
+
+    int ActivateNodesSlowPathShared(const NodeItem* item, bool is_dead,
+                                    IterationState* iter_state,
+                                    EntryVector* outputs, TaggedNodeSeq* ready)
+        TF_SHARED_LOCKS_REQUIRED(mu);
+
+    // Implementation templates. Not for public use.
+    template <bool atomic>
+    int ActivateNodesFastPathInternal(const NodeItem* item, bool is_dead,
+                                      IterationState* iter_state,
+                                      EntryVector* outputs,
+                                      TaggedNodeSeq* ready);
+    template <bool atomic>
+    int ActivateNodesSlowPathInternal(const NodeItem* item, bool is_dead,
+                                      IterationState* iter_state,
+                                      EntryVector* outputs,
+                                      TaggedNodeSeq* ready);
   };
 
  public:
   // Creates and adds a `TaggedNode` for each node in `roots` to `*ready`.
-  void ActivateRoots(gtl::ArraySlice<const NodeItem*> roots,
+  void ActivateRoots(absl::Span<const NodeItem* const> roots,
                      TaggedNodeSeq* ready);
 
   // After processing the outputs, propagates the outputs to their dsts.
@@ -440,7 +534,7 @@ class PropagatorState {
   void DumpIterationState(const FrameState* frame, IterationState* iteration);
 
   const ImmutableExecutorState& immutable_state_;
-  const int64 step_id_;
+  const int64_t step_id_;
   const bool vlog_;
 
   mutex mu_;
@@ -453,15 +547,55 @@ class PropagatorState {
   // child frame is a hash composed of the ID of the parent frame, the iteration
   // number at which the parent frame is creating the new frame, and the
   // name of the new frame from nodedef.
-  absl::flat_hash_map<uint64, FrameState*> outstanding_frames_
+  absl::flat_hash_map<uint64_t, FrameState*> outstanding_frames_
       TF_GUARDED_BY(mu_);
 
-  TF_DISALLOW_COPY_AND_ASSIGN(PropagatorState);
+  PropagatorState(const PropagatorState&) = delete;
+  void operator=(const PropagatorState&) = delete;
 };
 
-inline int64 PropagatorState::TaggedNode::get_iter_num() const {
+inline int64_t PropagatorState::TaggedNode::get_iter_num() const {
   return input_iter->iter_num;
 }
+
+// `OrderedPropagatorState` replaces `PropagatorState`s `TaggedNodeReadyQueue`
+// with a priority queue. This ensures that the order in which we dequeue
+// `TaggedNode&`s is stable with respect to ASLR.
+//
+// This is not always needed, as in a multithreaded environment, executions are
+// expected to happen nondeterministically, but this nondeteminism can be a
+// problem: For example, In usecases that are running close to the RAM limit of
+// a device, reordering ops can cause an increase in memory fragmenenation,
+// causing an OOM.
+// This codepath is enabled using TF_DETERMINISTIC_ORDER=1 in executor.cc
+class OrderedPropagatorState : public PropagatorState {
+  using PropagatorState::PropagatorState;
+
+ public:
+  class TaggedNodeReadyQueue : PropagatorState::TaggedNodeReadyQueue {
+   public:
+    TaggedNodeReadyQueue() : readyp_(compare) {}
+    void push_back(const TaggedNode& node) { readyp_.push(node); }
+    TaggedNode front() const { return readyp_.top(); }
+    void pop_front() { readyp_.pop(); }
+    bool empty() const { return readyp_.empty(); }
+    int size() const { return readyp_.size(); }
+
+   private:
+    static bool compare(TaggedNode const& lhs, TaggedNode const& rhs) {
+      std::tuple<int, uint64_t, int64_t> lhs_prio{lhs.node_item->node_id,
+                                                  lhs.input_frame->frame_id,
+                                                  lhs.input_iter->iter_num};
+      std::tuple<int, uint64_t, int64_t> rhs_prio{rhs.node_item->node_id,
+                                                  rhs.input_frame->frame_id,
+                                                  rhs.input_iter->iter_num};
+      return lhs_prio < rhs_prio;
+    }
+
+    std::priority_queue<TaggedNode, std::vector<TaggedNode>, decltype(&compare)>
+        readyp_;
+  };
+};
 
 }  // namespace tensorflow
 

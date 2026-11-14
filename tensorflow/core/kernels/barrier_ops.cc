@@ -15,6 +15,7 @@ limitations under the License.
 // See docs in ../ops/data_flow_ops.cc.
 
 #include <limits.h>
+
 #include <unordered_map>
 #include <vector>
 
@@ -29,6 +30,7 @@ limitations under the License.
 #include "tensorflow/core/kernels/queue_base.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/notification.h"
+#include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/macros.h"
@@ -49,7 +51,7 @@ class Barrier : public ResourceBase {
 
   Barrier(const DataTypeVector& value_component_types,
           const std::vector<TensorShape>& value_component_shapes,
-          const string& name)
+          const std::string& name)
       : closed_(false),
         queue_closed_(false),
         queue_cancelled_(false),
@@ -57,7 +59,7 @@ class Barrier : public ResourceBase {
         value_component_types_(value_component_types),
         value_component_shapes_(value_component_shapes),
         name_(name),
-        input_index_(std::numeric_limits<int64>::min()) {
+        input_index_(std::numeric_limits<int64_t>::min()) {
     DataTypeVector queue_component_types;
     std::vector<TensorShape> queue_component_shapes;
 
@@ -80,10 +82,10 @@ class Barrier : public ResourceBase {
 
     ready_queue_ = new PriorityQueue(
         QueueBase::kUnbounded /* capacity */, queue_component_types,
-        queue_component_shapes, strings::StrCat(name_, "_queue"));
+        queue_component_shapes, absl::StrCat(name_, "_queue"));
   }
 
-  Status Initialize() { return ready_queue_->Initialize(); }
+  absl::Status Initialize() { return ready_queue_->Initialize(); }
 
   template <typename T>
   void TryInsertMany(const Tensor& keys, int component_index,
@@ -92,12 +94,19 @@ class Barrier : public ResourceBase {
     TensorShape element_shape = values.shape();
     OP_REQUIRES_ASYNC(
         ctx, keys.NumElements() == 0 || element_shape.num_elements() > 0,
-        errors::InvalidArgument("Tensors with no elements are not supported ",
-                                name_, ": received shape ",
-                                element_shape.DebugString()),
+        absl::InvalidArgumentError(
+            absl::StrCat("Tensors with no elements are not supported ", name_,
+                         ": received shape ", element_shape.DebugString())),
         callback);
     if (element_shape.dims() > 0) element_shape.RemoveDim(0);
-    const std::size_t num_inserted = keys.NumElements();
+    const int64_t num_inserted = keys.NumElements();
+    OP_REQUIRES_ASYNC(
+        ctx, values.dims() > 0 && values.dim_size(0) == num_inserted,
+        absl::InvalidArgumentError(absl::StrCat(
+            "keys and values must have the same batch size. Got ", num_inserted,
+            " keys but values has shape ", values.shape().DebugString(),
+            " in barrier ", name_, ".")),
+        callback);
 
     // For each key, update the corresponding incomplete tuple with the
     // the corresponding given value at component_index.
@@ -127,7 +136,7 @@ class Barrier : public ResourceBase {
       // them in a vector
       std::vector<Tuple> ready_tuples;
 
-      for (int i = 0; i < num_inserted; ++i) {
+      for (int64_t i = 0; i < num_inserted; ++i) {
         OP_REQUIRES_OK_ASYNC(
             ctx,
             InsertOneLocked<T>(ctx, keys, values, element_shape,
@@ -141,10 +150,10 @@ class Barrier : public ResourceBase {
       // This probably won't happen before the heat death of the
       // universe, but who knows?  Moore's law FTW.
       OP_REQUIRES_ASYNC(
-          ctx, input_index_ != std::numeric_limits<int64>::max(),
-          errors::Internal(
+          ctx, input_index_ != std::numeric_limits<int64_t>::max(),
+          absl::InternalError(absl::StrCat(
               "Barrier has had ", input_index_,
-              " insertions and can no longer keep track of new ones."),
+              " insertions and can no longer keep track of new ones.")),
           callback);
 
       if (ready_tuples.empty()) {
@@ -157,12 +166,12 @@ class Barrier : public ResourceBase {
       // tuple by slicing entries into new Tensors.  This part is slow
       // but seems the cleanest solution for now.
       insert_tuple.reserve(2 + num_components());  // indices, keys, rest
-      int insertion_size = ready_tuples.size();
-      for (int i = 0; i < 2 + num_components(); ++i) {
+      int64_t insertion_size = ready_tuples.size();
+      for (int64_t i = 0; i < 2 + num_components(); ++i) {
         TensorShape component_shape(ready_tuples[0][i].shape());
         component_shape.InsertDim(0, insertion_size);
         Tensor component(ready_tuples[0][i].dtype(), component_shape);
-        for (int b = 0; b < insertion_size; ++b) {
+        for (int64_t b = 0; b < insertion_size; ++b) {
           OP_REQUIRES_OK_ASYNC(
               ctx,
               batch_util::CopyElementToSlice(std::move(ready_tuples[b][i]),
@@ -187,7 +196,7 @@ class Barrier : public ResourceBase {
           }
           {
             mutex_lock lock(mu_);
-            int32 ready = ready_size();
+            int32_t ready = ready_size();
             if (closed_ && incomplete_.empty() && queue_closed_ && ready > 0) {
               CloseQueueLocked(ctx, false, callback);
             } else {
@@ -198,7 +207,7 @@ class Barrier : public ResourceBase {
         });
   }
 
-  void TryTakeMany(int num_elements, bool allow_small_batch, int64 timeout,
+  void TryTakeMany(int num_elements, bool allow_small_batch, int64_t timeout,
                    OpKernelContext* ctx,
                    const IndicesKeysValuesCallback& callback) {
     int num_elements_to_deliver = num_elements;
@@ -220,10 +229,10 @@ class Barrier : public ResourceBase {
         // If there are 0 available elements or less elements than the
         // number we can deliver, then we are done.
         if (available_elements < std::max(num_elements_to_deliver, 1)) {
-          ctx->SetStatus(errors::OutOfRange(
+          ctx->SetStatus(absl::OutOfRangeError(absl::StrCat(
               "Barrier '", name_, "' is closed and has ",
               "insufficient elements (requested ", num_elements_to_deliver,
-              ", total size ", available_elements, ")"));
+              ", total size ", available_elements, ")")));
           callback(Tensor(DT_INT64), Tensor(DT_STRING), Tuple());
           return;
         }
@@ -253,12 +262,12 @@ class Barrier : public ResourceBase {
   void Close(OpKernelContext* ctx, bool cancel_pending_enqueues,
              const DoneCallback& callback) {
     mutex_lock lock(mu_);
+    auto cleanup = gtl::MakeCleanup([&callback]() { callback(); });
     // We're allowed to close twice if the first close wasn't a
     // cancel but the second one is.
     if (closed_ && (cancel_pending_enqueues_ || !cancel_pending_enqueues)) {
-      ctx->SetStatus(
-          errors::Cancelled("Barrier '", name_, "' is already closed."));
-      callback();
+      ctx->SetStatus(absl::CancelledError(
+          absl::StrCat("Barrier '", name_, "' is already closed.")));
       return;
     }
     cancel_pending_enqueues_ = cancel_pending_enqueues;
@@ -266,20 +275,19 @@ class Barrier : public ResourceBase {
     if (cancel_pending_enqueues_ || incomplete_.empty()) {
       incomplete_.clear();
       // CloseQueueLocked runs the callback
+      cleanup.release();
       CloseQueueLocked(ctx, cancel_pending_enqueues_, callback);
-      return;
     }
-    callback();
   }
 
-  int32 ready_size() { return ready_queue_->size(); }
+  int32_t ready_size() { return ready_queue_->size(); }
 
-  int32 incomplete_size() {
+  int32_t incomplete_size() {
     mutex_lock lock(mu_);
     return incomplete_.size();
   }
 
-  const string& name() const { return name_; }
+  const std::string& name() const { return name_; }
   int num_components() const { return value_component_types_.size(); }
   DataType component_type(int i) const {
     CHECK_GE(i, 0);
@@ -289,7 +297,7 @@ class Barrier : public ResourceBase {
   const DataTypeVector component_types() const {
     return value_component_types_;
   }
-  const gtl::ArraySlice<TensorShape> component_shapes() const {
+  const absl::Span<const TensorShape> component_shapes() const {
     return value_component_shapes_;
   }
 
@@ -299,35 +307,36 @@ class Barrier : public ResourceBase {
     ready_queue_->Unref();
   }
 
-  string DebugString() const override { return "A barrier"; }
+  std::string DebugString() const override { return "A barrier"; }
 
  protected:
   template <typename T>
-  Status InsertOneLocked(OpKernelContext* ctx, const Tensor& keys,
-                         const Tensor& values, const TensorShape& element_shape,
-                         int component_index, int i,
-                         std::vector<Tuple>* ready_tuples, bool* new_elements)
+  absl::Status InsertOneLocked(OpKernelContext* ctx, const Tensor& keys,
+                               const Tensor& values,
+                               const TensorShape& element_shape,
+                               int component_index, int64_t i,
+                               std::vector<Tuple>* ready_tuples,
+                               bool* new_elements)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     auto keys_vec = keys.flat<tstring>();
     auto values_matrix = values.flat_outer_dims<T>();
 
-    PersistentTuple* element_ptr;
+    TensorTuple* element_ptr;
     if (closed_) {
       element_ptr = gtl::FindOrNull(incomplete_, keys_vec(i));
       if (element_ptr == nullptr) {
-        return errors::Cancelled(
+        return absl::CancelledError(absl::StrCat(
             "Barrier ", name_,
             " is closed, but attempted to insert a brand new key: ",
-            keys_vec(i),
-            ".  Pending enqueues cancelled: ", cancel_pending_enqueues_,
-            ".  Insertion index: ", i,
-            ".  Number of incomplete keys: ", incomplete_.size(), ".");
+            keys_vec(i), ".  Pending enqueues cancelled: ",
+            cancel_pending_enqueues_, ".  Insertion index: ", i,
+            ".  Number of incomplete keys: ", incomplete_.size(), "."));
       }
     } else {
       element_ptr =
-          &gtl::LookupOrInsert(&incomplete_, keys_vec(i), PersistentTuple());
+          &gtl::LookupOrInsert(&incomplete_, keys_vec(i), TensorTuple());
     }
-    PersistentTuple& element = *element_ptr;
+    TensorTuple& element = *element_ptr;
 
     if (element.empty()) {  // Never seen before key
       // Added a new element, for keeping track of the insertion index
@@ -339,38 +348,35 @@ class Barrier : public ResourceBase {
       // The first entry in element is the priority: the
       // input_index_, so that tensors that entered the Barrier
       // earlier have higher priority in the queue.
-      PersistentTensor index_persistent_tensor;
-      Tensor* allocate_index_tensor;
-      TF_RETURN_IF_ERROR(ctx->allocate_persistent(DT_INT64, TensorShape({}),
-                                                  &index_persistent_tensor,
-                                                  &allocate_index_tensor));
+      Tensor allocate_index_tensor;
+      TF_RETURN_IF_ERROR(ctx->allocate_temp(DT_INT64, TensorShape({}),
+                                            &allocate_index_tensor));
 
       Tensor index_tensor(DT_INT64, TensorShape({}));
-      allocate_index_tensor->scalar<int64>()() = input_index_;
-      element.push_back(index_persistent_tensor);
+      allocate_index_tensor.scalar<int64_t>()() = input_index_;
+      element.push_back(allocate_index_tensor);
 
       // The rest of the element stores uninitialized Tensors with
       // the appropriate dtype.
       for (int j = 0; j < num_components(); ++j) {
         Tensor uninitialized(component_type(j));
-        element.push_back(PersistentTensor(uninitialized));
+        element.push_back(Tensor(uninitialized));
       }
     }
-    const PersistentTensor& component = element[1 + component_index];
+    const Tensor& component = element[1 + component_index];
     if (component.IsInitialized() && component.NumElements() > 0) {
-      return errors::InvalidArgument("Key ", keys_vec(i),
-                                     " already has a value for component ",
-                                     component_index, " in barrier ", name());
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Key ", keys_vec(i), " already has a value for component ",
+          component_index, " in barrier ", name()));
     }
 
     // Extract the slice corresponding to the value from the value Tensor,
     // and store it in the incomplete tuple at component_index.
-    PersistentTensor next_element;
-    Tensor* allocated_element;
-    TF_RETURN_IF_ERROR(ctx->allocate_persistent(
-        values.dtype(), element_shape, &next_element, &allocated_element));
+    Tensor next_element;
+    TF_RETURN_IF_ERROR(
+        ctx->allocate_temp(values.dtype(), element_shape, &next_element));
     element[1 + component_index] = next_element;
-    allocated_element->flat<T>() = values_matrix.template chip<0>(i);
+    next_element.flat<T>() = values_matrix.template chip<0>(i);
 
     // Check the components of the tuple to see if it has become complete
     // (i.e. all of its components are initialized). If so, add it to the
@@ -386,44 +392,42 @@ class Barrier : public ResourceBase {
       Tuple ready_tuple;
       ready_tuple.reserve(2 + num_components());  // index, key, rest
       // Build a tensor for the key. TODO(mrry): Something more efficient.
-      PersistentTensor key;
-      Tensor* allocated_key;
-      TF_RETURN_IF_ERROR(ctx->allocate_persistent(DT_STRING, TensorShape({}),
-                                                  &key, &allocated_key));
-      ready_tuple.push_back(*element[0].AccessTensor(ctx));  // index
-      ready_tuple.push_back(*allocated_key);                 // key
-      ready_tuple[1].scalar<tstring>()() = keys_vec(i);      // set the key
+      Tensor key;
+      TF_RETURN_IF_ERROR(ctx->allocate_temp(DT_STRING, TensorShape({}), &key));
+      ready_tuple.push_back(element[0]);                 // index
+      ready_tuple.push_back(key);                        // key
+      ready_tuple[1].scalar<tstring>()() = keys_vec(i);  // set the key
       for (int j = 1; j < num_components() + 1; ++j) {
-        ready_tuple.push_back(*element[j].AccessTensor(ctx));
+        ready_tuple.push_back(element[j]);
       }
       incomplete_.erase(incomplete_.find(keys_vec(i)));
       TF_RETURN_IF_ERROR(ready_queue_->ValidateTuple(ready_tuple));
       ready_tuples->push_back(ready_tuple);
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   void CloseQueueLocked(OpKernelContext* ctx, bool cancel_pending_enqueues,
                         const DoneCallback& callback)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    auto cleanup = gtl::MakeCleanup([&callback]() { callback(); });
     // CloseQueueLocked may only be called with mu_ held.
     if (!cancel_pending_enqueues && queue_closed_) {
-      callback();
       return;
     }
     if (cancel_pending_enqueues && queue_cancelled_) {
-      callback();
       return;
     }
     queue_closed_ = true;
     if (cancel_pending_enqueues) queue_cancelled_ = true;
     if (!ready_queue_->is_closed()) {
+      cleanup.release();
       ready_queue_->Close(ctx, cancel_pending_enqueues, callback);
     }
   }
 
  private:
-  typedef std::vector<PersistentTensor> PersistentTuple;
+  typedef std::vector<Tensor> TensorTuple;
   mutex mu_;
   bool closed_ TF_GUARDED_BY(mu_);
   bool queue_closed_ TF_GUARDED_BY(mu_);
@@ -431,12 +435,13 @@ class Barrier : public ResourceBase {
   bool cancel_pending_enqueues_ TF_GUARDED_BY(mu_);
   const DataTypeVector value_component_types_;
   const std::vector<TensorShape>& value_component_shapes_;
-  const string name_;
-  int64 input_index_ TF_GUARDED_BY(mu_);
-  std::unordered_map<string, PersistentTuple> incomplete_ TF_GUARDED_BY(mu_);
+  const std::string name_;
+  int64_t input_index_ TF_GUARDED_BY(mu_);
+  std::unordered_map<std::string, TensorTuple> incomplete_ TF_GUARDED_BY(mu_);
   PriorityQueue* ready_queue_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(Barrier);
+  Barrier(const Barrier&) = delete;
+  void operator=(const Barrier&) = delete;
 };
 
 class BarrierOp : public ResourceOpKernel<Barrier> {
@@ -449,52 +454,53 @@ class BarrierOp : public ResourceOpKernel<Barrier> {
                    context->GetAttr("shapes", &value_component_shapes_));
     OP_REQUIRES(context,
                 value_component_shapes_.size() == value_component_types_.size(),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(
                     "All of the component shapes must be specified"));
 
-    int32 value_capacity;
+    int32_t value_capacity;
     OP_REQUIRES_OK(context, context->GetAttr("capacity", &value_capacity));
     OP_REQUIRES(context, value_capacity == -1,
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(
                     "Barrier only accepts capacity=-1.  Feed the "
                     "inputs to your Barrier through a queue to enforce a "
                     "limited capacity."));
   }
 
  private:
-  Status CreateResource(Barrier** barrier) override
+  absl::Status CreateResource(Barrier** barrier) override
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     *barrier = new Barrier(value_component_types_, value_component_shapes_,
                            cinfo_.name());
     if (*barrier == nullptr) {
-      return errors::ResourceExhausted("Failed to allocate barrier");
+      return absl::ResourceExhaustedError("Failed to allocate barrier");
     }
     return (*barrier)->Initialize();
   }
 
-  Status VerifyResource(Barrier* barrier) override
+  absl::Status VerifyResource(Barrier* barrier) override
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     if (barrier->component_types() != value_component_types_) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(absl::StrCat(
           "Shared barrier '", cinfo_.name(), "' has component types ",
           DataTypeSliceString(barrier->component_types()),
           " but requested component types were ",
-          DataTypeSliceString(value_component_types_));
+          DataTypeSliceString(value_component_types_)));
     }
     if (barrier->component_shapes() != value_component_shapes_) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(absl::StrCat(
           "Shared barrier '", cinfo_.name(), "' has component shapes ",
           TensorShapeUtils::ShapeListString(barrier->component_shapes()),
           " but requested component shapes were ",
-          TensorShapeUtils::ShapeListString(value_component_shapes_));
+          TensorShapeUtils::ShapeListString(value_component_shapes_)));
     }
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   DataTypeVector value_component_types_;
   std::vector<TensorShape> value_component_shapes_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(BarrierOp);
+  BarrierOp(const BarrierOp&) = delete;
+  void operator=(const BarrierOp&) = delete;
 };
 
 REGISTER_KERNEL_BUILDER(Name("Barrier").Device(DEVICE_CPU), BarrierOp);
@@ -526,6 +532,8 @@ class InsertManyOp : public BarrierOpKernel {
       : BarrierOpKernel(context) {
     OP_REQUIRES_OK(context,
                    context->GetAttr("component_index", &component_index_));
+    OP_REQUIRES(context, component_index_ >= 0,
+                absl::InvalidArgumentError("component_index must be >= 0"));
   }
 
  protected:
@@ -533,9 +541,9 @@ class InsertManyOp : public BarrierOpKernel {
                     DoneCallback callback) override {
     OP_REQUIRES_ASYNC(
         ctx, component_index_ < barrier->num_components(),
-        errors::InvalidArgument("The component ID is out of range ",
-                                component_index_, " > num_components",
-                                " (= ", barrier->num_components(), ")"),
+        absl::InvalidArgumentError(absl::StrCat(
+            "The component ID is out of range ", component_index_,
+            " > num_components", " (= ", barrier->num_components(), ")")),
         callback);
     OP_REQUIRES_OK_ASYNC(
         ctx,
@@ -547,13 +555,19 @@ class InsertManyOp : public BarrierOpKernel {
     const Tensor* keys;
     const Tensor* values;
     OP_REQUIRES_OK_ASYNC(ctx, ctx->input("keys", &keys), callback);
+    OP_REQUIRES_ASYNC(
+        ctx, TensorShapeUtils::IsVector(keys->shape()),
+        absl::InvalidArgumentError(absl::StrCat("keys must be 1-D, got shape ",
+                                                keys->shape().DebugString())),
+        callback);
     OP_REQUIRES_OK_ASYNC(ctx, ctx->input("values", &values), callback);
     barrier->TryInsertMany<T>(*keys, component_index_, *values, ctx, callback);
   }
 
  private:
   int component_index_;
-  TF_DISALLOW_COPY_AND_ASSIGN(InsertManyOp);
+  InsertManyOp(const InsertManyOp&) = delete;
+  void operator=(const InsertManyOp&) = delete;
 };
 
 #define REGISTER_INSERTMANY(T)                                             \
@@ -571,7 +585,7 @@ class TakeManyOp : public BarrierOpKernel {
     OP_REQUIRES_OK(context, context->GetAttr("timeout_ms", &timeout_));
     // TODO(keveman): Enable timeout.
     OP_REQUIRES(context, timeout_ == -1,
-                errors::InvalidArgument("Timeout not supported yet."));
+                absl::InvalidArgumentError("Timeout not supported yet."));
 
     OP_REQUIRES_OK(context,
                    context->GetAttr("allow_small_batch", &allow_small_batch_));
@@ -583,10 +597,15 @@ class TakeManyOp : public BarrierOpKernel {
     const Tensor* Tnum_elements;
     OP_REQUIRES_OK_ASYNC(ctx, ctx->input("num_elements", &Tnum_elements),
                          callback);
-    OP_REQUIRES_ASYNC(ctx, TensorShapeUtils::IsScalar(Tnum_elements->shape()),
-                      errors::InvalidArgument("num_elements must be a scalar."),
-                      callback);
-    const int32 num_elements = Tnum_elements->scalar<int32>()();
+    OP_REQUIRES_ASYNC(
+        ctx, TensorShapeUtils::IsScalar(Tnum_elements->shape()),
+        absl::InvalidArgumentError("num_elements must be a scalar."), callback);
+    const int32_t num_elements = Tnum_elements->scalar<int32_t>()();
+    OP_REQUIRES_ASYNC(
+        ctx, num_elements >= 0,
+        absl::InvalidArgumentError(absl::StrCat("BarrierTakeMany requested ",
+                                                num_elements, " < 0 elements")),
+        callback);
 
     DataTypeVector expected_inputs = {DT_STRING_REF, DT_INT32};
     // The first output is the insertion index, the second output is the key.
@@ -621,9 +640,10 @@ class TakeManyOp : public BarrierOpKernel {
   }
 
  private:
-  int64 timeout_;
+  int64_t timeout_;
   bool allow_small_batch_;
-  TF_DISALLOW_COPY_AND_ASSIGN(TakeManyOp);
+  TakeManyOp(const TakeManyOp&) = delete;
+  void operator=(const TakeManyOp&) = delete;
 };
 
 REGISTER_KERNEL_BUILDER(Name("BarrierTakeMany").Device(DEVICE_CPU), TakeManyOp);
@@ -644,7 +664,8 @@ class BarrierCloseOp : public BarrierOpKernel {
 
  private:
   bool cancel_pending_enqueues_;
-  TF_DISALLOW_COPY_AND_ASSIGN(BarrierCloseOp);
+  BarrierCloseOp(const BarrierCloseOp&) = delete;
+  void operator=(const BarrierCloseOp&) = delete;
 };
 
 REGISTER_KERNEL_BUILDER(Name("BarrierClose").Device(DEVICE_CPU),
@@ -661,7 +682,7 @@ class BarrierIncompleteSizeOp : public BarrierOpKernel {
     Tensor* Tsize = nullptr;
     OP_REQUIRES_OK_ASYNC(ctx, ctx->allocate_output(0, TensorShape({}), &Tsize),
                          callback);
-    Tsize->scalar<int32>().setConstant(barrier->incomplete_size());
+    Tsize->scalar<int32_t>().setConstant(barrier->incomplete_size());
     callback();
   }
 };
@@ -680,7 +701,7 @@ class BarrierReadySizeOp : public BarrierOpKernel {
     Tensor* Tsize = nullptr;
     OP_REQUIRES_OK_ASYNC(ctx, ctx->allocate_output(0, TensorShape({}), &Tsize),
                          callback);
-    Tsize->scalar<int32>().setConstant(barrier->ready_size());
+    Tsize->scalar<int32_t>().setConstant(barrier->ready_size());
     callback();
   }
 };

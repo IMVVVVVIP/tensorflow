@@ -15,7 +15,7 @@ limitations under the License.
 
 #include <string>
 
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -51,17 +51,18 @@ class GenerateVocabRemappingOp : public OpKernel {
                    context->input("new_vocab_file", &new_vocab_file_tensor));
     OP_REQUIRES(context,
                 TensorShapeUtils::IsScalar(new_vocab_file_tensor->shape()),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "new_vocab_file should be a single string, but got ",
-                    new_vocab_file_tensor->shape().DebugString()));
+                    new_vocab_file_tensor->shape().DebugString())));
 
     // Build a new ID->token lookup table.
-    const string& new_vocab_filename =
+    const std::string& new_vocab_filename =
         new_vocab_file_tensor->scalar<tstring>()();
-    OP_REQUIRES(context, !new_vocab_filename.empty(),
-                errors::InvalidArgument("new vocab filename cannot be empty."));
-    lookup::HashTable<int64, tstring>* new_vocab_table =
-        new lookup::HashTable<int64, tstring>(context, this);
+    OP_REQUIRES(
+        context, !new_vocab_filename.empty(),
+        absl::InvalidArgumentError("new vocab filename cannot be empty."));
+    lookup::HashTable<int64_t, tstring>* new_vocab_table =
+        new lookup::HashTable<int64_t, tstring>(context, this);
     core::ScopedUnref unref_new(new_vocab_table);
     // Note: we pass -1 (unknown) for vocab_size, which is supposed to be the
     // total elements in file.  This is different from num_new_vocab_, which
@@ -72,27 +73,29 @@ class GenerateVocabRemappingOp : public OpKernel {
                                 kUnusedLookupDelim,
                                 -1,  // key_index, use the line number.
                                 -2,  // value_index, use the whole line/token.
+                                0,   // No offset.
                                 context->env(), new_vocab_table));
-    OP_REQUIRES(context,
-                new_vocab_offset_ + num_new_vocab_ <= new_vocab_table->size(),
-                errors::InvalidArgument("lookup table size must be larger than "
-                                        "last new vocab entry's line"));
+    OP_REQUIRES(
+        context, new_vocab_offset_ + num_new_vocab_ <= new_vocab_table->size(),
+        absl::InvalidArgumentError("lookup table size must be larger than "
+                                   "last new vocab entry's line"));
 
     const Tensor* old_vocab_file_tensor;
     OP_REQUIRES_OK(context,
                    context->input("old_vocab_file", &old_vocab_file_tensor));
     OP_REQUIRES(context,
                 TensorShapeUtils::IsScalar(old_vocab_file_tensor->shape()),
-                errors::InvalidArgument(
+                absl::InvalidArgumentError(absl::StrCat(
                     "old_vocab_file should be a single string, but got ",
-                    old_vocab_file_tensor->shape().DebugString()));
+                    old_vocab_file_tensor->shape().DebugString())));
     // Build a token->old ID lookup table.
-    const string& old_vocab_filename =
+    const std::string& old_vocab_filename =
         old_vocab_file_tensor->scalar<tstring>()();
-    OP_REQUIRES(context, !old_vocab_filename.empty(),
-                errors::InvalidArgument("new vocab filename cannot be empty."));
-    lookup::HashTable<tstring, int64>* old_vocab_table =
-        new lookup::HashTable<tstring, int64>(context, this);
+    OP_REQUIRES(
+        context, !old_vocab_filename.empty(),
+        absl::InvalidArgumentError("new vocab filename cannot be empty."));
+    lookup::HashTable<tstring, int64_t>* old_vocab_table =
+        new lookup::HashTable<tstring, int64_t>(context, this);
     core::ScopedUnref unref_old(old_vocab_table);
     // Note: If old_vocab_size_ is -1 (unknown), we retrieve all elements in
     // file (see TextFileLineIterator).
@@ -101,6 +104,7 @@ class GenerateVocabRemappingOp : public OpKernel {
                        old_vocab_filename, old_vocab_size_, kUnusedLookupDelim,
                        -2,  // key_index, use the whole line/token.
                        -1,  // value_index, use the line number.
+                       0,   // No offset.
                        context->env(), old_vocab_table));
 
     // Fill out new_ids = [new_vocab_offset, new_vocab_offset + 1, ...,
@@ -110,7 +114,7 @@ class GenerateVocabRemappingOp : public OpKernel {
     OP_REQUIRES_OK(
         context, context->allocate_temp(DT_INT64, TensorShape({num_new_vocab_}),
                                         &new_ids));
-    auto new_ids_vec = new_ids.vec<int64>();
+    auto new_ids_vec = new_ids.vec<int64_t>();
     // Note that we should always be able to find tokens for all new ID's, given
     // that the lookup table is constructed with the vocabulary file itself
     // (see the check on offset and table size post-initialization).
@@ -125,11 +129,11 @@ class GenerateVocabRemappingOp : public OpKernel {
     OP_REQUIRES_OK(
         context, context->allocate_temp(DT_INT64, TensorShape({num_new_vocab_}),
                                         &default_id));
-    auto default_id_vec = default_id.vec<int64>();
+    auto default_id_vec = default_id.vec<int64_t>();
     default_id_vec.setConstant(-1 /* NOT_FOUND_ID */);
 
     for (int i = 0; i < num_new_vocab_; ++i) {
-      new_ids_vec(i) = static_cast<int64>(i + new_vocab_offset_);
+      new_ids_vec(i) = static_cast<int64_t>(i + new_vocab_offset_);
     }
     Tensor tokens;
     OP_REQUIRES_OK(context,
@@ -148,7 +152,7 @@ class GenerateVocabRemappingOp : public OpKernel {
                                                     default_id));
     }
     // Iterate through remapping to calculate num_present.
-    const auto remapping_vec = remapping->vec<int64>();
+    const auto remapping_vec = remapping->vec<int64_t>();
     int num_present = 0;
     for (int i = 0; i < num_new_vocab_; ++i) {
       if (remapping_vec(i) != -1 /* NOT_FOUND_ID */) {

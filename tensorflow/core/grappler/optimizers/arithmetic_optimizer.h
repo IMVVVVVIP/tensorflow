@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_CORE_GRAPPLER_OPTIMIZERS_ARITHMETIC_OPTIMIZER_H_
 
 #include <unordered_set>
+
 #include "tensorflow/core/grappler/costs/graph_properties.h"
 #include "tensorflow/core/grappler/optimizers/graph_optimizer.h"
 #include "tensorflow/core/grappler/utils.h"
@@ -40,17 +41,14 @@ class ArithmeticOptimizer : public GraphOptimizer {
       : opt_level_(opt_level),
         options_(ArithmeticOptimizerOptions::Default(opt_level)) {}
 
-  ~ArithmeticOptimizer() override {}
+  ~ArithmeticOptimizer() override = default;
 
-  string name() const override { return "arithmetic_optimizer"; };
+  std::string name() const override { return "arithmetic_optimizer"; };
 
   bool UsesFunctionLibrary() const override { return false; }
 
-  Status Optimize(Cluster* cluster, const GrapplerItem& item,
-                  GraphDef* optimized_graph) override;
-
-  void Feedback(Cluster* cluster, const GrapplerItem& item,
-                const GraphDef& optimized_graph, double result) override;
+  absl::Status Optimize(Cluster* cluster, const GrapplerItem& item,
+                        GraphDef* optimized_graph) override;
 
  private:
   friend class ArithmeticOptimizerTest;
@@ -76,15 +74,18 @@ class ArithmeticOptimizer : public GraphOptimizer {
     bool remove_redundant_bitcast = true;
     bool remove_redundant_cast = true;
     bool remove_redundant_reshape = true;
+    bool reduce_upsampling_dims = true;
     bool reorder_cast_like_and_value_preserving = true;
+    bool replace_mul_with_tile = true;
     bool replace_mul_with_square = true;
-    bool simplify_aggregation = true;
+    bool replace_pack_with_tile_reshape = true;
     bool convert_pow = true;
     bool convert_log1p = true;
     bool convert_log_softmax = true;
     bool convert_expm1 = true;
     bool unary_ops_composition = true;
     bool remove_stack_slice_same_axis = true;
+    bool simplify_aggregation = true;
     bool simplify_embedding_lookup = true;
     bool remove_cast_into_segment_reduction = true;
 
@@ -109,7 +110,7 @@ class ArithmeticOptimizer : public GraphOptimizer {
 
   // Runs peep-hole optimizations on `optimized_graph`, e.g., removing inverse
   // transposes.
-  Status SimplifyArithmeticOps(bool can_use_shapes);
+  absl::Status SimplifyArithmeticOps(bool can_use_shapes);
   // Tries to simplify the expression that roots at `node` and replaces the uses
   // of `node` to the simplified expression. Returns the name of the simplified
   // tensor (e.g. "split:1") or an empty string if no simplification is
@@ -125,18 +126,18 @@ class ArithmeticOptimizer : public GraphOptimizer {
   // TODO(jingyue): This interface is not suitable for optimizing nodes with
   // multiple output tensors. We should pass in a tensor name instead of a
   // NodeDef.
-  string TrySimplifyAndReplaceUses(const NodeDef* node,
-                                   SetVector<NodeDef*>* nodes_to_simplify);
+  std::string TrySimplifyAndReplaceUses(const NodeDef* node,
+                                        SetVector<NodeDef*>* nodes_to_simplify);
 
   RewriterConfig::Toggle opt_level_;
   ArithmeticOptimizerOptions options_;
 
   bool fetch_nodes_known_ = false;
-  std::unordered_set<string> nodes_to_preserve_;
+  std::unordered_set<std::string> nodes_to_preserve_;
   std::unique_ptr<NodeMap> node_map_;
   std::unique_ptr<GraphProperties> graph_properties_;
   GraphDef* optimized_graph_ = nullptr;  // Not owned.
-  gtl::FlatSet<string> feed_nodes_;
+  gtl::FlatSet<std::string> feed_nodes_;
 };
 
 }  // end namespace grappler

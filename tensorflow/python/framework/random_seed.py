@@ -16,13 +16,10 @@
 """For seeding individual ops based on a graph-level seed.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import weakref
 
 from tensorflow.python.eager import context
+from tensorflow.python.framework import config
 from tensorflow.python.framework import ops
 from tensorflow.python.util import deprecation
 from tensorflow.python.util.tf_export import tf_export
@@ -82,6 +79,13 @@ def get_seed(op_seed):
       seeds = DEFAULT_GRAPH_SEED, _truncate_seed(op_seed)
     else:
       seeds = None, None
+
+  if seeds == (None, None) and config.is_op_determinism_enabled():
+    raise RuntimeError(  # pylint: disable=g-doc-exception
+        'Random ops require a seed to be set when determinism is enabled. '
+        'Please set a seed before running the op, e.g. by calling '
+        'tf.random.set_seed(1).')
+
   # Avoid (0, 0) as the C++ ops interpret it as nondeterminism, which would
   # be unexpected since Python docs say nondeterminism is (None, None).
   if seeds == (0, 0):
@@ -186,6 +190,14 @@ def set_random_seed(seed):
     print(sess2.run(b))  # generates 'B2'
   ```
 
+  @compatibility(TF2)
+  'tf.compat.v1.set_random_seed' is compatible with eager mode. However,
+  in eager mode this API will set the global seed instead of the
+  graph-level seed of the default graph. In TF2 this API is changed to
+  [tf.random.set_seed]
+  (https://www.tensorflow.org/api_docs/python/tf/random/set_seed).
+  @end_compatibility
+
   Args:
     seed: integer.
   """
@@ -206,12 +218,12 @@ def set_seed(seed):
 
     1. If neither the global seed nor the operation seed is set: A randomly
       picked seed is used for this op.
-    2. If the graph-level seed is set, but the operation seed is not:
+    2. If the global seed is set, but the operation seed is not:
       The system deterministically picks an operation seed in conjunction with
-      the graph-level seed so that it gets a unique random sequence. Within the
+      the global seed so that it gets a unique random sequence. Within the
       same version of tensorflow and user code, this sequence is deterministic.
       However across different versions, this sequence might change. If the
-      code depends on particular seeds to work, specify both graph-level
+      code depends on particular seeds to work, specify both global
       and operation-level seeds explicitly.
     3. If the operation seed is set, but the global seed is not set:
       A default global seed and the specified operation seed are used to
@@ -339,6 +351,29 @@ def set_seed(seed):
   `tf.random.stateless_uniform`. Also see `tf.random.experimental.Generator` for
   a new set of stateful random ops that use external variables to manage their
   states.
+
+  Note: `tf.random.set_seed` only governs TensorFlow's own stateful random
+  operations. It does not control seeds that higher-level components select for
+  themselves. In particular, Keras layer initializers create a variable's value
+  the first time the layer is built lazily, and an unseeded initializer chooses
+  its own operation-level seed independently of the global seed. Resetting the
+  global seed alone therefore does not guarantee that such lazily-created
+  variables (for example, layer kernels) are initialized to the same values,
+  whether across re-runs of a program or across eager, `tf.function`, and
+  `tf.function(jit_compile=True)` execution. This is most surprising in
+  differential tests that compare those execution modes, where the differing
+  weights come from initialization rather than from compilation changing the
+  computation. For reproducible initialization, pass an explicit seed to the
+  initializer:
+
+  ```python
+  initializer = tf.keras.initializers.GlorotUniform(seed=1)
+  layer = tf.keras.layers.Dense(4, kernel_initializer=initializer)
+  ```
+
+  Note that an explicit seed makes eager and `tf.function` execution agree, but
+  XLA (`jit_compile=True`) may still produce different values because it can
+  lower the random-number generator differently.
 
   Args:
     seed: integer.

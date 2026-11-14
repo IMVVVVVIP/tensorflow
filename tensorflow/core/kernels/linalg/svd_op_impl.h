@@ -22,8 +22,9 @@ limitations under the License.
 // individual kernels. A separate file is used for each instantiated kernel to
 // improve compilation times.
 #include <algorithm>
+#include <limits>
 
-#include "third_party/eigen3/Eigen/SVD"
+#include "Eigen/SVD"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_shape.h"
@@ -55,9 +56,9 @@ class SvdOp : public LinearAlgebraOp<Scalar> {
 
   TensorShapes GetOutputMatrixShapes(
       const TensorShapes& input_matrix_shapes) const final {
-    int64 m = input_matrix_shapes[0].dim_size(0);
-    int64 n = input_matrix_shapes[0].dim_size(1);
-    int64 min_size = std::min(m, n);
+    int64_t m = input_matrix_shapes[0].dim_size(0);
+    int64_t n = input_matrix_shapes[0].dim_size(1);
+    int64_t min_size = std::min(m, n);
     if (compute_uv_) {
       return TensorShapes({TensorShape({min_size}),
                            TensorShape({m, full_matrices_ ? m : min_size}),
@@ -68,43 +69,63 @@ class SvdOp : public LinearAlgebraOp<Scalar> {
   }
 
   // TODO(rmlarsen): This should depend on compute_uv. See b/30409375.
-  int64 GetCostPerUnit(const TensorShapes& input_matrix_shapes) const final {
+  int64_t GetCostPerUnit(const TensorShapes& input_matrix_shapes) const final {
     double m = static_cast<double>(input_matrix_shapes[0].dim_size(0));
     double n = static_cast<double>(input_matrix_shapes[0].dim_size(1));
     double cost = 12 * std::max(m, n) * std::min(m, n) * std::min(m, n);
-    return cost >= static_cast<double>(kint64max) ? kint64max
-                                                  : static_cast<int64>(cost);
+    return cost >= static_cast<double>(std::numeric_limits<int64_t>::max())
+               ? std::numeric_limits<int64_t>::max()
+               : static_cast<int64_t>(cost);
   }
 
   using Matrix = typename Base::Matrix;
   using MatrixMaps = typename Base::MatrixMaps;
   using ConstMatrixMap = typename Base::ConstMatrixMap;
   using ConstMatrixMaps = typename Base::ConstMatrixMaps;
+  using RealScalar = typename Base::RealScalar;
 
   void ComputeMatrix(OpKernelContext* context, const ConstMatrixMaps& inputs,
                      MatrixMaps* outputs) final {
-    int64 n = inputs[0].cols();
-    int64 m = inputs[0].rows();
+    int64_t n = inputs[0].cols();
+    int64_t m = inputs[0].rows();
     const bool empty = (m == 0 || n == 0);
     int options = 0;  // Don't compute singular vectors;
     if (compute_uv_) {
       options = full_matrices_ ? Eigen::ComputeFullU | Eigen::ComputeFullV
                                : Eigen::ComputeThinU | Eigen::ComputeThinV;
     }
-    if (!empty) {
-      Eigen::BDCSVD<Matrix> svd(inputs[0], options);
+
+    if (empty) {
+      // For an empty matrix where only one dimension is zero, we still set
+      // U or V to the unit matrix for the dimension that is non-zero.
+      if (compute_uv_ && full_matrices_) {
+        if (m > 0) {
+          outputs->at(1) = Matrix::Identity(m, m);
+        } else {
+          outputs->at(2) = Matrix::Identity(n, n);
+        }
+      }
+      return;
+    }
+
+    Eigen::BDCSVD<Matrix> svd(inputs[0], options);
+    if (svd.info() != Eigen::Success) {
+      LOG(ERROR) << "Eigen::BDCSVD failed with error code " << svd.info();
+      const RealScalar real_nan = std::numeric_limits<RealScalar>::quiet_NaN();
+      Scalar nan_val(real_nan);
+      if constexpr (Eigen::NumTraits<Scalar>::IsComplex) {
+        nan_val = Scalar(real_nan, real_nan);
+      }
+      outputs->at(0).fill(nan_val);
+      if (compute_uv_) {
+        outputs->at(1).fill(nan_val);
+        outputs->at(2).fill(nan_val);
+      }
+    } else {
       outputs->at(0) = svd.singularValues().template cast<Scalar>();
       if (compute_uv_) {
         outputs->at(1) = svd.matrixU();
         outputs->at(2) = svd.matrixV();
-      }
-    } else if (compute_uv_ && full_matrices_) {
-      // For an empty matrix where only one dimension is zero, we still set
-      // U or V to the unit matrix for the dimension that is non-zero.
-      if (m > 0) {
-        outputs->at(1) = Matrix::Identity(m, m);
-      } else {
-        outputs->at(2) = Matrix::Identity(n, n);
       }
     }
   }
@@ -113,7 +134,8 @@ class SvdOp : public LinearAlgebraOp<Scalar> {
   bool compute_uv_;
   bool full_matrices_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(SvdOp);
+  SvdOp(const SvdOp&) = delete;
+  void operator=(const SvdOp&) = delete;
 };
 
 }  // namespace tensorflow

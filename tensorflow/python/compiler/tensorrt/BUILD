@@ -1,21 +1,35 @@
+# Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 # Description:
 #   Wrap NVIDIA TensorRT (http://developer.nvidia.com/tensorrt) with tensorflow
 #   and provide TensorRT operators and converter package.
 #   APIs are meant to change over time.
 
-load("//tensorflow:tensorflow.bzl", "cuda_py_test")
-load("//tensorflow:tensorflow.bzl", "cuda_py_tests")
+load("@xla//third_party/rules_python/python:py_library.bzl", "py_library")
+load("//tensorflow:tensorflow.default.bzl", "cuda_py_strict_test")
 
 # cuda_py_test and cuda_py_tests enable XLA tests by default. We can't
 # combine XLA with TensorRT currently and should set
 # xla_enable_strict_auto_jit to False to disable XLA tests.
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     default_visibility = ["//visibility:public"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
-
-exports_files(["LICENSE"])
 
 exports_files(glob([
     "test/testdata/*",
@@ -24,9 +38,9 @@ exports_files(glob([
 py_library(
     name = "init_py",
     srcs = ["__init__.py"],
-    srcs_version = "PY2AND3",
+    strict_deps = True,
     deps = [
-        ":tf_trt_integration_test_base",
+        ":tf_trt_integration_test_base",  # build_cleaner: keep
         ":trt_convert_py",
     ],
 )
@@ -34,152 +48,141 @@ py_library(
 py_library(
     name = "trt_convert_py",
     srcs = ["trt_convert.py"],
-    srcs_version = "PY2AND3",
+    strict_deps = True,
     deps = [
+        ":utils",
         "//tensorflow/compiler/tf2tensorrt:_pywrap_py_utils",
         "//tensorflow/compiler/tf2tensorrt:trt_ops_loader",
-        "//tensorflow/python:convert_to_constants",
-        "//tensorflow/python:func_graph",
-        "//tensorflow/python:graph_util",
-        "//tensorflow/python:session",
-        "//tensorflow/python:tf_optimizer",
+        "//tensorflow/core:protos_all_py",
+        "//tensorflow/python/client:session",
         "//tensorflow/python/eager:context",
-        "//tensorflow/python/eager:function",
+        "//tensorflow/python/eager:wrap_function",
+        "//tensorflow/python/framework:convert_to_constants",
+        "//tensorflow/python/framework:dtypes",
+        "//tensorflow/python/framework:errors",
+        "//tensorflow/python/framework:importer",
+        "//tensorflow/python/framework:ops",
+        "//tensorflow/python/framework:tensor",
+        "//tensorflow/python/grappler:tf_optimizer",
+        "//tensorflow/python/ops:array_ops",
+        "//tensorflow/python/ops:resource_variable_ops_gen",
+        "//tensorflow/python/platform:tf_logging",
         "//tensorflow/python/saved_model:builder",
         "//tensorflow/python/saved_model:load",
         "//tensorflow/python/saved_model:loader",
         "//tensorflow/python/saved_model:save",
         "//tensorflow/python/saved_model:signature_constants",
         "//tensorflow/python/saved_model:tag_constants",
+        "//tensorflow/python/trackable:asset",
+        "//tensorflow/python/trackable:autotrackable",
+        "//tensorflow/python/trackable:resource",
+        "//tensorflow/python/training:saver",
+        "//tensorflow/python/util:deprecation",
+        "//tensorflow/python/util:lazy_loader",
+        "//tensorflow/python/util:nest",
+        "//tensorflow/python/util:tf_export",
+        "//third_party/py/numpy",
+        "@six_archive//:six",
     ],
 )
 
 py_library(
-    name = "trt_convert_windows",
-    srcs = ["trt_convert_windows.py"],
-    srcs_version = "PY2AND3",
+    name = "utils",
+    srcs = ["utils.py"],
+    strict_deps = True,
     deps = [
-        "//tensorflow/python:util",
+        "//tensorflow/compiler/tf2tensorrt:_pywrap_py_utils",
+        "//tensorflow/core:protos_all_py",
+        "//tensorflow/python/framework:dtypes",
+        "@pypi//packaging",
     ],
 )
 
 py_library(
     name = "tf_trt_integration_test_base",
-    srcs = ["test/tf_trt_integration_test_base.py"],
+    strict_deps = True,
     deps = [
         ":trt_convert_py",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_test_lib",
+        ":utils",
+        "//tensorflow/compiler/tf2tensorrt:_pywrap_py_utils",
+        "//tensorflow/core:protos_all_py",
+        "//tensorflow/python/compiler/tensorrt/test:tf_trt_integration_test_base_srcs",
+        "//tensorflow/python/eager:def_function",
+        "//tensorflow/python/framework:config",
+        "//tensorflow/python/framework:graph_io",
+        "//tensorflow/python/framework:ops",
+        "//tensorflow/python/framework:tensor_spec",
+        "//tensorflow/python/framework:test_lib",
+        "//tensorflow/python/ops:array_ops",
+        "//tensorflow/python/ops:math_ops",
+        "//tensorflow/python/platform:client_testlib",
+        "//tensorflow/python/platform:tf_logging",
+        "//tensorflow/python/profiler:trace",
         "//tensorflow/python/saved_model:builder",
+        "//tensorflow/python/saved_model:load",
         "//tensorflow/python/saved_model:loader",
+        "//tensorflow/python/saved_model:save",
         "//tensorflow/python/saved_model:signature_constants",
         "//tensorflow/python/saved_model:signature_def_utils",
         "//tensorflow/python/saved_model:tag_constants",
         "//tensorflow/python/saved_model:utils",
         "//tensorflow/python/tools:saved_model_utils",
+        "//tensorflow/python/trackable:autotrackable",
+        "//tensorflow/python/util:nest",
+        "//third_party/py/numpy",
     ],
 )
 
-cuda_py_test(
+cuda_py_strict_test(
     name = "trt_convert_test",
     srcs = ["trt_convert_test.py"],
     data = [
-        "test/testdata/tftrt_2.0_saved_model/saved_model.pb",
-        "test/testdata/tftrt_2.0_saved_model/variables/variables.data-00000-of-00002",
-        "test/testdata/tftrt_2.0_saved_model/variables/variables.data-00001-of-00002",
-        "test/testdata/tftrt_2.0_saved_model/variables/variables.index",
+        "//tensorflow/python/compiler/tensorrt/test:trt_convert_test_data",
     ],
-    python_version = "PY3",
     tags = [
         "no_cuda_on_cpu_tap",
+        # TODO(b/297490791): Reenable after TensorRT regression has been fixed
+        "no_oss",
         "no_pip",
-        "no_rocm",
-        "no_windows",
         "nomac",
+        # TODO(b/303453873): Re-enable tests once TensorRT has been updated
+        "notap",
     ],
     xla_enable_strict_auto_jit = False,
     deps = [
         ":trt_convert_py",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python:graph_util",
+        "//tensorflow/compiler/tf2tensorrt:_pywrap_py_utils",
+        "//tensorflow/compiler/tf2tensorrt:trt_engine_instance_proto_py",
+        "//tensorflow/core:protos_all_py",
+        "//tensorflow/python/compiler/tensorrt/test:test_utils",
+        "//tensorflow/python/eager:def_function",
+        "//tensorflow/python/framework:config",
+        "//tensorflow/python/framework:convert_to_constants",
+        "//tensorflow/python/framework:dtypes",
+        "//tensorflow/python/framework:errors",
+        "//tensorflow/python/framework:importer",
+        "//tensorflow/python/framework:ops",
+        "//tensorflow/python/framework:tensor_shape",
+        "//tensorflow/python/framework:tensor_spec",
+        "//tensorflow/python/framework:test_lib",
+        "//tensorflow/python/ops:array_ops",
+        "//tensorflow/python/ops:math_ops",
+        "//tensorflow/python/ops:resource_variable_ops_gen",
+        "//tensorflow/python/ops:variables",
+        "//tensorflow/python/platform:client_testlib",
         "//tensorflow/python/saved_model:builder",
+        "//tensorflow/python/saved_model:load",
         "//tensorflow/python/saved_model:loader",
+        "//tensorflow/python/saved_model:save",
+        "//tensorflow/python/saved_model:save_options",
         "//tensorflow/python/saved_model:signature_constants",
         "//tensorflow/python/saved_model:signature_def_utils",
         "//tensorflow/python/saved_model:tag_constants",
         "//tensorflow/python/saved_model:utils",
-        "//tensorflow/python/tools:freeze_graph_lib",
         "//tensorflow/python/tools:saved_model_utils",
+        "//tensorflow/python/trackable:autotrackable",
+        "//tensorflow/python/util:lazy_loader",
+        "//third_party/py/numpy",
         "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-cuda_py_tests(
-    name = "tf_trt_integration_test",
-    srcs = [
-        "test/base_test.py",
-        "test/batch_matmul_test.py",
-        "test/biasadd_matmul_test.py",
-        "test/binary_tensor_weight_broadcast_test.py",
-        "test/cast_test.py",
-        "test/combined_nms_test.py",
-        "test/concatenation_test.py",
-        "test/const_broadcast_test.py",
-        "test/conv2d_test.py",
-        "test/dynamic_input_shapes_test.py",
-        "test/identity_output_test.py",
-        "test/int32_test.py",
-        "test/lru_cache_test.py",
-        "test/memory_alignment_test.py",
-        "test/multi_connection_neighbor_engine_test.py",
-        "test/neighboring_engine_test.py",
-        "test/quantization_test.py",
-        "test/rank_two_test.py",
-        "test/reshape_transpose_test.py",
-        "test/topk_test.py",
-        "test/trt_mode_test.py",
-        "test/unary_test.py",
-        "test/vgg_block_nchw_test.py",
-        "test/vgg_block_test.py",
-    ],
-    python_version = "PY3",
-    tags = [
-        "no_cuda_on_cpu_tap",
-        "no_rocm",
-        "no_windows",
-        "nomac",
-    ],
-    xla_enable_strict_auto_jit = False,
-    deps = [
-        ":tf_trt_integration_test_base",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_test_lib",
-    ],
-)
-
-cuda_py_test(
-    name = "quantization_mnist_test",
-    srcs = ["test/quantization_mnist_test.py"],
-    data = [
-        "test/testdata/mnist/checkpoint",
-        "test/testdata/mnist/model.ckpt-46900.data-00000-of-00001",
-        "test/testdata/mnist/model.ckpt-46900.index",
-    ],
-    python_version = "PY3",
-    tags = [
-        "no_cuda_on_cpu_tap",
-        "no_oss",  # TODO(b/125290478): allow running in at least some OSS configurations.
-        "no_pip",
-        "no_rocm",
-        "no_windows",
-        "nomac",
-    ],
-    xla_enable_strict_auto_jit = False,
-    deps = [
-        ":tf_trt_integration_test_base",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python/estimator",
     ],
 )

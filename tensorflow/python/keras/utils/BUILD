@@ -1,25 +1,47 @@
+# Copyright 2026 The TensorFlow Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 # Description:
 #   Contains the Keras Utilities (internal TensorFlow version).
 
-load("//tensorflow:tensorflow.bzl", "tf_py_test")
-load("//tensorflow:tensorflow.bzl", "cuda_py_test")
+load("@xla//third_party/rules_python/python:defs.bzl", "py_library")
 
 package(
+    # copybara:uncomment default_applicable_licenses = ["//tensorflow:license"],
     # TODO(scottzhu): Remove non-keras deps from TF.
     default_visibility = [
         "//tensorflow/python/feature_column:__pkg__",
         "//tensorflow/python/keras:__subpackages__",
+        "//tensorflow/tools/pip_package:__pkg__",
+        "//tensorflow/tools/pip_package:__subpackages__",
     ],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
-exports_files(["LICENSE"])
+filegroup(
+    name = "all_py_srcs",
+    srcs = glob(["*.py"]),
+    visibility = ["//tensorflow/python/keras/google/private_tf_api_test:__pkg__"],
+)
 
 py_library(
     name = "utils",
     srcs = [
         "__init__.py",
     ],
+    strict_deps = False,
     deps = [
         ":all_utils",
     ],
@@ -30,12 +52,12 @@ py_library(
     srcs = [
         "all_utils.py",
     ],
+    strict_deps = False,
     deps = [
         ":control_flow_util",
         ":engine_utils",
         ":generic_utils",
         ":layer_utils",
-        ":multi_gpu_utils",
         ":np_utils",
         ":vis_utils",
     ],
@@ -44,47 +66,60 @@ py_library(
 py_library(
     name = "control_flow_util",
     srcs = ["control_flow_util.py"],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [],
 )
 
 py_library(
     name = "data_utils",
     srcs = ["data_utils.py"],
-    srcs_version = "PY2AND3",
-    deps = [":generic_utils"],
+    strict_deps = False,
+    deps = [
+        ":generic_utils",
+        ":io_utils",
+        ":tf_inspect",
+        "//tensorflow/python/framework:tensor",
+        "//third_party/py/numpy",
+    ],
 )
 
 py_library(
     name = "engine_utils",
     srcs = [
         "conv_utils.py",
-        "io_utils.py",
         "losses_utils.py",
     ],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [
         ":data_utils",
+        ":io_utils",
+        "//tensorflow/python/framework:tensor_conversion",
         "//tensorflow/python/keras:backend",
-        "//tensorflow/python/ops/losses:loss_reduction",
     ],
+)
+
+py_library(
+    name = "io_utils",
+    srcs = ["io_utils.py"],
+    strict_deps = False,
 )
 
 py_library(
     name = "tf_utils",
     srcs = ["tf_utils.py"],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [
-        "//tensorflow/python:composite_tensor",
-        "//tensorflow/python:control_flow_ops",
-        "//tensorflow/python:framework_ops",
-        "//tensorflow/python:smart_cond",
-        "//tensorflow/python:tensor_shape",
-        "//tensorflow/python:tensor_util",
-        "//tensorflow/python:util",
-        "//tensorflow/python:variables",
+        ":object_identity",
+        "//tensorflow/python/distribute/coordinator:cluster_coordinator",
         "//tensorflow/python/eager:context",
-        "@six_archive//:six",
+        "//tensorflow/python/framework:composite_tensor",
+        "//tensorflow/python/framework:ops",
+        "//tensorflow/python/framework:tensor",
+        "//tensorflow/python/framework:tensor_shape",
+        "//tensorflow/python/framework:tensor_util",
+        "//tensorflow/python/ops:control_flow_ops",
+        "//tensorflow/python/ops:variables",
+        "//tensorflow/python/util:nest",
     ],
 )
 
@@ -93,9 +128,12 @@ py_library(
     srcs = [
         "generic_utils.py",
     ],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [
-        "//tensorflow/python:util",
+        ":tf_contextlib",
+        ":tf_inspect",
+        "//tensorflow/python/util:nest",
+        "//tensorflow/python/util:tf_decorator_py",
         "//third_party/py/numpy",
     ],
 )
@@ -105,7 +143,7 @@ py_library(
     srcs = [
         "mode_keys.py",
     ],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [
         "//tensorflow/python/saved_model/model_utils:mode_keys",
     ],
@@ -117,11 +155,11 @@ py_library(
         "kernelized_utils.py",
         "layer_utils.py",
     ],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [
         ":engine_utils",
-        "//tensorflow/python:util",
         "//tensorflow/python/keras:backend",
+        "//tensorflow/python/util:nest",
         "//third_party/py/numpy",
     ],
 )
@@ -131,24 +169,27 @@ py_library(
     srcs = [
         "metrics_utils.py",
     ],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [
+        ":engine_utils",
         ":generic_utils",
         ":tf_utils",
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:check_ops",
-        "//tensorflow/python:control_flow_ops",
-        "//tensorflow/python:distribute",
-        "//tensorflow/python:dtypes",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:nn_ops",
-        "//tensorflow/python:util",
-        "//tensorflow/python:weights_broadcast_ops",
+        "//tensorflow/python/distribute",
+        "//tensorflow/python/framework:dtypes",
+        "//tensorflow/python/framework:ops",
+        "//tensorflow/python/framework:tensor",
+        "//tensorflow/python/framework:tensor_conversion",
+        "//tensorflow/python/ops:array_ops",
+        "//tensorflow/python/ops:check_ops",
+        "//tensorflow/python/ops:control_flow_ops",
+        "//tensorflow/python/ops:math_ops",
+        "//tensorflow/python/ops:nn_ops",
+        "//tensorflow/python/ops:weights_broadcast_ops",
         "//tensorflow/python/ops/losses",
         "//tensorflow/python/ops/ragged:ragged_tensor",
         "//tensorflow/python/ops/ragged:ragged_util",
         "//tensorflow/python/tpu:tpu_lib",
+        "//tensorflow/python/util:tf_decorator_py",
     ],
 )
 
@@ -157,25 +198,9 @@ py_library(
     srcs = [
         "version_utils.py",
     ],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [
-        "//tensorflow/python:framework_ops",
-        "//tensorflow/python:util",
-    ],
-)
-
-py_library(
-    name = "multi_gpu_utils",
-    srcs = [
-        "multi_gpu_utils.py",
-    ],
-    srcs_version = "PY2AND3",
-    deps = [
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:framework_ops",
-        "//tensorflow/python:util",
-        "//tensorflow/python/keras:backend",
-        "//tensorflow/python/keras/layers",
+        "//tensorflow/python/framework:ops",
     ],
 )
 
@@ -184,10 +209,34 @@ py_library(
     srcs = [
         "np_utils.py",
     ],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [
-        "//tensorflow/python:util",
         "//third_party/py/numpy",
+    ],
+)
+
+py_library(
+    name = "object_identity",
+    srcs = ["object_identity.py"],
+    strict_deps = False,
+    deps = [],
+)
+
+py_library(
+    name = "tf_contextlib",
+    srcs = ["tf_contextlib.py"],
+    strict_deps = False,
+    deps = [
+        "//tensorflow/python/util:tf_decorator_py",
+    ],
+)
+
+py_library(
+    name = "tf_inspect",
+    srcs = ["tf_inspect.py"],
+    strict_deps = False,
+    deps = [
+        "//tensorflow/python/util:tf_decorator_py",
     ],
 )
 
@@ -196,209 +245,20 @@ py_library(
     srcs = [
         "vis_utils.py",
     ],
-    srcs_version = "PY2AND3",
+    strict_deps = False,
     deps = [
-        "//tensorflow/python:util",
+        "//tensorflow/python/util:nest",
     ],
 )
 
-tf_py_test(
-    name = "data_utils_test",
-    size = "medium",
-    srcs = ["data_utils_test.py"],
-    python_version = "PY3",
-    shard_count = 6,
-    tags = [
-        "noasan",  # times out
-        "notsan",
-        "optonly",  # times out
+py_library(
+    name = "dataset_creator",
+    srcs = [
+        "dataset_creator.py",
     ],
+    strict_deps = False,
     deps = [
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-        "//third_party/py/numpy",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "generic_utils_test",
-    size = "small",
-    srcs = ["generic_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        ":generic_utils",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "version_utils_test",
-    size = "small",
-    srcs = ["version_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        ":version_utils",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "tf_utils_test",
-    size = "small",
-    srcs = ["tf_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        ":tf_utils",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-        "//tensorflow/python/keras:combinations",
-    ],
-)
-
-tf_py_test(
-    name = "composite_tensor_support_test",
-    size = "medium",
-    srcs = ["composite_tensor_support_test.py"],
-    python_version = "PY3",
-    shard_count = 8,
-    tags = ["no_windows"],  # b/135752236
-    deps = [
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:dtypes",
-        "//tensorflow/python:framework_ops",
-        "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:sparse_ops",
-        "//tensorflow/python:sparse_tensor",
-        "//tensorflow/python/keras:engine",
-        "//tensorflow/python/keras/layers",
-        "//tensorflow/python/ops/ragged:ragged_tensor",
-        "//third_party/py/numpy",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "io_utils_test",
-    size = "small",
-    srcs = ["io_utils_test.py"],
-    python_version = "PY3",
-    tags = [
-        "no_windows",  # TODO: needs investigation on Windows
-        "notsan",
-    ],
-    deps = [
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-        "//third_party/py/numpy",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "layer_utils_test",
-    size = "small",
-    srcs = ["layer_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        ":layer_utils",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/training/tracking",
-        "//third_party/py/numpy",
-    ],
-)
-
-tf_py_test(
-    name = "np_utils_test",
-    size = "small",
-    srcs = ["np_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-        "//third_party/py/numpy",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "kernelized_utils_test",
-    size = "small",
-    srcs = ["kernelized_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:constant_op",
-        "//tensorflow/python:layers",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-cuda_py_test(
-    name = "multi_gpu_utils_test",
-    srcs = ["multi_gpu_utils_test.py"],
-    python_version = "PY3",
-    tags = [
-        "guitar",
-        "multi_gpu",
-    ],
-    xla_enable_strict_auto_jit = True,
-    deps = [
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-        "//third_party/py/numpy",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "vis_utils_test",
-    size = "small",
-    srcs = ["vis_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-        "//third_party/py/numpy",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "conv_utils_test",
-    size = "small",
-    srcs = ["conv_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-        "//third_party/py/numpy",
-        "@absl_py//absl/testing:parameterized",
-    ],
-)
-
-tf_py_test(
-    name = "metrics_utils_test",
-    size = "small",
-    srcs = ["metrics_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        "//tensorflow/python:constant_op",
-        "//tensorflow/python:framework_ops",
-        "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python:ops",
-        "//tensorflow/python:platform_test",
-        "//tensorflow/python/eager:context",
-        "//tensorflow/python/keras",
-        "//tensorflow/python/keras:combinations",
-        "//tensorflow/python/ops/ragged:ragged_factory_ops",
-        "//tensorflow/python/ops/ragged:ragged_tensor",
-        "@absl_py//absl/testing:parameterized",
+        "//tensorflow/python/types:data",
+        "//tensorflow/python/util:tf_export",
     ],
 )

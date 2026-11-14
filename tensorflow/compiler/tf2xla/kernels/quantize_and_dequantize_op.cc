@@ -13,19 +13,28 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
 
+#include "absl/types/span.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_helpers.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/lib/arithmetic.h"
-#include "tensorflow/compiler/xla/client/lib/constants.h"
-#include "tensorflow/compiler/xla/client/lib/math.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
-#include "tensorflow/compiler/xla/client/xla_computation.h"
+#include "xla/hlo/builder/lib/constants.h"
+#include "xla/hlo/builder/lib/math.h"
+#include "xla/hlo/builder/xla_builder.h"
+#include "xla/hlo/builder/xla_computation.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
+#include "xla/xla_data.pb.h"
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/framework/op_requires.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
 namespace {
@@ -76,9 +85,9 @@ class QuantizeAndDequantizeOp : public XlaOpKernel {
         min_range = ReduceAll(input, xla::MaxValue(b, xla_type), *fmin);
         max_range = ReduceAll(input, xla::MinValue(b, xla_type), *fmax);
       } else {
-        std::vector<int64> dimensions_to_reduce;
+        std::vector<int64_t> dimensions_to_reduce;
         TensorShape input_shape = ctx->InputShape(0);
-        int64 input_rank = input_shape.dims();
+        int64_t input_rank = input_shape.dims();
         OP_REQUIRES(ctx, input_rank >= 1,
                     errors::Unimplemented("QuantizeAndDequantizeOp with axis "
                                           "!= -1 requires minimum rank 1"));
@@ -86,7 +95,7 @@ class QuantizeAndDequantizeOp : public XlaOpKernel {
             ctx, axis_ >= 0 && axis_ < input_rank,
             errors::Unimplemented("QuantizeAndDequantizeOp with invalid axis"));
         dimensions_to_reduce.reserve(input_rank - 1);
-        for (int64 i = 0; i < input_rank; ++i) {
+        for (int64_t i = 0; i < input_rank; ++i) {
           if (i != axis_) {
             dimensions_to_reduce.push_back(i);
           }
@@ -103,9 +112,16 @@ class QuantizeAndDequantizeOp : public XlaOpKernel {
       OP_REQUIRES(
           ctx, ctx->num_inputs() == 4,
           errors::Internal("Expected 4 inputs to QuantizeAndDequantize"));
+      int64_t num_bits_val;
+      if (ctx->ConstantInputAsIntScalar(3, &num_bits_val).ok()) {
+        OP_REQUIRES(
+            ctx, num_bits_val > 0 && num_bits_val < (signed_input_ ? 62 : 63),
+            errors::InvalidArgument("num_bits is out of range: ", num_bits_val,
+                                    " with signed_input_ ", signed_input_));
+      }
       num_bits = ctx->Input(3);
     } else {
-      num_bits = xla::ConstantR0<int32>(b, num_bits_);
+      num_bits = xla::ConstantR0<int32_t>(b, num_bits_);
     }
 
     const xla::XlaOp zero = XlaHelpers::Zero(b, data_type);
@@ -121,17 +137,17 @@ class QuantizeAndDequantizeOp : public XlaOpKernel {
     xla::XlaOp min_quantized, max_quantized;
     if (signed_input_) {
       if (narrow_range_) {
-        min_quantized =
-            -Pow(two, ConvertElementType(
-                          num_bits - xla::ConstantR0<int32>(b, 1), xla_type)) +
-            one;
+        min_quantized = -Pow(two, ConvertElementType(
+                                      num_bits - xla::ConstantR0<int32_t>(b, 1),
+                                      xla_type)) +
+                        one;
       } else {
         min_quantized =
             -Pow(two, ConvertElementType(
-                          num_bits - xla::ConstantR0<int32>(b, 1), xla_type));
+                          num_bits - xla::ConstantR0<int32_t>(b, 1), xla_type));
       }
       max_quantized =
-          Pow(two, ConvertElementType(num_bits - xla::ConstantR0<int32>(b, 1),
+          Pow(two, ConvertElementType(num_bits - xla::ConstantR0<int32_t>(b, 1),
                                       xla_type)) -
           one;
     } else {
@@ -159,12 +175,12 @@ class QuantizeAndDequantizeOp : public XlaOpKernel {
 
     // The instruction min_range has the shape of the axis, which is also the
     // shape for max_range, scale and inverse_scale.
-    xla::Shape axis_shape = b->GetShape(min_range).ValueOrDie();
+    xla::Shape axis_shape = b->GetShape(min_range).value();
     // The XLA client library can handle implicit broadcast from scalar. Add
     // explicit broadcast if the axis has a non-scalar shape.
     if (!xla::ShapeUtil::IsScalar(axis_shape)) {
-      xla::Shape input_shape = b->GetShape(input).ValueOrDie();
-      absl::Span<const int64> input_dimensions = input_shape.dimensions();
+      xla::Shape input_shape = b->GetShape(input).value();
+      absl::Span<const int64_t> input_dimensions = input_shape.dimensions();
       auto convert_to_input_shape = [&](const xla::XlaOp op) {
         return xla::BroadcastInDim(op, input_dimensions, {axis_});
       };
@@ -198,7 +214,7 @@ class QuantizeAndDequantizeOp : public XlaOpKernel {
   }
 
  protected:
-  int64 num_bits_ = -1;
+  int64_t num_bits_ = -1;
   int axis_;
   bool signed_input_;
   bool range_given_;
@@ -214,7 +230,7 @@ class QuantizeAndDequantizeV2Op : public QuantizeAndDequantizeOp {
     OP_REQUIRES(ctx, num_bits_ > 0 && num_bits_ < (signed_input_ ? 62 : 63),
                 errors::InvalidArgument("num_bits is out of range: ", num_bits_,
                                         " with signed_input_ ", signed_input_));
-    string round_mode_string;
+    std::string round_mode_string;
     OP_REQUIRES_OK(ctx, ctx->GetAttr("round_mode", &round_mode_string));
     OP_REQUIRES(
         ctx,
@@ -233,6 +249,7 @@ class QuantizeAndDequantizeV2Op : public QuantizeAndDequantizeOp {
 
 REGISTER_XLA_OP(Name("QuantizeAndDequantizeV2"), QuantizeAndDequantizeV2Op);
 REGISTER_XLA_OP(Name("QuantizeAndDequantizeV3"), QuantizeAndDequantizeOp);
+REGISTER_XLA_OP(Name("QuantizeAndDequantizeV4"), QuantizeAndDequantizeV2Op);
 
 }  // namespace
 }  // namespace tensorflow

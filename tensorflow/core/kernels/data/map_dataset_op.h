@@ -15,8 +15,8 @@ limitations under the License.
 #ifndef TENSORFLOW_CORE_KERNELS_DATA_MAP_DATASET_OP_H_
 #define TENSORFLOW_CORE_KERNELS_DATA_MAP_DATASET_OP_H_
 
+#include "tensorflow/core/data/captured_function.h"
 #include "tensorflow/core/framework/dataset.h"
-#include "tensorflow/core/kernels/data/captured_function.h"
 
 namespace tensorflow {
 namespace data {
@@ -34,6 +34,7 @@ class MapDatasetOp : public UnaryDatasetOpKernel {
       "use_inter_op_parallelism";
   static constexpr const char* const kPreserveCardinality =
       "preserve_cardinality";
+  static constexpr const char* const kForceSynchronous = "force_synchronous";
 
   explicit MapDatasetOp(OpKernelConstruction* ctx);
 
@@ -47,6 +48,7 @@ class MapDatasetOp : public UnaryDatasetOpKernel {
   DataTypeVector output_types_;
   std::vector<PartialTensorShape> output_shapes_;
   bool preserve_cardinality_;
+  bool force_synchronous_;
 };
 
 }  // namespace data

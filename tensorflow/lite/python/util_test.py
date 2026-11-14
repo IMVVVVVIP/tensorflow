@@ -1,4 +1,3 @@
-# Lint as: python2, python3
 # Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,61 +14,28 @@
 # ==============================================================================
 """Tests for util.py."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+import os
 
 from absl.testing import parameterized
 import numpy as np
-from six.moves import range
 import tensorflow as tf
 
-from tensorflow.lite.python import lite_constants
+from tensorflow.lite.python import lite
 from tensorflow.lite.python import util
-from tensorflow.lite.toco import types_pb2 as _types_pb2
+from tensorflow.lite.tools.flatbuffer_utils import read_model as _read_model
 from tensorflow.python.client import session
 from tensorflow.python.framework import convert_to_constants
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
-from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import math_ops
+from tensorflow.python.ops import while_loop
 from tensorflow.python.platform import test
 
 
 # TODO(nupurgarg): Add test for Grappler and frozen graph related functions.
 class UtilTest(test_util.TensorFlowTestCase):
-
-  def testConvertDtype(self):
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.float32), _types_pb2.FLOAT)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.float16), _types_pb2.FLOAT16)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.int32), _types_pb2.INT32)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.uint8),
-        _types_pb2.QUANTIZED_UINT8)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.int64), _types_pb2.INT64)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.string), _types_pb2.STRING)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.bool), _types_pb2.BOOL)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.int16),
-        _types_pb2.QUANTIZED_INT16)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.complex64),
-        _types_pb2.COMPLEX64)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.int8), _types_pb2.INT8)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.float64), _types_pb2.FLOAT64)
-    self.assertEqual(
-        util.convert_dtype_to_tflite_type(dtypes.complex128),
-        _types_pb2.COMPLEX128)
 
   def testConvertEnumToDtype(self):
     self.assertEqual(
@@ -90,13 +56,16 @@ class UtilTest(test_util.TensorFlowTestCase):
         util._convert_tflite_enum_type_to_tf_type(10), dtypes.float64)
     self.assertEqual(
         util._convert_tflite_enum_type_to_tf_type(11), dtypes.complex128)
+    self.assertEqual(
+        util._convert_tflite_enum_type_to_tf_type(16), dtypes.uint32)
     with self.assertRaises(ValueError) as error:
       util._convert_tflite_enum_type_to_tf_type(20)
     self.assertEqual(
         "Unsupported enum 20. The valid map of enum to tf types is : "
         "{0: tf.float32, 1: tf.float16, 2: tf.int32, 3: tf.uint8, 4: tf.int64, "
         "5: tf.string, 6: tf.bool, 7: tf.int16, 8: tf.complex64, 9: tf.int8, "
-        "10: tf.float64, 11: tf.complex128}", str(error.exception))
+        "10: tf.float64, 11: tf.complex128, 16: tf.uint32}",
+        str(error.exception))
 
   def testTensorName(self):
     with ops.Graph().as_default():
@@ -109,13 +78,37 @@ class UtilTest(test_util.TensorFlowTestCase):
       got_name = util.get_tensor_name(out_tensors[i])
       self.assertEqual(got_name, expect_names[i])
 
+  def testUint32PassThrough(self):
+    model = tf.keras.Sequential([
+        tf.keras.layers.InputLayer(input_shape=(4,), dtype=tf.uint32),
+        tf.keras.layers.Reshape(target_shape=(2, 2))
+    ])
+    converter = lite.TFLiteConverterV2.from_keras_model(model)
+    tflite_model = converter.convert()
+    interpreter = lite.Interpreter(model_content=tflite_model)
+    interpreter.allocate_tensors()
+    input_details = interpreter.get_input_details()[0]
+    output_details = interpreter.get_output_details()[0]
+
+    self.assertEqual(input_details["dtype"], np.uint32)
+    self.assertEqual(output_details["dtype"], np.uint32)
+
+    in_array = np.array([[1, 1, 1, 1]], dtype="uint32") * ((1 << 32) - 1)
+    expected_out = np.reshape(in_array, (2, 2))
+
+    interpreter.set_tensor(input_details["index"], in_array)
+    interpreter.invoke()
+
+    output_data = interpreter.get_tensor(output_details["index"])[0]
+    self.assertAllEqual(expected_out, output_data)
+
   @test_util.enable_control_flow_v2
   def testRemoveLowerUsingSwitchMerge(self):
     with ops.Graph().as_default():
       i = array_ops.placeholder(dtype=dtypes.int32, shape=())
       c = lambda i: math_ops.less(i, 10)
       b = lambda i: math_ops.add(i, 1)
-      control_flow_ops.while_loop(c, b, [i])
+      while_loop.while_loop(c, b, [i])
       sess = session.Session()
 
     new_graph_def = convert_to_constants.disable_lower_using_switch_merge(
@@ -231,18 +224,16 @@ class TensorFunctionsTest(test_util.TensorFlowTestCase):
     self.assertAllEqual([None, 3, 5], tensor.shape)
 
 
-def _generate_integer_tflite_model():
-  """Define an integer post-training quantized tflite model."""
-  # Load MNIST dataset
+def _get_keras_model(add_unquantizable_layer=False):
+  """Define Sample keras model and returns it."""
+  # Define a pseudo MNIST dataset (as downloading the dataset on-the-fly causes
+  # network connection failures)
   n = 10  # Number of samples
-  (train_images, train_labels), (test_images, test_labels) = \
-      tf.keras.datasets.mnist.load_data()
-  train_images, train_labels, test_images, test_labels = \
-      train_images[:n], train_labels[:n], test_images[:n], test_labels[:n]
+  images = np.random.randint(low=0, high=255, size=[n, 28, 28], dtype=np.uint8)
+  labels = np.random.randint(low=0, high=9, size=(n,), dtype=np.uint8)
 
   # Normalize the input image so that each pixel value is between 0 to 1.
-  train_images = train_images / 255.0
-  test_images = test_images / 255.0
+  images = images / 255.0
 
   # Define TF model
   model = tf.keras.Sequential([
@@ -253,6 +244,9 @@ def _generate_integer_tflite_model():
       tf.keras.layers.Flatten(),
       tf.keras.layers.Dense(10)
   ])
+  if add_unquantizable_layer:
+    # This adds Neg op to the model which will remain as float.
+    model.add(tf.keras.layers.Lambda(lambda x: -x))
 
   # Train
   model.compile(
@@ -261,23 +255,44 @@ def _generate_integer_tflite_model():
       metrics=["accuracy"])
 
   model.fit(
-      train_images,
-      train_labels,
+      images,
+      labels,
       epochs=1,
       validation_split=0.1,
   )
 
-  # Convert TF Model to an Integer Quantized TFLite Model
-  converter = tf.lite.TFLiteConverter.from_keras_model(model)
-  converter.optimizations = {tf.lite.Optimize.DEFAULT}
+  return model
+
+
+def _generate_integer_tflite_model(quantization_type=dtypes.int8,
+                                   use_saved_model=False,
+                                   saved_model_dir=None,
+                                   add_unquantizable_layer=False):
+  """Define an integer post-training quantized tflite model."""
+
+  model = _get_keras_model(add_unquantizable_layer)
+  if not use_saved_model:
+    # Convert TF Model to an Integer Quantized TFLite Model
+    converter = lite.TFLiteConverterV2.from_keras_model(model)
+  else:
+    tf.saved_model.save(model, saved_model_dir)
+    converter = lite.TFLiteConverterV2.from_saved_model(saved_model_dir)
+  converter.optimizations = {lite.Optimize.DEFAULT}
+
   def representative_dataset_gen():
     for _ in range(2):
       yield [
-          np.random.uniform(low=0, high=1, size=(1, 28, 28)).astype(
-              np.float32)
+          np.random.uniform(low=0, high=1, size=(1, 28, 28)).astype(np.float32)
       ]
+
   converter.representative_dataset = representative_dataset_gen
-  converter.target_spec.supported_ops = {tf.lite.OpsSet.TFLITE_BUILTINS_INT8}
+  if quantization_type == dtypes.int8:
+    converter.target_spec.supported_ops = {lite.OpsSet.TFLITE_BUILTINS_INT8}
+  else:
+    converter.target_spec.supported_ops = {
+        lite.OpsSet
+        .EXPERIMENTAL_TFLITE_BUILTINS_ACTIVATIONS_INT16_WEIGHTS_INT8
+    }
   tflite_model = converter.convert()
 
   return tflite_model
@@ -286,42 +301,45 @@ def _generate_integer_tflite_model():
 def _test_param_modify_integer_model_io_type():
   """Function to generate parameterized inputs for testing."""
   params = []
-  str_template = "_{}{}{}"
+  str_template = "_{}{}{}{}"
   map_model_type = {
       "PostTraining": True,
       # "DuringTraining": False,
   }
-  map_types = {
-      "": lite_constants.FLOAT,
-      "INT8": lite_constants.INT8,
-      "UINT8": lite_constants.QUANTIZED_UINT8
+  map_quantize_type_to_io_types = {
+      tf.int8: {tf.float32, tf.int8, tf.uint8},
+      tf.int16: {tf.float32, tf.int16}
   }
   for k1, v1 in map_model_type.items():
-    for k2, v2 in map_types.items():
-      istr = "_Input{}".format(k2) if k2 else ""
-      for k3, v3 in map_types.items():
-        ostr = "_Output{}".format(k3) if k3 else "" if istr else "_NoUpdate"
-        params.append((str_template.format(k1, istr, ostr), v1, v2, v3))
+    for qtype, v2 in map_quantize_type_to_io_types.items():
+      qstr = "_IntegerQuantize{}".format(qtype.name.capitalize())
+      for itype in v2:
+        istr = "_Input{}".format(itype.name.capitalize())
+        for otype in v2:
+          ostr = "_Output{}".format(otype.name.capitalize())
+          params.append((str_template.format(k1, qstr, istr,
+                                             ostr), v1, qtype, itype, otype))
   return params
 
 
-# TODO(b/161174063):  Merge tests for integer input/output type
-class UtilModifyIntegerQuantizedModelIOTypeTest(
-    test_util.TensorFlowTestCase, parameterized.TestCase):
+class UtilModifyIntegerQuantizedModelIOTypeTest(test_util.TensorFlowTestCase,
+                                                parameterized.TestCase):
 
   @classmethod
   def setUpClass(cls):
     super(UtilModifyIntegerQuantizedModelIOTypeTest, cls).setUpClass()
-    cls.post_train_integer_model = _generate_integer_tflite_model()
+    cls.post_train_int8_model = _generate_integer_tflite_model()
+    cls.post_train_int16_model = _generate_integer_tflite_model(
+        quantization_type=dtypes.int16)
 
   @parameterized.named_parameters(_test_param_modify_integer_model_io_type())
-  def test(self, is_post_train, in_tftype, out_tftype):
+  def test(self, is_post_train, quantization_type, in_tftype, out_tftype):
     """Modify the float input/output type of an integer quantized model."""
 
     def _run_tflite_inference(model, in_tftype, out_tftype):
       """Run inference on a model with a specific input/output type."""
       # Load TFLite model and allocate tensors.
-      interpreter = tf.lite.Interpreter(model_content=model)
+      interpreter = lite.Interpreter(model_content=model)
       interpreter.allocate_tensors()
       input_details = interpreter.get_input_details()[0]
       output_details = interpreter.get_output_details()[0]
@@ -354,16 +372,146 @@ class UtilModifyIntegerQuantizedModelIOTypeTest(
 
       return output_data
 
-    model = self.__class__.post_train_integer_model if is_post_train else None
+    if is_post_train and quantization_type == tf.int8:
+      model = self.__class__.post_train_int8_model
+    elif is_post_train and quantization_type == tf.int16:
+      model = self.__class__.post_train_int16_model
+    else:
+      model = None
     # Run model inference with float input output type
     output_data = _run_tflite_inference(model, tf.float32, tf.float32)
+    # Modify the model io types to the target input/output types.
+    model_io = util.modify_model_io_type(model, in_tftype, out_tftype)
     # Run model inference with modified integer input output type
-    model_io = util.modify_integer_quantized_model_io_type(
-        model, in_tftype, out_tftype)
     output_io_data = _run_tflite_inference(model_io, in_tftype, out_tftype)
-
-     # Validate that both the outputs are the same
+    # Validate that both the outputs are the same
     self.assertAllClose(output_data, output_io_data, atol=1.0)
+
+    # Modify the model with the target input/output types should be a no op.
+    model_io = util.modify_model_io_type(model_io, in_tftype, out_tftype)
+    # Run model inference with modified integer input output type
+    output_io_data = _run_tflite_inference(model_io, in_tftype, out_tftype)
+    # Validate that both the outputs are the same
+    self.assertAllClose(output_data, output_io_data, atol=1.0)
+
+
+class UtilModifyIntegerQuantizedModelIOTypeSignatureDefTest(
+    test_util.TensorFlowTestCase):
+
+  def _generate_integer_tflite_model_from_saved_model(self):
+    """Define an integer post-training quantized model from saved model."""
+
+    saved_model_dir = os.path.join(self.get_temp_dir(), "simple_savedmodel")
+    return _generate_integer_tflite_model(
+        use_saved_model=True,
+        saved_model_dir=saved_model_dir,
+        add_unquantizable_layer=True)
+
+  def test(self):
+    """Makes sure modifying IO types updates Signature correctly."""
+    post_train_int8_model = (
+        self._generate_integer_tflite_model_from_saved_model())
+    modified_model = util.modify_model_io_type(post_train_int8_model, tf.int8,
+                                               tf.float32)
+    interpreter = lite.Interpreter(model_content=modified_model)
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+    signature = interpreter._get_full_signature_list()
+    input_ids = []
+    output_ids = []
+    for input_tensor in input_details:
+      input_ids.append(input_tensor["index"])
+    for output_tensor in output_details:
+      output_ids.append(output_tensor["index"])
+    for _, tensor_id in signature["serving_default"]["inputs"].items():
+      assert tensor_id in input_ids
+    for _, tensor_id in signature["serving_default"]["outputs"].items():
+      assert tensor_id in output_ids
+
+
+class UtilModifyIntegerQuantizedConcatResidualModelIOTypeTest(
+    test_util.TensorFlowTestCase, parameterized.TestCase
+):
+
+  def _generate_int8_f32io_concat_residual_tflite(self, number_of_inputs=3):
+    dtype = float
+
+    class ConcatNResidual(tf.keras.layers.Layer):
+      """A simple concat and residual Keras Model."""
+
+      def __init__(self, number_of_inputs=3, **kwargs):
+        super().__init__(**kwargs)
+        self.number_of_inputs = number_of_inputs
+        self.conv = tf.keras.layers.Conv2D(2, (2, 2), padding="same")
+        self.mins = [-0.01 * (i + 1) for i in range(self.number_of_inputs)]
+        self.maxs = [0.01 * (i + 1) for i in range(self.number_of_inputs)]
+
+      def call(self, inputs):
+        xs = [
+            tf.quantization.fake_quant_with_min_max_args(
+                inputs[i], self.mins[i], self.maxs[i]
+            )
+            for i in range(self.number_of_inputs)
+        ]
+        x = tf.keras.backend.concatenate(xs, 1)
+        x = x[:, : inputs[-1].shape[1]]
+        x = x + xs[-1]
+        x = tf.quantization.fake_quant_with_min_max_args(x, -2.242, 2.242)
+        return x
+
+    inputs = [
+        tf.keras.layers.Input(shape=(2, 2, 2), batch_size=1, dtype=dtype)
+        for _ in range(number_of_inputs)
+    ]
+    outputs = ConcatNResidual(number_of_inputs)(inputs)
+    model = tf.keras.Model(inputs, outputs)
+
+    converter = lite.TFLiteConverterV2.from_keras_model(model)
+    converter.optimizations = [lite.Optimize.DEFAULT]
+    tflite_model = converter.convert()
+    return tflite_model
+
+  def _verify_tensor_connections(self, flatbuffer_model):
+    """Verify that all the tensors have input and output ops except the tensors have buffer data."""
+    tflite_subgraph = flatbuffer_model.subgraphs[0]
+    tensors = tflite_subgraph.tensors
+    buffers = flatbuffer_model.buffers
+    tensors_used_as_inputs = set()
+    tensors_used_as_outputs = set()
+    for op in tflite_subgraph.operators:
+      tensors_used_as_inputs.update(
+          idx for idx in op.inputs if buffers[tensors[idx].buffer].data is None
+      )
+      tensors_used_as_outputs.update(idx for idx in op.outputs)
+
+    tensors_used_as_inputs.update(idx for idx in tflite_subgraph.outputs)
+    tensors_used_as_outputs.update(idx for idx in tflite_subgraph.inputs)
+
+    self.assertEqual(tensors_used_as_inputs, tensors_used_as_outputs)
+
+  @parameterized.named_parameters([
+      ("_IntOnly_Float32InputOutput", tf.float32),
+      ("_IntOnly_INT8InputOutput", tf.int8),
+      ("_IntOnly_UINT8InputOutput", tf.uint8),
+  ])
+  def test(self, inference_input_output_type):
+    """Make sure modifying IO types removes tensors correctly."""
+    srqed_int8_f32io_model = self._generate_int8_f32io_concat_residual_tflite()
+
+    if inference_input_output_type != tf.float32:
+      target_model = util.modify_model_io_type(
+          srqed_int8_f32io_model,
+          inference_input_output_type,
+          inference_input_output_type,
+      )
+    else:
+      target_model = srqed_int8_f32io_model
+
+    tflite_path = os.path.join(self.get_temp_dir(), "concat_residual.tflite")
+    with tf.io.gfile.GFile(tflite_path, "wb") as writer:
+      writer.write(target_model)
+    flatbuffer_model = _read_model(tflite_path)
+    self._verify_tensor_connections(flatbuffer_model)
 
 
 if __name__ == "__main__":

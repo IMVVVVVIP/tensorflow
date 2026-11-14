@@ -14,6 +14,11 @@ limitations under the License.
 ==============================================================================*/
 
 #include "tensorflow/lite/tools/gen_op_registration.h"
+
+#include <map>
+#include <utility>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -98,9 +103,3 @@ TEST_F(GenOpRegistrationTest, TestNormalizeCustomOpName) {
   }
 }
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  // On Linux, add: absl::SetFlag(&FLAGS_logtostderr, true);
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

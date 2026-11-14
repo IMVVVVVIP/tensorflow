@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for Collective Operations with XLA."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.core.protobuf import config_pb2
 from tensorflow.core.protobuf import rewriter_config_pb2
 from tensorflow.python.eager import def_function
@@ -56,7 +52,7 @@ class CollectiveOpXlaTest(test.TestCase):
           tensor_val = [i + 1.] * tensor_size
           constant = constant_op.constant(tensor_val)
 
-          @def_function.function(experimental_compile=True)
+          @def_function.function(jit_compile=True)
           def f(x):
             return 2 * x + 1
 

@@ -18,6 +18,7 @@ limitations under the License.
 #include <memory>
 #include <string>
 
+#include "absl/synchronization/notification.h"
 #include "tensorflow/core/kernels/batching_util/fake_clock_env.h"
 #include "tensorflow/core/platform/test.h"
 
@@ -45,14 +46,14 @@ using test_util::FakeClockEnv;
 
 void StopPeriodicFunction(PeriodicFunction* periodic_function,
                           FakeClockEnv* fake_clock_env,
-                          const uint64 pf_interval_micros) {
+                          const uint64_t pf_interval_micros) {
   fake_clock_env->BlockUntilThreadsAsleep(1);
   internal::PeriodicFunctionTestAccess(periodic_function).NotifyStop();
   fake_clock_env->AdvanceByMicroseconds(pf_interval_micros);
 }
 
 TEST(PeriodicFunctionTest, ObeyInterval) {
-  const int64 kPeriodMicros = 2;
+  const int64_t kPeriodMicros = 2;
   const int kCalls = 10;
 
   int actual_calls = 0;
@@ -77,8 +78,8 @@ TEST(PeriodicFunctionTest, ObeyInterval) {
 }
 
 TEST(PeriodicFunctionTest, ObeyStartupDelay) {
-  const int64 kDelayMicros = 10;
-  const int64 kPeriodMicros = kDelayMicros / 10;
+  const int64_t kDelayMicros = 10;
+  const int64_t kPeriodMicros = kDelayMicros / 10;
 
   int actual_calls = 0;
   {
@@ -104,12 +105,12 @@ TEST(PeriodicFunctionTest, ObeyStartupDelay) {
 
 // Test for race in calculating the first time the callback should fire.
 TEST(PeriodicFunctionTest, StartupDelayRace) {
-  const int64 kDelayMicros = 10;
-  const int64 kPeriodMicros = kDelayMicros / 10;
+  const int64_t kDelayMicros = 10;
+  const int64_t kPeriodMicros = kDelayMicros / 10;
 
   mutex mu;
   int counter = 0;
-  std::unique_ptr<Notification> listener(new Notification);
+  std::unique_ptr<absl::Notification> listener(new absl::Notification);
 
   FakeClockEnv fake_clock_env(Env::Default());
   PeriodicFunction::Options options;
@@ -130,7 +131,7 @@ TEST(PeriodicFunctionTest, StartupDelayRace) {
     mutex_lock l(mu);
     EXPECT_EQ(1, counter);
     // A notification can only be notified once.
-    listener.reset(new Notification);
+    listener = std::make_unique<absl::Notification>();
   }
   fake_clock_env.BlockUntilThreadsAsleep(1);
   fake_clock_env.AdvanceByMicroseconds(kPeriodMicros);
@@ -151,7 +152,7 @@ TEST(PeriodicFunctionTest, MinInterval) {
 
 class PeriodicFunctionWithFakeClockEnvTest : public ::testing::Test {
  protected:
-  const int64 kPeriodMicros = 50;
+  const int64_t kPeriodMicros = 50;
   PeriodicFunctionWithFakeClockEnvTest()
       : fake_clock_env_(Env::Default()),
         counter_(0),

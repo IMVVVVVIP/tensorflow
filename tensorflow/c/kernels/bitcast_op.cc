@@ -13,14 +13,18 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <sstream>
 
+#include "absl/log/check.h"
 #include "tensorflow/c/kernels.h"
 #include "tensorflow/c/ops.h"
 #include "tensorflow/c/tf_tensor.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
-#include "tensorflow/core/framework/selective_registration.h"
+#include "tensorflow/core/framework/registration/registration.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/platform/macros.h"
 
@@ -64,8 +68,12 @@ static void* BitcastOp_Create(TF_OpKernelConstruction* ctx) {
     kernel->in_size = TF_DataTypeSize(kernel->input_data_type);
     kernel->out_size = TF_DataTypeSize(kernel->output_data_type);
 
-    size_t check_size = std::max(kernel->in_size, kernel->out_size) %
-                        std::min(kernel->in_size, kernel->out_size);
+    // Check that the data type sizes allow for conversion.
+    size_t check_size = 1;  // At first, assume not.
+    if (kernel->in_size != 0 && kernel->out_size != 0) {
+      check_size = std::max(kernel->in_size, kernel->out_size) %
+                   std::min(kernel->in_size, kernel->out_size);
+    }
     if (check_size != 0) {
       std::ostringstream err;
       err << "cannot convert between datatype " << kernel->input_data_type
@@ -92,7 +100,7 @@ static void BitcastOp_Compute(void* kernel, TF_OpKernelContext* ctx) {
   auto* k = static_cast<BitcastOp*>(kernel);
   int dim_count = 0;
 
-  TF_Tensor* tensor;
+  TF_Tensor* tensor = nullptr;
   TF_Status* status = TF_NewStatus();
   TF_GetInput(ctx, 0, &tensor, status);
   if (TF_GetCode(status) == TF_OK) {
@@ -148,7 +156,7 @@ void RegisterBitcastOpKernel() {
         << "Error while registering bitcast kernel";
   }
 
-#if GOOGLE_CUDA
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
   {
     auto* builder = TF_NewKernelBuilder("Bitcast", tensorflow::DEVICE_GPU,
                                         &BitcastOp_Create, &BitcastOp_Compute,

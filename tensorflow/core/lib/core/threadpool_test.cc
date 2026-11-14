@@ -16,15 +16,22 @@ limitations under the License.
 #include "tensorflow/core/lib/core/threadpool.h"
 
 #include <atomic>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <vector>
 
+#include "absl/log/log.h"
 #include "absl/synchronization/barrier.h"
-#include "absl/synchronization/blocking_counter.h"
-#include "absl/types/optional.h"
+#include "absl/synchronization/notification.h"
+#include "absl/time/time.h"
 #include "tensorflow/core/platform/context.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/platform/test_benchmark.h"
+#include "tsl/platform/platform.h"  // IWYU pragma: keep
 
 namespace tensorflow {
 namespace thread {
@@ -33,7 +40,6 @@ static const int kNumThreads = 30;
 
 TEST(ThreadPool, Empty) {
   for (int num_threads = 1; num_threads < kNumThreads; num_threads++) {
-    fprintf(stderr, "Testing with %d threads\n", num_threads);
     ThreadPool pool(Env::Default(), "test", num_threads);
   }
 }
@@ -41,7 +47,6 @@ TEST(ThreadPool, Empty) {
 TEST(ThreadPool, DoWork) {
   Context outer_context(ContextKind::kThread);
   for (int num_threads = 1; num_threads < kNumThreads; num_threads++) {
-    fprintf(stderr, "Testing with %d threads\n", num_threads);
     const int kWorkItems = 15;
     std::atomic<bool> work[kWorkItems];
     for (int i = 0; i < kWorkItems; i++) {
@@ -63,10 +68,11 @@ TEST(ThreadPool, DoWork) {
   }
 }
 
-void RunWithFixedBlockSize(int64 block_size, int64 total, ThreadPool* threads) {
+void RunWithFixedBlockSize(int64_t block_size, int64_t total,
+                           ThreadPool* threads) {
   mutex mu;
-  int64 num_shards = 0;
-  int64 num_done_work = 0;
+  int64_t num_shards = 0;
+  int64_t num_done_work = 0;
   std::vector<std::atomic<bool>> work(total);
   for (int i = 0; i < total; i++) {
     work[i] = false;
@@ -75,8 +81,8 @@ void RunWithFixedBlockSize(int64 block_size, int64 total, ThreadPool* threads) {
       total,
       ThreadPool::SchedulingParams(
           ThreadPool::SchedulingStrategy::kFixedBlockSize /* strategy */,
-          absl::nullopt /* cost_per_unit */, block_size /* block_size */),
-      [=, &mu, &num_shards, &num_done_work, &work](int64 start, int64 end) {
+          std::nullopt /* cost_per_unit */, block_size /* block_size */),
+      [=, &mu, &num_shards, &num_done_work, &work](int64_t start, int64_t end) {
         VLOG(1) << "Shard [" << start << "," << end << ")";
         EXPECT_GE(start, 0);
         EXPECT_LE(end, total);
@@ -91,7 +97,7 @@ void RunWithFixedBlockSize(int64 block_size, int64 total, ThreadPool* threads) {
   for (int i = 0; i < total; i++) {
     ASSERT_TRUE(work[i]);
   }
-  const int64 num_workers = (total + block_size - 1) / block_size;
+  const int64_t num_workers = (total + block_size - 1) / block_size;
   if (num_workers < threads->NumThreads()) {
     // If the intention is to limit the parallelism explicitly, we'd
     // better honor it. Ideally, even if per_thread_max_parallelism >
@@ -107,25 +113,25 @@ TEST(ThreadPoolTest, ParallelForFixedBlockSizeScheduling) {
   ThreadPool threads(Env::Default(), "test", 16);
   for (auto block_size : {1, 7, 10, 64, 100, 256, 1000, 9999}) {
     for (auto diff : {0, 1, 11, 102, 1003, 10005, 1000007}) {
-      const int64 total = block_size + diff;
+      const int64_t total = block_size + diff;
       RunWithFixedBlockSize(block_size, total, &threads);
     }
   }
 }
 
-void RunWithFixedBlockSizeTransformRangeConcurrently(int64 block_size,
-                                                     int64 total,
+void RunWithFixedBlockSizeTransformRangeConcurrently(int64_t block_size,
+                                                     int64_t total,
                                                      ThreadPool* threads) {
   mutex mu;
-  int64 num_shards = 0;
-  int64 num_done_work = 0;
+  int64_t num_shards = 0;
+  int64_t num_done_work = 0;
   std::vector<std::atomic<bool>> work(total);
   for (int i = 0; i < total; i++) {
     work[i] = false;
   }
   threads->TransformRangeConcurrently(
       block_size, total,
-      [=, &mu, &num_shards, &num_done_work, &work](int64 start, int64 end) {
+      [=, &mu, &num_shards, &num_done_work, &work](int64_t start, int64_t end) {
         VLOG(1) << "Shard [" << start << "," << end << ")";
         EXPECT_GE(start, 0);
         EXPECT_LE(end, total);
@@ -140,7 +146,7 @@ void RunWithFixedBlockSizeTransformRangeConcurrently(int64 block_size,
   for (int i = 0; i < total; i++) {
     ASSERT_TRUE(work[i]);
   }
-  const int64 num_workers = (total + block_size - 1) / block_size;
+  const int64_t num_workers = (total + block_size - 1) / block_size;
   if (num_workers < threads->NumThreads()) {
     // If the intention is to limit the parallelism explicitly, we'd
     // better honor it. Ideally, even if per_thread_max_parallelism >
@@ -156,7 +162,7 @@ TEST(ThreadPoolTest, TransformRangeConcurrently) {
   ThreadPool threads(Env::Default(), "test", 16);
   for (auto block_size : {1, 7, 10, 64, 100, 256, 1000, 9999}) {
     for (auto diff : {0, 1, 11, 102, 1003, 10005, 1000007}) {
-      const int64 total = block_size + diff;
+      const int64_t total = block_size + diff;
       RunWithFixedBlockSizeTransformRangeConcurrently(block_size, total,
                                                       &threads);
     }
@@ -201,15 +207,15 @@ TEST(ThreadPoolTest, NumShardsUsedByTransformRangeConcurrently) {
                    0 /* block_size */, 7 /* total */));
 }
 
-void RunFixedBlockSizeShardingWithWorkerId(int64 block_size, int64 total,
+void RunFixedBlockSizeShardingWithWorkerId(int64_t block_size, int64_t total,
                                            ThreadPool* threads) {
   mutex mu;
-  int64 num_done_work = 0;
+  int64_t num_done_work = 0;
   std::vector<std::atomic<bool>> work(total);
   for (int i = 0; i < total; i++) {
     work[i] = false;
   }
-  const int64 num_threads = threads->NumThreads();
+  const int64_t num_threads = threads->NumThreads();
   std::vector<std::atomic<bool>> threads_running(num_threads + 1);
   for (int i = 0; i < num_threads + 1; i++) {
     threads_running[i] = false;
@@ -219,9 +225,9 @@ void RunFixedBlockSizeShardingWithWorkerId(int64 block_size, int64 total,
       total,
       ThreadPool::SchedulingParams(
           ThreadPool::SchedulingStrategy::kFixedBlockSize /* strategy */,
-          absl::nullopt /* cost_per_unit */, block_size /* block_size */),
-      [=, &mu, &num_done_work, &work, &threads_running](int64 start, int64 end,
-                                                        int id) {
+          std::nullopt /* cost_per_unit */, block_size /* block_size */),
+      [=, &mu, &num_done_work, &work, &threads_running](int64_t start,
+                                                        int64_t end, int id) {
         VLOG(1) << "Shard [" << start << "," << end << ")";
         EXPECT_GE(start, 0);
         EXPECT_LE(end, total);
@@ -247,11 +253,11 @@ void RunFixedBlockSizeShardingWithWorkerId(int64 block_size, int64 total,
 }
 
 TEST(ThreadPoolTest, ParallelForFixedBlockSizeSchedulingWithWorkerId) {
-  for (int32 num_threads : {1, 2, 3, 9, 16, 31}) {
+  for (int32_t num_threads : {1, 2, 3, 9, 16, 31}) {
     ThreadPool threads(Env::Default(), "test", num_threads);
-    for (int64 block_size : {1, 7, 10, 64, 100, 256, 1000}) {
-      for (int64 diff : {0, 1, 11, 102, 1003}) {
-        const int64 total = block_size + diff;
+    for (int64_t block_size : {1, 7, 10, 64, 100, 256, 1000}) {
+      for (int64_t diff : {0, 1, 11, 102, 1003}) {
+        const int64_t total = block_size + diff;
         RunFixedBlockSizeShardingWithWorkerId(block_size, total, &threads);
       }
     }
@@ -261,20 +267,20 @@ TEST(ThreadPoolTest, ParallelForFixedBlockSizeSchedulingWithWorkerId) {
 TEST(ThreadPool, ParallelFor) {
   Context outer_context(ContextKind::kThread);
   // Make ParallelFor use as many threads as possible.
-  int64 kHugeCost = 1 << 30;
+  int64_t kHugeCost = 1 << 30;
   for (int num_threads = 1; num_threads < kNumThreads; num_threads++) {
-    fprintf(stderr, "Testing with %d threads\n", num_threads);
     const int kWorkItems = 15;
     std::atomic<bool> work[kWorkItems];
     ThreadPool pool(Env::Default(), "test", num_threads);
     for (int i = 0; i < kWorkItems; i++) {
       work[i] = false;
     }
-    pool.ParallelFor(kWorkItems, kHugeCost,
-                     [&outer_context, &work](int64 begin, int64 end) {
+    pool.ParallelFor(kWorkItems,
+                     ThreadPool::SchedulingParams::Adaptive(kHugeCost),
+                     [&outer_context, &work](int64_t begin, int64_t end) {
                        Context inner_context(ContextKind::kThread);
                        ASSERT_EQ(outer_context, inner_context);
-                       for (int64 i = begin; i < end; ++i) {
+                       for (int64_t i = begin; i < end; ++i) {
                          ASSERT_FALSE(work[i].exchange(true));
                        }
                      });
@@ -287,9 +293,8 @@ TEST(ThreadPool, ParallelFor) {
 TEST(ThreadPool, ParallelForWithAdaptiveSchedulingStrategy) {
   Context outer_context(ContextKind::kThread);
   // Make ParallelFor use as many threads as possible.
-  int64 kHugeCost = 1 << 30;
+  int64_t kHugeCost = 1 << 30;
   for (int num_threads = 1; num_threads < kNumThreads; num_threads++) {
-    fprintf(stderr, "Testing with %d threads\n", num_threads);
     const int kWorkItems = 15;
     std::atomic<bool> work[kWorkItems];
     ThreadPool pool(Env::Default(), "test", num_threads);
@@ -300,11 +305,11 @@ TEST(ThreadPool, ParallelForWithAdaptiveSchedulingStrategy) {
         kWorkItems,
         ThreadPool::SchedulingParams(
             ThreadPool::SchedulingStrategy::kAdaptive /* strategy */,
-            kHugeCost /* cost_per_unit */, absl::nullopt /* block_size */),
-        [&outer_context, &work](int64 begin, int64 end) {
+            kHugeCost /* cost_per_unit */, std::nullopt /* block_size */),
+        [&outer_context, &work](int64_t begin, int64_t end) {
           Context inner_context(ContextKind::kThread);
           ASSERT_EQ(outer_context, inner_context);
-          for (int64 i = begin; i < end; ++i) {
+          for (int64_t i = begin; i < end; ++i) {
             ASSERT_FALSE(work[i].exchange(true));
           }
         });
@@ -316,9 +321,8 @@ TEST(ThreadPool, ParallelForWithAdaptiveSchedulingStrategy) {
 
 TEST(ThreadPool, ParallelForWithWorkerId) {
   // Make ParallelForWithWorkerId use as many threads as possible.
-  int64 kHugeCost = 1 << 30;
+  int64_t kHugeCost = 1 << 30;
   for (int num_threads = 1; num_threads < kNumThreads; num_threads++) {
-    fprintf(stderr, "Testing with %d threads\n", num_threads);
     const int kWorkItems = 15;
     std::atomic<bool> work[kWorkItems];
     ThreadPool pool(Env::Default(), "test", num_threads);
@@ -330,14 +334,14 @@ TEST(ThreadPool, ParallelForWithWorkerId) {
       threads_running[i] = false;
     }
     pool.ParallelForWithWorkerId(
-        kWorkItems, kHugeCost,
-        [&threads_running, &work](int64 begin, int64 end, int64 id) {
+        kWorkItems, ThreadPool::SchedulingParams::Adaptive(kHugeCost),
+        [&threads_running, &work](int64_t begin, int64_t end, int64_t id) {
           // Store true for the current thread, and assert that another thread
           // is not running with the same id.
           ASSERT_LE(0, id);
           ASSERT_LE(id, kNumThreads);
           ASSERT_FALSE(threads_running[id].exchange(true));
-          for (int64 i = begin; i < end; ++i) {
+          for (int64_t i = begin; i < end; ++i) {
             ASSERT_FALSE(work[i].exchange(true));
           }
           ASSERT_TRUE(threads_running[id].exchange(false));
@@ -355,49 +359,56 @@ TEST(ThreadPool, ParallelForWithWorkerId) {
 TEST(ThreadPool, Parallelism) {
   // Test that if we have N threads and schedule N tasks,
   // all tasks will be scheduled at the same time.
-  // Failure mode for this test will be episodic timeouts (does not terminate).
+  // Failure mode for this test will be timeouts.
   ThreadPool pool(Env::Default(), "test", kNumThreads);
   for (int iter = 0; iter < 2000; iter++) {
-    absl::Barrier barrier(kNumThreads);
-    absl::BlockingCounter counter(kNumThreads);
+    auto barrier = std::make_shared<absl::Barrier>(kNumThreads);
+    auto done = std::make_shared<absl::Notification>();
     for (int t = 0; t < kNumThreads; ++t) {
-      pool.Schedule([&]() {
-        barrier.Block();
-        counter.DecrementCount();
+      pool.Schedule([barrier, done]() {
+        if (barrier->Block()) {
+          done->Notify();
+        }
       });
     }
-    counter.Wait();
+    ASSERT_TRUE(done->WaitForNotificationWithTimeout(absl::Seconds(10)));
   }
 }
 
-static void BM_Sequential(int iters) {
-  ThreadPool pool(Env::Default(), "test", kNumThreads);
-  // Decrement count sequentially until 0.
-  int count = iters;
-  mutex done_lock;
-  bool done_flag = false;
-  std::function<void()> work = [&pool, &count, &done_lock, &done_flag,
-                                &work]() {
-    if (count--) {
-      pool.Schedule(work);
-    } else {
-      mutex_lock l(done_lock);
-      done_flag = true;
-    }
-  };
-  work();
-  mutex_lock l(done_lock);
-  done_lock.Await(Condition(&done_flag));
-}
-BENCHMARK(BM_Sequential);
+static void BM_Sequential(::testing::benchmark::State& state) {
+  for (auto s : state) {
+    state.PauseTiming();
+    ThreadPool pool(Env::Default(), "test", kNumThreads);
+    // Decrement count sequentially until 0.
+    int count = state.range(0);
+    mutex done_lock;
+    bool done_flag = false;
+    std::function<void()> work = [&pool, &count, &done_lock, &done_flag,
+                                  &work]() {
+      if (count--) {
+        pool.Schedule(work);
+      } else {
+        mutex_lock l(done_lock);
+        done_flag = true;
+      }
+    };
 
-static void BM_Parallel(int iters) {
+    state.ResumeTiming();
+    work();
+    mutex_lock l(done_lock);
+    done_lock.Await(Condition(&done_flag));
+  }
+}
+BENCHMARK(BM_Sequential)->Arg(200)->Arg(300);
+
+static void BM_Parallel(::testing::benchmark::State& state) {
   ThreadPool pool(Env::Default(), "test", kNumThreads);
   // Decrement count concurrently until 0.
-  std::atomic_int_fast32_t count(iters);
+  std::atomic_int_fast32_t count(state.max_iterations);
   mutex done_lock;
   bool done_flag = false;
-  for (int i = 0; i < iters; ++i) {
+
+  for (auto s : state) {
     pool.Schedule([&count, &done_lock, &done_flag]() {
       if (count.fetch_sub(1) == 1) {
         mutex_lock l(done_lock);
@@ -410,25 +421,30 @@ static void BM_Parallel(int iters) {
 }
 BENCHMARK(BM_Parallel);
 
-static void BM_ParallelFor(int iters, int total, int cost_per_unit) {
+static void BM_ParallelFor(::testing::benchmark::State& state) {
+  int total = state.range(0);
+  int cost_per_unit = state.range(1);
   ThreadPool pool(Env::Default(), "test", kNumThreads);
   // Decrement count concurrently until 0.
-  std::atomic_int_fast32_t count(iters);
+  std::atomic_int_fast32_t count(state.max_iterations);
   mutex done_lock;
   bool done_flag = false;
-  for (int i = 0; i < iters; ++i) {
-    pool.ParallelFor(total, cost_per_unit,
-                     [&count, &done_lock, &done_flag](int64 begin, int64 end) {
-                       for (int64 i = begin; i < end; ++i) {
-                         if (count.fetch_sub(1) == 1) {
-                           mutex_lock l(done_lock);
-                           done_flag = true;
-                         }
-                       }
-                     });
+
+  for (auto s : state) {
+    pool.ParallelFor(
+        total, cost_per_unit,
+        [&count, &done_lock, &done_flag](int64_t begin, int64_t end) {
+          for (int64_t i = begin; i < end; ++i) {
+            if (count.fetch_sub(1) == 1) {
+              mutex_lock l(done_lock);
+              done_flag = true;
+            }
+          }
+        });
+
+    mutex_lock l(done_lock);
+    done_lock.Await(Condition(&done_flag));
   }
-  mutex_lock l(done_lock);
-  done_lock.Await(Condition(&done_flag));
 }
 BENCHMARK(BM_ParallelFor)
     ->ArgPair(1 << 10, 1)

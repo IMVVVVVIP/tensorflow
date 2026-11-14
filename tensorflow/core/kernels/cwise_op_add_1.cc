@@ -16,14 +16,21 @@ limitations under the License.
 #include "tensorflow/core/kernels/cwise_ops_common.h"
 
 namespace tensorflow {
-REGISTER6(BinaryOp, CPU, "Add", functor::add, float, Eigen::half, double, int32,
-          int64, bfloat16);
+REGISTER6(BinaryOp, CPU, "Add", functor::add, float, Eigen::half, double,
+          int32_t, int64_t, bfloat16);
+
 REGISTER6(BinaryOp, CPU, "AddV2", functor::add, float, Eigen::half, double,
-          int32, int64, bfloat16);
+          int32_t, int64_t, bfloat16);
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 REGISTER3(BinaryOp, GPU, "Add", functor::add, float, Eigen::half, double);
 REGISTER3(BinaryOp, GPU, "AddV2", functor::add, float, Eigen::half, double);
+#endif
+
+REGISTER(BinaryOp, GPU, "Add", functor::add, Eigen::bfloat16);
+REGISTER(BinaryOp, GPU, "AddV2", functor::add, Eigen::bfloat16);
 
 // A special GPU kernel for int32.
 // TODO(b/25387198): Also enable int32 in device memory. This kernel
@@ -33,37 +40,29 @@ REGISTER_KERNEL_BUILDER(Name("Add")
                             .HostMemory("x")
                             .HostMemory("y")
                             .HostMemory("z")
-                            .TypeConstraint<int32>("T"),
-                        BinaryOp<CPUDevice, functor::add<int32>>);
+                            .TypeConstraint<int32_t>("T"),
+                        BinaryOp<CPUDevice, functor::add<int32_t>>);
 REGISTER_KERNEL_BUILDER(Name("AddV2")
                             .Device(DEVICE_GPU)
                             .HostMemory("x")
                             .HostMemory("y")
                             .HostMemory("z")
-                            .TypeConstraint<int32>("T"),
-                        BinaryOp<CPUDevice, functor::add<int32>>);
+                            .TypeConstraint<int32_t>("T"),
+                        BinaryOp<CPUDevice, functor::add<int32_t>>);
 #endif
-
-#if TENSORFLOW_USE_SYCL
-#define REGISTER_KERNEL(type)                          \
-  REGISTER(BinaryOp, SYCL, "Add", functor::add, type); \
-  REGISTER(BinaryOp, SYCL, "AddV2", functor::add, type);
-
-TF_CALL_SYCL_NUMBER_TYPES(REGISTER_KERNEL);
-
 REGISTER_KERNEL_BUILDER(Name("Add")
-                            .Device(DEVICE_SYCL)
+                            .Device(DEVICE_DEFAULT)
                             .HostMemory("x")
                             .HostMemory("y")
                             .HostMemory("z")
-                            .TypeConstraint<int32>("T"),
-                        BinaryOp<CPUDevice, functor::add<int32>>);
+                            .TypeConstraint<int32_t>("T"),
+                        BinaryOp<CPUDevice, functor::add<int32_t>>);
 REGISTER_KERNEL_BUILDER(Name("AddV2")
-                            .Device(DEVICE_SYCL)
+                            .Device(DEVICE_DEFAULT)
                             .HostMemory("x")
                             .HostMemory("y")
                             .HostMemory("z")
-                            .TypeConstraint<int32>("T"),
-                        BinaryOp<CPUDevice, functor::add<int32>>);
-#endif  // TENSORFLOW_USE_SYCL
+                            .TypeConstraint<int32_t>("T"),
+                        BinaryOp<CPUDevice, functor::add<int32_t>>);
+
 }  // namespace tensorflow

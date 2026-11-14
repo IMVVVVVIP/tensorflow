@@ -14,8 +14,6 @@
    ==============================================================================
 */
 #ifdef GOOGLE_CUDA
-#include "tensorflow/core/util/cuda_solvers.h"
-
 #include <chrono>
 #include <complex>
 #include <unordered_map>
@@ -26,14 +24,14 @@
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/types.h"
-#include "tensorflow/core/lib/core/blocking_counter.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/lib/gtl/inlined_vector.h"
+#include "tensorflow/core/platform/blocking_counter.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/platform/stream_executor.h"
 #include "tensorflow/core/platform/types.h"
-#include "tensorflow/stream_executor/cuda/cuda_activation.h"
+#include "tensorflow/core/util/gpu_solvers.h"
 
 // The CUDA cublas_api.h API contains const-correctness errors. Instead of
 // casting away constness on our data, we instead reinterpret the CuBLAS
@@ -99,19 +97,17 @@ using trsm_Z = cublasStatus_t(cublasContext*, cublasSideMode_t,
 namespace tensorflow {
 namespace {
 
-using se::cuda::ScopedActivateExecutorContext;
-
 inline bool CopyHostToDevice(OpKernelContext* context, void* dst,
-                             const void* src, uint64 bytes) {
+                             const void* src, uint64_t bytes) {
   auto stream = context->op_device_context()->stream();
-  se::DeviceMemoryBase wrapped_dst(dst);
-  return stream->ThenMemcpy(&wrapped_dst, src, bytes).ok();
+  stream_executor::DeviceAddressBase wrapped_dst(dst);
+  return stream->Memcpy(&wrapped_dst, src, bytes).ok();
 }
 
 // A set of initialized handles to the underlying Cuda libraries used by
-// CudaSolver. We maintain one such set of handles per unique stream.
-struct CudaSolverHandles {
-  explicit CudaSolverHandles(cudaStream_t stream) {
+// GpuSolver. We maintain one such set of handles per unique stream.
+struct GpuSolverHandles {
+  explicit GpuSolverHandles(cudaStream_t stream) {
     CHECK(cusolverDnCreate(&cusolver_dn_handle) == CUSOLVER_STATUS_SUCCESS)
         << "Failed to create cuSolverDN instance.";
     CHECK(cusolverDnSetStream(cusolver_dn_handle, stream) ==
@@ -123,7 +119,7 @@ struct CudaSolverHandles {
         << "Failed to set cuBlas stream.";
   }
 
-  ~CudaSolverHandles() {
+  ~GpuSolverHandles() {
     CHECK(cublasDestroy(cublas_handle) == CUBLAS_STATUS_SUCCESS)
         << "Failed to destroy cuBlas instance.";
     CHECK(cusolverDnDestroy(cusolver_dn_handle) == CUSOLVER_STATUS_SUCCESS)
@@ -136,7 +132,7 @@ struct CudaSolverHandles {
 static mutex handle_map_mutex(LINKER_INITIALIZED);
 
 using HandleMap =
-    std::unordered_map<cudaStream_t, std::unique_ptr<CudaSolverHandles>>;
+    std::unordered_map<cudaStream_t, std::unique_ptr<GpuSolverHandles>>;
 
 // Returns a singleton map used for storing initialized handles for each unique
 // cuda stream.
@@ -166,22 +162,21 @@ HandleMap* GetHandleMapSingleton() {
     }                                                                    \
   } while (0)
 
-CudaSolver::CudaSolver(OpKernelContext* context) : context_(context) {
+GpuSolver::GpuSolver(OpKernelContext* context) : context_(context) {
   mutex_lock lock(handle_map_mutex);
-  const cudaStream_t* cu_stream_ptr = CHECK_NOTNULL(
-      reinterpret_cast<const cudaStream_t*>(context->op_device_context()
-                                                ->stream()
-                                                ->implementation()
-                                                ->GpuStreamMemberHack()));
-  cuda_stream_ = *cu_stream_ptr;
+  cuda_stream_ = reinterpret_cast<cudaStream_t>(
+      CHECK_NOTNULL(context->op_device_context()
+                        ->stream()
+                        ->platform_specific_handle()
+                        .stream));
   HandleMap* handle_map = CHECK_NOTNULL(GetHandleMapSingleton());
   auto it = handle_map->find(cuda_stream_);
   if (it == handle_map->end()) {
-    LOG(INFO) << "Creating CudaSolver handles for stream " << cuda_stream_;
+    LOG(INFO) << "Creating GpuSolver handles for stream " << cuda_stream_;
     // Previously unseen Cuda stream. Initialize a set of Cuda solver library
     // handles for it.
-    std::unique_ptr<CudaSolverHandles> new_handles(
-        new CudaSolverHandles(cuda_stream_));
+    std::unique_ptr<GpuSolverHandles> new_handles(
+        new GpuSolverHandles(cuda_stream_));
     it =
         handle_map->insert(std::make_pair(cuda_stream_, std::move(new_handles)))
             .first;
@@ -190,22 +185,23 @@ CudaSolver::CudaSolver(OpKernelContext* context) : context_(context) {
   cublas_handle_ = it->second->cublas_handle;
 }
 
-CudaSolver::~CudaSolver() {
+GpuSolver::~GpuSolver() {
   for (const auto& tensor_ref : scratch_tensor_refs_) {
     tensor_ref.Unref();
   }
 }
 
 // static
-void CudaSolver::CheckLapackInfoAndDeleteSolverAsync(
-    std::unique_ptr<CudaSolver> solver,
+void GpuSolver::CheckLapackInfoAndDeleteSolverAsync(
+    std::unique_ptr<GpuSolver> solver,
     const std::vector<DeviceLapackInfo>& dev_lapack_infos,
-    std::function<void(const Status&, const std::vector<HostLapackInfo>&)>
+    std::function<void(const absl::Status&, const std::vector<HostLapackInfo>&)>
         info_checker_callback) {
   CHECK(info_checker_callback != nullptr);
   std::vector<HostLapackInfo> host_lapack_infos;
   if (dev_lapack_infos.empty()) {
-    info_checker_callback(Status::OK(), host_lapack_infos);
+    std::move(solver).reset();
+    info_checker_callback(absl::OkStatus(), host_lapack_infos);
     return;
   }
 
@@ -213,11 +209,21 @@ void CudaSolver::CheckLapackInfoAndDeleteSolverAsync(
   for (const auto& dev_lapack_info : dev_lapack_infos) {
     bool success = true;
     auto host_copy = dev_lapack_info.CopyToHost(&success);
-    OP_REQUIRES(
-        solver->context(), success,
-        errors::Internal(
-            "Failed to launch copy of dev_lapack_info to host, debug_info = ",
-            dev_lapack_info.debug_info()));
+    if (!success) {
+      absl::Status status = absl::InternalError(absl::StrCat(
+          "Failed to launch copy of dev_lapack_info to host, debug_info = ",
+          dev_lapack_info.debug_info()));
+      if (solver != nullptr) {
+        solver->context()
+            ->op_device_context()
+            ->stream()
+            ->BlockHostUntilDone()
+            .IgnoreError();
+        std::move(solver).reset();
+      }
+      info_checker_callback(status, host_lapack_infos);
+      return;
+    }
     host_lapack_infos.push_back(std::move(host_copy));
   }
 
@@ -225,21 +231,22 @@ void CudaSolver::CheckLapackInfoAndDeleteSolverAsync(
   // successfully and passes status to the info_checker_callback accordingly.
   auto* stream = solver->context()->op_device_context()->stream();
   auto wrapped_info_checker_callback =
-      [stream](
-          CudaSolver* solver,
-          std::function<void(const Status&, const std::vector<HostLapackInfo>&)>
-              info_checker_callback,
-          std::vector<HostLapackInfo> host_lapack_infos) {
-        ScopedActivateExecutorContext scoped_activation{stream->parent()};
-        Status status;
+      [stream](GpuSolver* solver,
+               std::function<void(const absl::Status&,
+                                  const std::vector<HostLapackInfo>&)>
+                   info_checker_callback,
+               std::vector<HostLapackInfo> host_lapack_infos) {
+        std::unique_ptr<stream_executor::ActivateContext> scoped_activation =
+            stream->parent()->Activate();
+        absl::Status status;
         for (const auto& host_lapack_info : host_lapack_infos) {
           for (int i = 0; i < host_lapack_info.size() && status.ok(); ++i) {
             const int info_value = host_lapack_info(i);
             if (info_value != 0) {
-              status = errors::InvalidArgument(
-                  "Got info = ", info_value, " for batch index ", i,
-                  ", expected info = 0. Debug_info = ",
-                  host_lapack_info.debug_info());
+              status = absl::InvalidArgumentError(
+                  absl::StrCat("Got info = ", info_value, " for batch index ",
+                               i, ", expected info = 0. Debug_info = ",
+                               host_lapack_info.debug_info()));
             }
           }
           if (!status.ok()) {
@@ -264,18 +271,18 @@ void CudaSolver::CheckLapackInfoAndDeleteSolverAsync(
 
   solver_raw_ptr->context()
       ->device()
-      ->tensorflow_gpu_device_info()
+      ->tensorflow_accelerator_device_info()
       ->event_mgr->ThenExecute(stream, std::move(cb));
 }
 
 // static
-void CudaSolver::CheckLapackInfoAndDeleteSolverAsync(
-    std::unique_ptr<CudaSolver> solver,
+void GpuSolver::CheckLapackInfoAndDeleteSolverAsync(
+    std::unique_ptr<GpuSolver> solver,
     const std::vector<DeviceLapackInfo>& dev_lapack_info,
     AsyncOpKernel::DoneCallback done) {
   OpKernelContext* context = solver->context();
   auto wrapped_done = [context, done](
-                          const Status& status,
+                          const absl::Status& status,
                           const std::vector<HostLapackInfo>& /* unused */) {
     if (done != nullptr) {
       OP_REQUIRES_OK_ASYNC(context, status, done);
@@ -288,23 +295,23 @@ void CudaSolver::CheckLapackInfoAndDeleteSolverAsync(
                                       wrapped_done);
 }
 
-// Allocates a temporary tensor. The CudaSolver object maintains a
+// Allocates a temporary tensor. The GpuSolver object maintains a
 // TensorReference to the underlying Tensor to prevent it from being deallocated
 // prematurely.
-Status CudaSolver::allocate_scoped_tensor(DataType type,
-                                          const TensorShape& shape,
-                                          Tensor* out_temp) {
-  const Status status = context_->allocate_temp(type, shape, out_temp);
+absl::Status GpuSolver::allocate_scoped_tensor(DataType type,
+                                               const TensorShape& shape,
+                                               Tensor* out_temp) {
+  const absl::Status status = context_->allocate_temp(type, shape, out_temp);
   if (status.ok()) {
     scratch_tensor_refs_.emplace_back(*out_temp);
   }
   return status;
 }
 
-Status CudaSolver::forward_input_or_allocate_scoped_tensor(
-    gtl::ArraySlice<int> candidate_input_indices, DataType type,
+absl::Status GpuSolver::forward_input_or_allocate_scoped_tensor(
+    absl::Span<const int> candidate_input_indices, DataType type,
     const TensorShape& shape, Tensor* out_temp) {
-  const Status status = context_->forward_input_or_allocate_temp(
+  const absl::Status status = context_->forward_input_or_allocate_temp(
       candidate_input_indices, type, shape, out_temp);
   if (status.ok()) {
     scratch_tensor_refs_.emplace_back(*out_temp);
@@ -343,13 +350,12 @@ Status CudaSolver::forward_input_or_allocate_scoped_tensor(
 //=============================================================================
 
 template <typename Scalar, typename SolverFnT>
-static inline Status GeamImpl(SolverFnT solver, cublasHandle_t cublas_handle,
-                              cublasOperation_t transa,
-                              cublasOperation_t transb, int m, int n,
-                              const Scalar* alpha, /* host or device pointer */
-                              const Scalar* A, int lda,
-                              const Scalar* beta, /* host or device pointer */
-                              const Scalar* B, int ldb, Scalar* C, int ldc) {
+static inline absl::Status GeamImpl(
+    SolverFnT solver, cublasHandle_t cublas_handle, cublasOperation_t transa,
+    cublasOperation_t transb, int m, int n,
+    const Scalar* alpha,                          /* host or device pointer */
+    const Scalar* A, int lda, const Scalar* beta, /* host or device pointer */
+    const Scalar* B, int ldb, Scalar* C, int ldc) {
   mutex_lock lock(handle_map_mutex);
   using CudaScalar = typename CUDAComplexT<Scalar>::type;
   TF_RETURN_IF_CUBLAS_ERROR(solver(cublas_handle, transa, transb, m, n,
@@ -358,12 +364,12 @@ static inline Status GeamImpl(SolverFnT solver, cublasHandle_t cublas_handle,
                                    reinterpret_cast<const CudaScalar*>(beta),
                                    reinterpret_cast<const CudaScalar*>(B), ldb,
                                    reinterpret_cast<CudaScalar*>(C), ldc));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define GEAM_INSTANCE(Scalar, type_prefix)                                     \
   template <>                                                                  \
-  Status CudaSolver::Geam<Scalar>(                                             \
+  Status GpuSolver::Geam<Scalar>(                                              \
       cublasOperation_t transa, cublasOperation_t transb, int m, int n,        \
       const Scalar* alpha, /* host or device pointer */                        \
       const Scalar* A, int lda,                                                \
@@ -376,12 +382,12 @@ static inline Status GeamImpl(SolverFnT solver, cublasHandle_t cublas_handle,
 TF_CALL_LAPACK_TYPES(GEAM_INSTANCE);
 
 template <typename Scalar, typename BufSizeFnT, typename SolverFnT>
-static inline Status PotrfImpl(BufSizeFnT bufsize, SolverFnT solver,
-                               CudaSolver* cuda_solver,
-                               OpKernelContext* context,
-                               cusolverDnHandle_t cusolver_dn_handle,
-                               cublasFillMode_t uplo, int n, Scalar* A, int lda,
-                               int* dev_lapack_info) {
+static inline absl::Status PotrfImpl(BufSizeFnT bufsize, SolverFnT solver,
+                                     GpuSolver* cuda_solver,
+                                     OpKernelContext* context,
+                                     cusolverDnHandle_t cusolver_dn_handle,
+                                     cublasFillMode_t uplo, int n, Scalar* A,
+                                     int lda, int* dev_lapack_info) {
   mutex_lock lock(handle_map_mutex);
   /* Get amount of workspace memory required. */
   int lwork;
@@ -394,13 +400,13 @@ static inline Status PotrfImpl(BufSizeFnT bufsize, SolverFnT solver,
   TF_RETURN_IF_CUSOLVER_ERROR(solver(
       cusolver_dn_handle, uplo, n, CUDAComplex(A), lda,
       CUDAComplex(dev_workspace.mutable_data()), lwork, dev_lapack_info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define POTRF_INSTANCE(Scalar, type_prefix)                                  \
   template <>                                                                \
-  Status CudaSolver::Potrf<Scalar>(cublasFillMode_t uplo, int n, Scalar* A,  \
-                                   int lda, int* dev_lapack_info) {          \
+  Status GpuSolver::Potrf<Scalar>(cublasFillMode_t uplo, int n, Scalar* A,   \
+                                  int lda, int* dev_lapack_info) {           \
     return PotrfImpl(DN_BUFSIZE_FN(potrf, type_prefix),                      \
                      DN_SOLVER_FN(potrf, type_prefix), this, context_,       \
                      cusolver_dn_handle_, uplo, n, A, lda, dev_lapack_info); \
@@ -408,32 +414,32 @@ static inline Status PotrfImpl(BufSizeFnT bufsize, SolverFnT solver,
 
 TF_CALL_LAPACK_TYPES(POTRF_INSTANCE);
 
-#if CUDA_VERSION >= 9020
 template <typename Scalar, typename SolverFnT>
-static inline Status PotrfBatchedImpl(
-    SolverFnT solver, CudaSolver* cuda_solver, OpKernelContext* context,
+static inline absl::Status PotrfBatchedImpl(
+    SolverFnT solver, GpuSolver* cuda_solver, OpKernelContext* context,
     cusolverDnHandle_t cusolver_dn_handle, cublasFillMode_t uplo, int n,
     const Scalar* const host_a_dev_ptrs[], int lda,
     DeviceLapackInfo* dev_lapack_info, int batch_size) {
   mutex_lock lock(handle_map_mutex);
   using CudaScalar = typename CUDAComplexT<Scalar>::type;
-  ScratchSpace<uint8> dev_a_dev_ptrs =
-      cuda_solver->GetScratchSpace<uint8>(sizeof(CudaScalar*) * batch_size, "",
-                                          /* on_host */ false);
+  ScratchSpace<uint8_t> dev_a_dev_ptrs = cuda_solver->GetScratchSpace<uint8_t>(
+      sizeof(CudaScalar*) * batch_size, "",
+      /* on_host */ false);
   if (!CopyHostToDevice(context, dev_a_dev_ptrs.mutable_data() /* dest */,
                         host_a_dev_ptrs /* source */, dev_a_dev_ptrs.bytes())) {
-    return errors::Internal("PotrfBatched: failed to copy pointers to device");
+    return absl::InternalError(
+        "PotrfBatched: failed to copy pointers to device");
   }
   TF_RETURN_IF_CUSOLVER_ERROR(
       solver(cusolver_dn_handle, uplo, n,
              reinterpret_cast<CudaScalar**>(dev_a_dev_ptrs.mutable_data()), lda,
              dev_lapack_info->mutable_data(), batch_size));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define POTRF_BATCHED_INSTANCE(Scalar, type_prefix)                        \
   template <>                                                              \
-  Status CudaSolver::PotrfBatched(                                         \
+  Status GpuSolver::PotrfBatched(                                          \
       cublasFillMode_t uplo, int n, const Scalar* const host_a_dev_ptrs[], \
       int lda, DeviceLapackInfo* dev_lapack_info, int batch_size) {        \
     return PotrfBatchedImpl(DN_SOLVER_FN(potrfBatched, type_prefix), this, \
@@ -443,15 +449,14 @@ static inline Status PotrfBatchedImpl(
   }
 
 TF_CALL_LAPACK_TYPES(POTRF_BATCHED_INSTANCE);
-#endif  // CUDA_VERSION >= 9020
 
 template <typename Scalar, typename BufSizeFnT, typename SolverFnT>
-static inline Status GetrfImpl(BufSizeFnT bufsize, SolverFnT solver,
-                               CudaSolver* cuda_solver,
-                               OpKernelContext* context,
-                               cusolverDnHandle_t cusolver_dn_handle, int m,
-                               int n, Scalar* A, int lda, int* dev_pivots,
-                               int* dev_lapack_info) {
+static inline absl::Status GetrfImpl(BufSizeFnT bufsize, SolverFnT solver,
+                                     GpuSolver* cuda_solver,
+                                     OpKernelContext* context,
+                                     cusolverDnHandle_t cusolver_dn_handle,
+                                     int m, int n, Scalar* A, int lda,
+                                     int* dev_pivots, int* dev_lapack_info) {
   mutex_lock lock(handle_map_mutex);
   /* Get amount of workspace memory required. */
   int lwork;
@@ -464,54 +469,67 @@ static inline Status GetrfImpl(BufSizeFnT bufsize, SolverFnT solver,
   TF_RETURN_IF_CUSOLVER_ERROR(solver(
       cusolver_dn_handle, m, n, CUDAComplex(A), lda,
       CUDAComplex(dev_workspace.mutable_data()), dev_pivots, dev_lapack_info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
-#define GETRF_INSTANCE(Scalar, type_prefix)                                 \
-  template <>                                                               \
-  Status CudaSolver::Getrf<Scalar>(int m, int n, Scalar* A, int lda,        \
-                                   int* dev_pivots, int* dev_lapack_info) { \
-    return GetrfImpl(DN_BUFSIZE_FN(getrf, type_prefix),                     \
-                     DN_SOLVER_FN(getrf, type_prefix), this, context_,      \
-                     cusolver_dn_handle_, m, n, A, lda, dev_pivots,         \
-                     dev_lapack_info);                                      \
+#define GETRF_INSTANCE(Scalar, type_prefix)                                \
+  template <>                                                              \
+  Status GpuSolver::Getrf<Scalar>(int m, int n, Scalar* A, int lda,        \
+                                  int* dev_pivots, int* dev_lapack_info) { \
+    return GetrfImpl(DN_BUFSIZE_FN(getrf, type_prefix),                    \
+                     DN_SOLVER_FN(getrf, type_prefix), this, context_,     \
+                     cusolver_dn_handle_, m, n, A, lda, dev_pivots,        \
+                     dev_lapack_info);                                     \
   }
 
 TF_CALL_LAPACK_TYPES(GETRF_INSTANCE);
 
 template <typename Scalar, typename SolverFnT>
-static inline Status GetrsImpl(SolverFnT solver, OpKernelContext* context,
-                               cusolverDnHandle_t cusolver_dn_handle,
-                               cublasOperation_t trans, int n, int nrhs,
-                               const Scalar* A, int lda, const int* pivots,
-                               Scalar* B, int ldb, int* dev_lapack_info) {
+static inline absl::Status GetrsImpl(SolverFnT solver, OpKernelContext* context,
+                                     cusolverDnHandle_t cusolver_dn_handle,
+                                     cublasOperation_t trans, int n, int nrhs,
+                                     const Scalar* A, int lda,
+                                     const int* pivots, Scalar* B, int ldb,
+                                     int* dev_lapack_info) {
   mutex_lock lock(handle_map_mutex);
   /* Launch the solver kernel. */
   TF_RETURN_IF_CUSOLVER_ERROR(solver(cusolver_dn_handle, trans, n, nrhs,
                                      CUDAComplex(A), lda, pivots,
                                      CUDAComplex(B), ldb, dev_lapack_info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
+#if TENSORFLOW_USE_ROCM
 #define GETRS_INSTANCE(Scalar, type_prefix)                                  \
   template <>                                                                \
-  Status CudaSolver::Getrs<Scalar>(                                          \
+  Status GpuSolver::Getrs<Scalar>(                                           \
+      cublasOperation_t trans, int n, int nrhs, const Scalar* A, int lda,    \
+      int* pivots, Scalar* B, int ldb, int* dev_lapack_info) const {         \
+    return GetrsImpl(DN_SOLVER_FN(getrs, type_prefix), context_,             \
+                     cusolver_dn_handle_, trans, n, nrhs, A, lda, pivots, B, \
+                     ldb, dev_lapack_info);                                  \
+  }
+#else
+#define GETRS_INSTANCE(Scalar, type_prefix)                                  \
+  template <>                                                                \
+  Status GpuSolver::Getrs<Scalar>(                                           \
       cublasOperation_t trans, int n, int nrhs, const Scalar* A, int lda,    \
       const int* pivots, Scalar* B, int ldb, int* dev_lapack_info) const {   \
     return GetrsImpl(DN_SOLVER_FN(getrs, type_prefix), context_,             \
                      cusolver_dn_handle_, trans, n, nrhs, A, lda, pivots, B, \
                      ldb, dev_lapack_info);                                  \
   }
+#endif
 
 TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
 
 template <typename Scalar, typename BufSizeFnT, typename SolverFnT>
-static inline Status GeqrfImpl(BufSizeFnT bufsize, SolverFnT solver,
-                               CudaSolver* cuda_solver,
-                               OpKernelContext* context,
-                               cusolverDnHandle_t cusolver_dn_handle, int m,
-                               int n, Scalar* A, int lda, Scalar* tau,
-                               int* dev_lapack_info) {
+static inline absl::Status GeqrfImpl(BufSizeFnT bufsize, SolverFnT solver,
+                                     GpuSolver* cuda_solver,
+                                     OpKernelContext* context,
+                                     cusolverDnHandle_t cusolver_dn_handle,
+                                     int m, int n, Scalar* A, int lda,
+                                     Scalar* tau, int* dev_lapack_info) {
   mutex_lock lock(handle_map_mutex);
   /* Get amount of workspace memory required. */
   int lwork;
@@ -524,13 +542,13 @@ static inline Status GeqrfImpl(BufSizeFnT bufsize, SolverFnT solver,
   TF_RETURN_IF_CUSOLVER_ERROR(solver(
       cusolver_dn_handle, m, n, CUDAComplex(A), lda, CUDAComplex(tau),
       CUDAComplex(dev_workspace.mutable_data()), lwork, dev_lapack_info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define GEQRF_INSTANCE(Scalar, type_prefix)                                    \
   template <>                                                                  \
-  Status CudaSolver::Geqrf<Scalar>(int m, int n, Scalar* A, int lda,           \
-                                   Scalar* tau, int* dev_lapack_info) {        \
+  Status GpuSolver::Geqrf<Scalar>(int m, int n, Scalar* A, int lda,            \
+                                  Scalar* tau, int* dev_lapack_info) {         \
     return GeqrfImpl(DN_BUFSIZE_FN(geqrf, type_prefix),                        \
                      DN_SOLVER_FN(geqrf, type_prefix), this, context_,         \
                      cusolver_dn_handle_, m, n, A, lda, tau, dev_lapack_info); \
@@ -539,14 +557,12 @@ static inline Status GeqrfImpl(BufSizeFnT bufsize, SolverFnT solver,
 TF_CALL_LAPACK_TYPES(GEQRF_INSTANCE);
 
 template <typename Scalar, typename BufSizeFnT, typename SolverFnT>
-static inline Status UnmqrImpl(BufSizeFnT bufsize, SolverFnT solver,
-                               CudaSolver* cuda_solver,
-                               OpKernelContext* context,
-                               cusolverDnHandle_t cusolver_dn_handle,
-                               cublasSideMode_t side, cublasOperation_t trans,
-                               int m, int n, int k, const Scalar* dev_a,
-                               int lda, const Scalar* dev_tau, Scalar* dev_c,
-                               int ldc, int* dev_lapack_info) {
+static inline absl::Status UnmqrImpl(
+    BufSizeFnT bufsize, SolverFnT solver, GpuSolver* cuda_solver,
+    OpKernelContext* context, cusolverDnHandle_t cusolver_dn_handle,
+    cublasSideMode_t side, cublasOperation_t trans, int m, int n, int k,
+    const Scalar* dev_a, int lda, const Scalar* dev_tau, Scalar* dev_c, int ldc,
+    int* dev_lapack_info) {
   mutex_lock lock(handle_map_mutex);
   /* Get amount of workspace memory required. */
   int lwork;
@@ -561,22 +577,22 @@ static inline Status UnmqrImpl(BufSizeFnT bufsize, SolverFnT solver,
       cusolver_dn_handle, side, trans, m, n, k, CUDAComplex(dev_a), lda,
       CUDAComplex(dev_tau), CUDAComplex(dev_c), ldc,
       CUDAComplex(dev_workspace.mutable_data()), lwork, dev_lapack_info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Unfortunately the LAPACK function name differs for the real and complex case
 // (complex ones are prefixed with "UN" for "unitary"), so we instantiate each
 // one separately.
-#define UNMQR_INSTANCE(Scalar, function_prefix, type_prefix)                  \
-  template <>                                                                 \
-  Status CudaSolver::Unmqr(cublasSideMode_t side, cublasOperation_t trans,    \
-                           int m, int n, int k, const Scalar* dev_a, int lda, \
-                           const Scalar* dev_tau, Scalar* dev_c, int ldc,     \
-                           int* dev_lapack_info) {                            \
-    return UnmqrImpl(DN_BUFSIZE_FN(function_prefix##mqr, type_prefix),        \
-                     DN_SOLVER_FN(function_prefix##mqr, type_prefix), this,   \
-                     context_, cusolver_dn_handle_, side, trans, m, n, k,     \
-                     dev_a, lda, dev_tau, dev_c, ldc, dev_lapack_info);       \
+#define UNMQR_INSTANCE(Scalar, function_prefix, type_prefix)                 \
+  template <>                                                                \
+  Status GpuSolver::Unmqr(cublasSideMode_t side, cublasOperation_t trans,    \
+                          int m, int n, int k, const Scalar* dev_a, int lda, \
+                          const Scalar* dev_tau, Scalar* dev_c, int ldc,     \
+                          int* dev_lapack_info) {                            \
+    return UnmqrImpl(DN_BUFSIZE_FN(function_prefix##mqr, type_prefix),       \
+                     DN_SOLVER_FN(function_prefix##mqr, type_prefix), this,  \
+                     context_, cusolver_dn_handle_, side, trans, m, n, k,    \
+                     dev_a, lda, dev_tau, dev_c, ldc, dev_lapack_info);      \
   }
 
 UNMQR_INSTANCE(float, or, S);
@@ -585,12 +601,13 @@ UNMQR_INSTANCE(complex64, un, C);
 UNMQR_INSTANCE(complex128, un, Z);
 
 template <typename Scalar, typename BufSizeFnT, typename SolverFnT>
-static inline Status UngqrImpl(BufSizeFnT bufsize, SolverFnT solver,
-                               CudaSolver* cuda_solver,
-                               OpKernelContext* context,
-                               cusolverDnHandle_t cusolver_dn_handle, int m,
-                               int n, int k, Scalar* dev_a, int lda,
-                               const Scalar* dev_tau, int* dev_lapack_info) {
+static inline absl::Status UngqrImpl(BufSizeFnT bufsize, SolverFnT solver,
+                                     GpuSolver* cuda_solver,
+                                     OpKernelContext* context,
+                                     cusolverDnHandle_t cusolver_dn_handle,
+                                     int m, int n, int k, Scalar* dev_a,
+                                     int lda, const Scalar* dev_tau,
+                                     int* dev_lapack_info) {
   mutex_lock lock(handle_map_mutex);
   /* Get amount of workspace memory required. */
   int lwork;
@@ -605,13 +622,13 @@ static inline Status UngqrImpl(BufSizeFnT bufsize, SolverFnT solver,
       solver(cusolver_dn_handle, m, n, k, CUDAComplex(dev_a), lda,
              CUDAComplex(dev_tau), CUDAComplex(dev_workspace.mutable_data()),
              lwork, dev_lapack_info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define UNGQR_INSTANCE(Scalar, function_prefix, type_prefix)                \
   template <>                                                               \
-  Status CudaSolver::Ungqr(int m, int n, int k, Scalar* dev_a, int lda,     \
-                           const Scalar* dev_tau, int* dev_lapack_info) {   \
+  Status GpuSolver::Ungqr(int m, int n, int k, Scalar* dev_a, int lda,      \
+                          const Scalar* dev_tau, int* dev_lapack_info) {    \
     return UngqrImpl(DN_BUFSIZE_FN(function_prefix##gqr, type_prefix),      \
                      DN_SOLVER_FN(function_prefix##gqr, type_prefix), this, \
                      context_, cusolver_dn_handle_, m, n, k, dev_a, lda,    \
@@ -624,14 +641,12 @@ UNGQR_INSTANCE(complex64, un, C);
 UNGQR_INSTANCE(complex128, un, Z);
 
 template <typename Scalar, typename BufSizeFnT, typename SolverFnT>
-static inline Status HeevdImpl(BufSizeFnT bufsize, SolverFnT solver,
-                               CudaSolver* cuda_solver,
-                               OpKernelContext* context,
-                               cusolverDnHandle_t cusolver_dn_handle,
-                               cusolverEigMode_t jobz, cublasFillMode_t uplo,
-                               int n, Scalar* dev_A, int lda,
-                               typename Eigen::NumTraits<Scalar>::Real* dev_W,
-                               int* dev_lapack_info) {
+static inline absl::Status HeevdImpl(
+    BufSizeFnT bufsize, SolverFnT solver, GpuSolver* cuda_solver,
+    OpKernelContext* context, cusolverDnHandle_t cusolver_dn_handle,
+    cusolverEigMode_t jobz, cublasFillMode_t uplo, int n, Scalar* dev_A,
+    int lda, typename Eigen::NumTraits<Scalar>::Real* dev_W,
+    int* dev_lapack_info) {
   mutex_lock lock(handle_map_mutex);
   /* Get amount of workspace memory required. */
   int lwork;
@@ -641,20 +656,32 @@ static inline Status HeevdImpl(BufSizeFnT bufsize, SolverFnT solver,
   /* Allocate device memory for workspace. */
   auto dev_workspace =
       cuda_solver->GetScratchSpace<Scalar>(lwork, "", /* on_host */ false);
+#if CUDA_VERSION >= 11070
+  // TODO(b/223856016): CUDA 11.7 sometimes gives invalid outputs if the scratch
+  // space is not initialized to zero.
+  se::Stream* stream = context->op_device_context()->stream();
+  if (!stream) {
+    return absl::InternalError("No GPU stream available");
+  }
+  uint64_t work_size_in_bytes = static_cast<uint64_t>(lwork) * sizeof(Scalar);
+  stream_executor::DeviceAddressBase dev_workspace_ptr(
+      dev_workspace.mutable_data(), work_size_in_bytes);
+  TF_RETURN_IF_ERROR(stream->MemZero(&dev_workspace_ptr, work_size_in_bytes));
+#endif
   /* Launch the solver kernel. */
   TF_RETURN_IF_CUSOLVER_ERROR(
       solver(cusolver_dn_handle, jobz, uplo, n, CUDAComplex(dev_A), lda,
              CUDAComplex(dev_W), CUDAComplex(dev_workspace.mutable_data()),
              lwork, dev_lapack_info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define HEEVD_INSTANCE(Scalar, function_prefix, type_prefix)                   \
   template <>                                                                  \
-  Status CudaSolver::Heevd(cusolverEigMode_t jobz, cublasFillMode_t uplo,      \
-                           int n, Scalar* dev_A, int lda,                      \
-                           typename Eigen::NumTraits<Scalar>::Real* dev_W,     \
-                           int* dev_lapack_info) {                             \
+  Status GpuSolver::Heevd(cusolverEigMode_t jobz, cublasFillMode_t uplo,       \
+                          int n, Scalar* dev_A, int lda,                       \
+                          typename Eigen::NumTraits<Scalar>::Real* dev_W,      \
+                          int* dev_lapack_info) {                              \
     return HeevdImpl(DN_BUFSIZE_FN(function_prefix##evd, type_prefix),         \
                      DN_SOLVER_FN(function_prefix##evd, type_prefix), this,    \
                      context_, cusolver_dn_handle_, jobz, uplo, n, dev_A, lda, \
@@ -667,8 +694,8 @@ HEEVD_INSTANCE(complex64, he, C);
 HEEVD_INSTANCE(complex128, he, Z);
 
 template <typename Scalar, typename BufSizeFnT, typename SolverFnT>
-static inline Status GesvdImpl(
-    BufSizeFnT bufsize, SolverFnT solver, CudaSolver* cuda_solver,
+static inline absl::Status GesvdImpl(
+    BufSizeFnT bufsize, SolverFnT solver, GpuSolver* cuda_solver,
     OpKernelContext* context, cusolverDnHandle_t cusolver_dn_handle,
     signed char jobu, signed char jobvt, int m, int n, Scalar* A, int lda,
     Scalar* S, Scalar* U, int ldu, Scalar* VT, int ldvt, int* dev_lapack_info) {
@@ -684,12 +711,12 @@ static inline Status GesvdImpl(
                                      ldu, CUDAComplex(VT), ldvt,
                                      CUDAComplex(dev_workspace.mutable_data()),
                                      lwork, nullptr, dev_lapack_info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define GESVD_INSTANCE(Scalar, type_prefix)                              \
   template <>                                                            \
-  Status CudaSolver::Gesvd<Scalar>(                                      \
+  Status GpuSolver::Gesvd<Scalar>(                                       \
       signed char jobu, signed char jobvt, int m, int n, Scalar* dev_A,  \
       int lda, Scalar* dev_S, Scalar* dev_U, int ldu, Scalar* dev_VT,    \
       int ldvt, int* dev_lapack_info) {                                  \
@@ -702,14 +729,12 @@ static inline Status GesvdImpl(
 TF_CALL_LAPACK_TYPES_NO_COMPLEX(GESVD_INSTANCE);
 
 template <typename Scalar, typename BufSizeFnT, typename SolverFnT>
-static inline Status GesvdjBatchedImpl(BufSizeFnT bufsize, SolverFnT solver,
-                                       CudaSolver* cuda_solver,
-                                       OpKernelContext* context,
-                                       cusolverDnHandle_t cusolver_dn_handle,
-                                       cusolverEigMode_t jobz, int m, int n,
-                                       Scalar* A, int lda, Scalar* S, Scalar* U,
-                                       int ldu, Scalar* V, int ldv,
-                                       int* dev_lapack_info, int batch_size) {
+static inline absl::Status GesvdjBatchedImpl(
+    BufSizeFnT bufsize, SolverFnT solver, GpuSolver* cuda_solver,
+    OpKernelContext* context, cusolverDnHandle_t cusolver_dn_handle,
+    cusolverEigMode_t jobz, int m, int n, Scalar* A, int lda, Scalar* S,
+    Scalar* U, int ldu, Scalar* V, int ldv, int* dev_lapack_info,
+    int batch_size) {
   mutex_lock lock(handle_map_mutex);
   /* Get amount of workspace memory required. */
   int lwork;
@@ -727,12 +752,12 @@ static inline Status GesvdjBatchedImpl(BufSizeFnT bufsize, SolverFnT solver,
       ldu, CUDAComplex(V), ldv, CUDAComplex(dev_workspace.mutable_data()),
       lwork, dev_lapack_info, svdj_info, batch_size));
   TF_RETURN_IF_CUSOLVER_ERROR(cusolverDnDestroyGesvdjInfo(svdj_info));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define GESVDJBATCHED_INSTANCE(Scalar, type_prefix)                            \
   template <>                                                                  \
-  Status CudaSolver::GesvdjBatched<Scalar>(                                    \
+  Status GpuSolver::GesvdjBatched<Scalar>(                                     \
       cusolverEigMode_t jobz, int m, int n, Scalar* dev_A, int lda,            \
       Scalar* dev_S, Scalar* dev_U, int ldu, Scalar* dev_V, int ldv,           \
       int* dev_lapack_info, int batch_size) {                                  \
@@ -754,32 +779,31 @@ TF_CALL_LAPACK_TYPES_NO_COMPLEX(GESVDJBATCHED_INSTANCE);
 // Check the actual declarations in the cublas_api.h header file.
 //=============================================================================
 template <typename Scalar, typename SolverFnT>
-static inline Status GetrfBatchedImpl(SolverFnT solver, CudaSolver* cuda_solver,
-                                      OpKernelContext* context,
-                                      cublasHandle_t cublas_handle, int n,
-                                      const Scalar* const host_a_dev_ptrs[],
-                                      int lda, int* dev_pivots,
-                                      DeviceLapackInfo* dev_lapack_info,
-                                      int batch_size) {
+static inline absl::Status GetrfBatchedImpl(
+    SolverFnT solver, GpuSolver* cuda_solver, OpKernelContext* context,
+    cublasHandle_t cublas_handle, int n, const Scalar* const host_a_dev_ptrs[],
+    int lda, int* dev_pivots, DeviceLapackInfo* dev_lapack_info,
+    int batch_size) {
   mutex_lock lock(handle_map_mutex);
   using CudaScalar = typename CUDAComplexT<Scalar>::type;
-  ScratchSpace<uint8> dev_a_dev_ptrs =
-      cuda_solver->GetScratchSpace<uint8>(sizeof(CudaScalar*) * batch_size, "",
-                                          /* on_host */ false);
+  ScratchSpace<uint8_t> dev_a_dev_ptrs = cuda_solver->GetScratchSpace<uint8_t>(
+      sizeof(CudaScalar*) * batch_size, "",
+      /* on_host */ false);
   if (!CopyHostToDevice(context, dev_a_dev_ptrs.mutable_data() /* dest */,
                         host_a_dev_ptrs /* source */, dev_a_dev_ptrs.bytes())) {
-    return errors::Internal("GetrfBatched: failed to copy pointers to device");
+    return absl::InternalError(
+        "GetrfBatched: failed to copy pointers to device");
   }
   TF_RETURN_IF_CUBLAS_ERROR(
       solver(cublas_handle, n,
              reinterpret_cast<CudaScalar**>(dev_a_dev_ptrs.mutable_data()), lda,
              dev_pivots, dev_lapack_info->mutable_data(), batch_size));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define GETRF_BATCHED_INSTANCE(Scalar, type_prefix)                            \
   template <>                                                                  \
-  Status CudaSolver::GetrfBatched(                                             \
+  Status GpuSolver::GetrfBatched(                                              \
       int n, const Scalar* const host_a_dev_ptrs[], int lda, int* dev_pivots,  \
       DeviceLapackInfo* dev_lapack_info, int batch_size) {                     \
     return GetrfBatchedImpl(BLAS_SOLVER_FN(getrfBatched, type_prefix), this,   \
@@ -790,39 +814,41 @@ static inline Status GetrfBatchedImpl(SolverFnT solver, CudaSolver* cuda_solver,
 TF_CALL_LAPACK_TYPES(GETRF_BATCHED_INSTANCE);
 
 template <typename Scalar, typename SolverFnT>
-static inline Status GetrsBatchedImpl(
-    SolverFnT solver, CudaSolver* cuda_solver, OpKernelContext* context,
+static inline absl::Status GetrsBatchedImpl(
+    SolverFnT solver, GpuSolver* cuda_solver, OpKernelContext* context,
     cublasHandle_t cublas_handle, cublasOperation_t trans, int n, int nrhs,
     const Scalar* const host_a_dev_ptrs[], int lda, const int* dev_pivots,
     const Scalar* const host_b_dev_ptrs[], int ldb, int* host_lapack_info,
     int batch_size) {
   mutex_lock lock(handle_map_mutex);
   using CudaScalar = typename CUDAComplexT<Scalar>::type;
-  ScratchSpace<uint8> dev_a_dev_ptrs =
-      cuda_solver->GetScratchSpace<uint8>(sizeof(CudaScalar*) * batch_size, "",
-                                          /* on_host */ false);
-  ScratchSpace<uint8> dev_b_dev_ptrs =
-      cuda_solver->GetScratchSpace<uint8>(sizeof(CudaScalar*) * batch_size, "",
-                                          /* on_host */ false);
+  ScratchSpace<uint8_t> dev_a_dev_ptrs = cuda_solver->GetScratchSpace<uint8_t>(
+      sizeof(CudaScalar*) * batch_size, "",
+      /* on_host */ false);
+  ScratchSpace<uint8_t> dev_b_dev_ptrs = cuda_solver->GetScratchSpace<uint8_t>(
+      sizeof(CudaScalar*) * batch_size, "",
+      /* on_host */ false);
   if (!CopyHostToDevice(context, dev_a_dev_ptrs.mutable_data() /* dest */,
                         host_a_dev_ptrs /* source */, dev_a_dev_ptrs.bytes())) {
-    return errors::Internal("GetrsBatched: failed to copy pointers to device");
+    return absl::InternalError(
+        "GetrsBatched: failed to copy pointers to device");
   }
   if (!CopyHostToDevice(context, dev_b_dev_ptrs.mutable_data() /* dest */,
                         host_b_dev_ptrs /* source */, dev_b_dev_ptrs.bytes())) {
-    return errors::Internal("GetrsBatched: failed to copy pointers to device");
+    return absl::InternalError(
+        "GetrsBatched: failed to copy pointers to device");
   }
   TF_RETURN_IF_CUBLAS_ERROR(solver(
       cublas_handle, trans, n, nrhs,
       reinterpret_cast<const CudaScalar* const*>(dev_a_dev_ptrs.data()), lda,
       dev_pivots, reinterpret_cast<CudaScalar**>(dev_b_dev_ptrs.mutable_data()),
       ldb, host_lapack_info, batch_size));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define GETRS_BATCHED_INSTANCE(Scalar, type_prefix)                            \
   template <>                                                                  \
-  Status CudaSolver::GetrsBatched(                                             \
+  Status GpuSolver::GetrsBatched(                                              \
       cublasOperation_t trans, int n, int nrhs,                                \
       const Scalar* const host_a_dev_ptrs[], int lda, const int* dev_pivots,   \
       const Scalar* const host_b_dev_ptrs[], int ldb, int* host_lapack_info,   \
@@ -837,23 +863,25 @@ static inline Status GetrsBatchedImpl(
 TF_CALL_LAPACK_TYPES(GETRS_BATCHED_INSTANCE);
 
 template <typename Scalar, typename SolverFnT>
-static inline Status GetriBatchedImpl(
-    SolverFnT solver, CudaSolver* cuda_solver, OpKernelContext* context,
+static inline absl::Status GetriBatchedImpl(
+    SolverFnT solver, GpuSolver* cuda_solver, OpKernelContext* context,
     cublasHandle_t cublas_handle, int n, const Scalar* const host_a_dev_ptrs[],
     int lda, const int* dev_pivots, const Scalar* const host_a_inv_dev_ptrs[],
     int ldainv, DeviceLapackInfo* dev_lapack_info, int batch_size) {
   mutex_lock lock(handle_map_mutex);
   using CudaScalar = typename CUDAComplexT<Scalar>::type;
-  ScratchSpace<uint8> dev_a_dev_ptrs =
-      cuda_solver->GetScratchSpace<uint8>(sizeof(CudaScalar*) * batch_size, "",
-                                          /* on_host */ false);
-  ScratchSpace<uint8> dev_a_inv_dev_ptrs = cuda_solver->GetScratchSpace<uint8>(
-      sizeof(CudaScalar*) * batch_size, "", /* on_host */ false);
+  ScratchSpace<uint8_t> dev_a_dev_ptrs = cuda_solver->GetScratchSpace<uint8_t>(
+      sizeof(CudaScalar*) * batch_size, "",
+      /* on_host */ false);
+  ScratchSpace<uint8_t> dev_a_inv_dev_ptrs =
+      cuda_solver->GetScratchSpace<uint8_t>(sizeof(CudaScalar*) * batch_size,
+                                            "", /* on_host */ false);
   if (!CopyHostToDevice(context, dev_a_dev_ptrs.mutable_data() /* dest */,
                         host_a_dev_ptrs /* source */, dev_a_dev_ptrs.bytes()) ||
       !CopyHostToDevice(context, dev_a_inv_dev_ptrs.mutable_data(),
                         host_a_inv_dev_ptrs, dev_a_inv_dev_ptrs.bytes())) {
-    return errors::Internal("GetriBatched: failed to copy pointers to device");
+    return absl::InternalError(
+        "GetriBatched: failed to copy pointers to device");
   }
   TF_RETURN_IF_CUBLAS_ERROR(
       solver(cublas_handle, n,
@@ -861,12 +889,12 @@ static inline Status GetriBatchedImpl(
              lda, dev_pivots,
              reinterpret_cast<CudaScalar**>(dev_a_inv_dev_ptrs.mutable_data()),
              ldainv, dev_lapack_info->mutable_data(), batch_size));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define GETRI_BATCHED_INSTANCE(Scalar, type_prefix)                          \
   template <>                                                                \
-  Status CudaSolver::GetriBatched(                                           \
+  Status GpuSolver::GetriBatched(                                            \
       int n, const Scalar* const host_a_dev_ptrs[], int lda,                 \
       const int* dev_pivots, const Scalar* const host_a_inv_dev_ptrs[],      \
       int ldainv, DeviceLapackInfo* dev_lapack_info, int batch_size) {       \
@@ -880,35 +908,37 @@ static inline Status GetriBatchedImpl(
 TF_CALL_LAPACK_TYPES(GETRI_BATCHED_INSTANCE);
 
 template <typename Scalar, typename SolverFnT>
-static inline Status MatInvBatchedImpl(
-    SolverFnT solver, CudaSolver* cuda_solver, OpKernelContext* context,
+static inline absl::Status MatInvBatchedImpl(
+    SolverFnT solver, GpuSolver* cuda_solver, OpKernelContext* context,
     cublasHandle_t cublas_handle, int n, const Scalar* const host_a_dev_ptrs[],
     int lda, const Scalar* const host_a_inv_dev_ptrs[], int ldainv,
     DeviceLapackInfo* dev_lapack_info, int batch_size) {
   mutex_lock lock(handle_map_mutex);
   using CudaScalar = typename CUDAComplexT<Scalar>::type;
-  ScratchSpace<uint8> dev_a_dev_ptrs =
-      cuda_solver->GetScratchSpace<uint8>(sizeof(CudaScalar*) * batch_size, "",
-                                          /* on_host */ false);
-  ScratchSpace<uint8> dev_a_inv_dev_ptrs = cuda_solver->GetScratchSpace<uint8>(
-      sizeof(CudaScalar*) * batch_size, "", /* on_host */ false);
+  ScratchSpace<uint8_t> dev_a_dev_ptrs = cuda_solver->GetScratchSpace<uint8_t>(
+      sizeof(CudaScalar*) * batch_size, "",
+      /* on_host */ false);
+  ScratchSpace<uint8_t> dev_a_inv_dev_ptrs =
+      cuda_solver->GetScratchSpace<uint8_t>(sizeof(CudaScalar*) * batch_size,
+                                            "", /* on_host */ false);
   if (!CopyHostToDevice(context, dev_a_dev_ptrs.mutable_data() /* dest */,
                         host_a_dev_ptrs /* source */, dev_a_dev_ptrs.bytes()) ||
       !CopyHostToDevice(context, dev_a_inv_dev_ptrs.mutable_data(),
                         host_a_inv_dev_ptrs, dev_a_inv_dev_ptrs.bytes())) {
-    return errors::Internal("MatInvBatched: failed to copy pointers to device");
+    return absl::InternalError(
+        "MatInvBatched: failed to copy pointers to device");
   }
   TF_RETURN_IF_CUBLAS_ERROR(solver(
       cublas_handle, n,
       reinterpret_cast<const CudaScalar* const*>(dev_a_dev_ptrs.data()), lda,
       reinterpret_cast<CudaScalar**>(dev_a_inv_dev_ptrs.mutable_data()), ldainv,
       dev_lapack_info->mutable_data(), batch_size));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define MATINV_BATCHED_INSTANCE(Scalar, type_prefix)                          \
   template <>                                                                 \
-  Status CudaSolver::MatInvBatched(                                           \
+  Status GpuSolver::MatInvBatched(                                            \
       int n, const Scalar* const host_a_dev_ptrs[], int lda,                  \
       const Scalar* const host_a_inv_dev_ptrs[], int ldainv,                  \
       DeviceLapackInfo* dev_lapack_info, int batch_size) {                    \
@@ -922,24 +952,23 @@ static inline Status MatInvBatchedImpl(
 TF_CALL_LAPACK_TYPES(MATINV_BATCHED_INSTANCE);
 
 template <typename Scalar, typename SolverFnT>
-static inline Status TrsmImpl(SolverFnT solver, cublasHandle_t cublas_handle,
-                              cublasSideMode_t side, cublasFillMode_t uplo,
-                              cublasOperation_t trans, cublasDiagType_t diag,
-                              int m, int n,
-                              const Scalar* alpha, /* host or device pointer */
-                              const Scalar* A, int lda, Scalar* B, int ldb) {
+static inline absl::Status TrsmImpl(
+    SolverFnT solver, cublasHandle_t cublas_handle, cublasSideMode_t side,
+    cublasFillMode_t uplo, cublasOperation_t trans, cublasDiagType_t diag,
+    int m, int n, const Scalar* alpha, /* host or device pointer */
+    const Scalar* A, int lda, Scalar* B, int ldb) {
   mutex_lock lock(handle_map_mutex);
   using CudaScalar = typename CUDAComplexT<Scalar>::type;
   TF_RETURN_IF_CUBLAS_ERROR(solver(cublas_handle, side, uplo, trans, diag, m, n,
                                    reinterpret_cast<const CudaScalar*>(alpha),
                                    reinterpret_cast<const CudaScalar*>(A), lda,
                                    reinterpret_cast<CudaScalar*>(B), ldb));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define TRSM_INSTANCE(Scalar, type_prefix)                                   \
   template <>                                                                \
-  Status CudaSolver::Trsm<Scalar>(                                           \
+  Status GpuSolver::Trsm<Scalar>(                                            \
       cublasSideMode_t side, cublasFillMode_t uplo, cublasOperation_t trans, \
       cublasDiagType_t diag, int m, int n,                                   \
       const Scalar* alpha, /* host or device pointer */                      \
@@ -951,21 +980,21 @@ static inline Status TrsmImpl(SolverFnT solver, cublasHandle_t cublas_handle,
 TF_CALL_LAPACK_TYPES(TRSM_INSTANCE);
 
 template <typename Scalar, typename SolverFnT>
-static inline Status TrsvImpl(SolverFnT solver, cublasHandle_t cublas_handle,
-                              cublasFillMode_t uplo, cublasOperation_t trans,
-                              cublasDiagType_t diag, int n, const Scalar* A,
-                              int lda, Scalar* x, int incx) {
+static inline absl::Status TrsvImpl(
+    SolverFnT solver, cublasHandle_t cublas_handle, cublasFillMode_t uplo,
+    cublasOperation_t trans, cublasDiagType_t diag, int n, const Scalar* A,
+    int lda, Scalar* x, int incx) {
   mutex_lock lock(handle_map_mutex);
   using CudaScalar = typename CUDAComplexT<Scalar>::type;
   TF_RETURN_IF_CUBLAS_ERROR(solver(cublas_handle, uplo, trans, diag, n,
                                    reinterpret_cast<const CudaScalar*>(A), lda,
                                    reinterpret_cast<CudaScalar*>(x), incx));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define TRSV_INSTANCE(Scalar, type_prefix)                                   \
   template <>                                                                \
-  Status CudaSolver::Trsv<Scalar>(                                           \
+  Status GpuSolver::Trsv<Scalar>(                                            \
       cublasFillMode_t uplo, cublasOperation_t trans, cublasDiagType_t diag, \
       int n, const Scalar* A, int lda, Scalar* x, int incx) {                \
     return TrsvImpl(BLAS_SOLVER_FN(trsv, type_prefix), cublas_handle_, uplo, \
@@ -975,27 +1004,29 @@ static inline Status TrsvImpl(SolverFnT solver, cublasHandle_t cublas_handle,
 TF_CALL_LAPACK_TYPES(TRSV_INSTANCE);
 
 template <typename Scalar, typename SolverFnT>
-static inline Status TrsmBatchedImpl(
-    SolverFnT solver, CudaSolver* cuda_solver, OpKernelContext* context,
+static inline absl::Status TrsmBatchedImpl(
+    SolverFnT solver, GpuSolver* cuda_solver, OpKernelContext* context,
     cublasHandle_t cublas_handle, cublasSideMode_t side, cublasFillMode_t uplo,
     cublasOperation_t trans, cublasDiagType_t diag, int m, int n,
     const Scalar* alpha, const Scalar* const host_a_dev_ptrs[], int lda,
     Scalar* host_b_dev_ptrs[], int ldb, int batch_size) {
   mutex_lock lock(handle_map_mutex);
   using CudaScalar = typename CUDAComplexT<Scalar>::type;
-  ScratchSpace<uint8> dev_a_dev_ptrs =
-      cuda_solver->GetScratchSpace<uint8>(sizeof(CudaScalar*) * batch_size, "",
-                                          /* on_host */ false);
-  ScratchSpace<uint8> dev_b_dev_ptrs =
-      cuda_solver->GetScratchSpace<uint8>(sizeof(CudaScalar*) * batch_size, "",
-                                          /* on_host */ false);
+  ScratchSpace<uint8_t> dev_a_dev_ptrs = cuda_solver->GetScratchSpace<uint8_t>(
+      sizeof(CudaScalar*) * batch_size, "",
+      /* on_host */ false);
+  ScratchSpace<uint8_t> dev_b_dev_ptrs = cuda_solver->GetScratchSpace<uint8_t>(
+      sizeof(CudaScalar*) * batch_size, "",
+      /* on_host */ false);
   if (!CopyHostToDevice(context, dev_a_dev_ptrs.mutable_data() /* dest */,
                         host_a_dev_ptrs /* source */, dev_a_dev_ptrs.bytes())) {
-    return errors::Internal("TrsmBatched: failed to copy pointers to device");
+    return absl::InternalError(
+        "TrsmBatched: failed to copy pointers to device");
   }
   if (!CopyHostToDevice(context, dev_b_dev_ptrs.mutable_data() /* dest */,
                         host_b_dev_ptrs /* source */, dev_b_dev_ptrs.bytes())) {
-    return errors::Internal("TrsmBatched: failed to copy pointers to device");
+    return absl::InternalError(
+        "TrsmBatched: failed to copy pointers to device");
   }
   TF_RETURN_IF_CUBLAS_ERROR(
       solver(cublas_handle, side, uplo, trans, diag, m, n,
@@ -1003,12 +1034,12 @@ static inline Status TrsmBatchedImpl(
              reinterpret_cast<const CudaScalar* const*>(dev_a_dev_ptrs.data()),
              lda, reinterpret_cast<CudaScalar**>(dev_b_dev_ptrs.mutable_data()),
              ldb, batch_size));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 #define TRSM_BATCHED_INSTANCE(Scalar, type_prefix)                            \
   template <>                                                                 \
-  Status CudaSolver::TrsmBatched(                                             \
+  Status GpuSolver::TrsmBatched(                                              \
       cublasSideMode_t side, cublasFillMode_t uplo, cublasOperation_t trans,  \
       cublasDiagType_t diag, int m, int n, const Scalar* alpha,               \
       const Scalar* const dev_Aarray[], int lda, Scalar* dev_Barray[],        \

@@ -27,11 +27,15 @@ limitations under the License.
 #endif
 
 #include "absl/container/flat_hash_map.h"
-#include "absl/memory/memory.h"
 #if GOOGLE_CUDA
 #include "third_party/nccl/nccl.h"
 #elif TENSORFLOW_USE_ROCM
+#include "rocm/rocm_config.h"
+#if (TF_ROCM_VERSION >= 50200)
 #include "rocm/include/rccl/rccl.h"
+#else
+#include "rocm/include/rccl.h"
+#endif
 #include "tensorflow/core/common_runtime/gpu_device_context.h"
 #endif
 #include "tensorflow/core/common_runtime/gpu/gpu_event_mgr.h"
@@ -49,7 +53,7 @@ namespace tensorflow {
 // management and stream synchronization.
 class NcclManager {
  public:
-  typedef std::function<void(Status)> DoneCallback;
+  typedef std::function<void(absl::Status)> DoneCallback;
   NcclManager();
   ~NcclManager();
 
@@ -62,13 +66,14 @@ class NcclManager {
   // Calls `ncclGetUniqueId` and returns the id as a string.  The returned value
   // may be shared with other participants on different nodes and passed in to
   // multi-node collective invocations.
-  string GenerateCommunicatorKey();
+  std::string GenerateCommunicatorKey();
 
   // A participant in a Collective.
   struct Participant {
     Participant(se::StreamExecutor* executor, se::Stream* tensor_stream,
-                const DeviceBase::GpuDeviceInfo* info, const Tensor* input,
-                Tensor* output, int global_rank, DoneCallback done_callback)
+                const DeviceBase::AcceleratorDeviceInfo* info,
+                const Tensor* input, Tensor* output, int global_rank,
+                DoneCallback done_callback)
         : executor(executor),
           tensor_stream(tensor_stream),
           event_mgr(info->event_mgr),
@@ -77,7 +82,6 @@ class NcclManager {
           context(static_cast<GPUDeviceContext*>(info->default_context)),
 #endif
           input(input),
-          input_event(nullptr),
           output(output),
           global_rank(global_rank),
           done_callback(std::move(done_callback)),
@@ -85,11 +89,6 @@ class NcclManager {
       DCHECK(executor != nullptr);
       DCHECK(event_mgr != nullptr);
       DCHECK(tensor_stream != nullptr);
-      if (input != nullptr) {
-        input_event = absl::make_unique<se::Event>(executor);
-        input_event->Init();
-        tensor_stream->ThenRecordEvent(input_event.get());
-      }
     }
 
     // StreamExecutor for the device. Expected to be live for process lifetime.
@@ -118,10 +117,6 @@ class NcclManager {
     // called. Is NULL for participants that only receive data.
     const Tensor* input;
 
-    // Wait on this event rather than synchronizing on the entire stream.
-    // This allows greater concurrency between compute and nccl streams.
-    std::unique_ptr<se::Event> input_event;
-
     // Owned by the caller, who must keep it live until `done_callback` is
     // called. Is NULL for participants that only send data.
     Tensor* output;
@@ -142,8 +137,8 @@ class NcclManager {
   // Data that provides context for the collective operation, including the
   // operation key, number of participants, and communicator key.
   struct Context {
-    Context(const string& collective_key, int num_local_devices,
-            int num_global_devices, const string& communicator_key,
+    Context(const std::string& collective_key, int num_local_devices,
+            int num_global_devices, const std::string& communicator_key,
             int source_rank)
         : collective_key(collective_key),
           num_local_devices(num_local_devices),
@@ -152,7 +147,7 @@ class NcclManager {
           source_rank(source_rank) {}
 
     // Unique key for this collective instance
-    const string& collective_key;
+    const std::string& collective_key;
 
     // Devices local to this node
     int num_local_devices;
@@ -166,7 +161,7 @@ class NcclManager {
     // `communicator_key` to the `NcclManager` functions.
     // `communicator_key` is not required for single-node collectives and can be
     // empty.
-    const string& communicator_key;
+    const std::string& communicator_key;
 
     // Rank of broadcast source.
     int source_rank;
@@ -179,6 +174,10 @@ class NcclManager {
   // Adds one participant to an all-gather.
   void AddToAllGather(std::unique_ptr<Participant> participant,
                       const Context& context);
+
+  // Adds one participant to a reduce-scatter.
+  void AddToReduceScatter(std::unique_ptr<Participant> participant,
+                          const Context& context, ncclRedOp_t reduction_op);
 
   // AddBroadcastSend and AddBroadcastRecv combine to send data from one sender
   // to all receivers.
@@ -194,13 +193,25 @@ class NcclManager {
   void AddReduceRecv(std::unique_ptr<Participant> participant,
                      const Context& context, ncclRedOp_t reduction_op);
 
+  // Adds one participant to an all-to-all.
+  void AddToAllToAll(std::unique_ptr<Participant> participant,
+                     const Context& context);
+
   // Signals that the `Collective` corresponding to `key` is ready to launch
   // across all nodes participating in this multi-node collective operation.
   //
   // This should only be called for multi-node collectives; single-node
   // collectives are implicitly ready when all participants have called Add*
   // function.
-  void SignalMultiNodeReady(const string& collective_key);
+  void SignalMultiNodeReady(const std::string& collective_key);
+
+  // Aborts all collectives. After abortion, no further collectives can be
+  // launched with this NcclManager.
+  void StartAbort(const absl::Status& s);
+
+  // Resets a previously aborted NcclManager, making it available for future
+  // collectives.
+  void Reset();
 
  private:
   enum CollectiveType {
@@ -208,6 +219,8 @@ class NcclManager {
     kBroadcast = 2,
     kReduce = 3,
     kAllGather = 4,
+    kReduceScatter = 5,
+    kAllToAll = 6,
   };
   struct Collective;
   struct Communicator;
@@ -220,7 +233,8 @@ class NcclManager {
   // This may involve creating CUDA streams and NCCL initialization.  If a NCCL
   // or CUDA error occurs in the process, this returns an INTERNAL error with
   // the corresponding NCCL/CUDA error string.
-  Status GetCommunicator(Collective* collective, Communicator** communicator);
+  absl::Status GetCommunicator(Collective* collective,
+                               Communicator** communicator);
 
   // Adds a participant device to the local `Collective` instance corresponding
   // to `collective_key`.  Launches the `Collective` if it is ready, which it
@@ -237,7 +251,7 @@ class NcclManager {
   // A collective is ready to run when all local participants have called Add*
   // function, and the collective is signalled globally ready via
   // `SetMultiNodeReady`.
-  bool CheckReady(const string& collective_key, Collective* collective)
+  bool CheckReady(const std::string& collective_key, Collective* collective)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   // Run <collective>.  This calls takes ownership of <collective>.
@@ -247,7 +261,7 @@ class NcclManager {
   mutex mu_;
 
   // Maps key to collectives currently being assembled or run.
-  absl::flat_hash_map<string, Collective*> collectives_ TF_GUARDED_BY(mu_);
+  absl::flat_hash_map<std::string, Collective*> collectives_ TF_GUARDED_BY(mu_);
 
   // Maps a device to the communication streams that make up its collective.
   // This is used to share the stream across different communicators that
@@ -255,9 +269,12 @@ class NcclManager {
   absl::flat_hash_map<se::StreamExecutor*, std::vector<NcclStream*>>
       device_to_comm_streams_ TF_GUARDED_BY(mu_);
 
-  std::vector<std::unique_ptr<Communicator>> communicators_;
+  std::vector<std::unique_ptr<Communicator>> communicators_ TF_GUARDED_BY(mu_);
 
-  TF_DISALLOW_COPY_AND_ASSIGN(NcclManager);
+  absl::Status status_ TF_GUARDED_BY(mu_);
+
+  NcclManager(const NcclManager&) = delete;
+  void operator=(const NcclManager&) = delete;
 };
 
 }  // namespace tensorflow
